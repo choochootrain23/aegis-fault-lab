@@ -100,7 +100,7 @@ The **Suggested next** card always shows a sensible next step, but you can explo
 
 New here? Press the yellow **TOUR** button in the top bar for a 60-second guided look at each part of the page. It stays in the bar, so you can retake it any time.
 
-1. Leave the mode on **Practice · known fault**, the fault on **Stopped service** and the target on **Target · catalogue (shared)**, then press **Start investigation**. The lab really stops the `catalog-b` container.
+1. Leave **Mode** on **Practice · known fault**, **Fault** on **Stopped service** and **Target** on **Catalogue (shared)**, then press **Start investigation**. The lab really stops the `catalog-b` container.
 2. Within about six seconds the topology changes: `gateway-a` turns **degraded** (alive, but its requests fail) and `catalog-b` **unavailable**.
 3. Click a node, then run checks: **Process liveness**, **Business request**, **Container state**, **Resource use**, **Disk usage**, **Running config**, **Request trace** and **Service logs**. The trace times each step of one request (the upstream call, the receipt write, and time spent outside the handler) as a waterfall, so you can see where a request is slow or where it breaks. Each result is stored in the **Evidence notebook**; open a record to see the raw measurement.
 4. Stuck? **A little direction?** offers an evidence explanation, a hint or one suggested action. Help is optional and recorded.

@@ -28,7 +28,7 @@ function renderControls(){
  if(!state)return; const s=state.session, active=s&&s.status!=='ended';
  $('start').disabled=!AegisView.canStart(state,connected,busy);
  $('mode').disabled=busy||active;
- for(const id of ['practice-target','practice-kind']){$(id).disabled=busy||active;$(id).hidden=$('mode').value==='challenge';}
+ for(const id of ['practice-target','practice-kind']){$(id).disabled=busy||active;$(id).closest('.pick').hidden=$('mode').value==='challenge';}
  $('expiry-continue').disabled=busy||!connected; $('expiry-reset').disabled=busy||!connected;
  $('maintenance').disabled=busy||!connected;
  for(const id of ['reset','save-note','reveal'])$(id).disabled=busy||!connected||!active;

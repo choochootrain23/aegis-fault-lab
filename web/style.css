@@ -537,3 +537,10 @@ kbd{display:inline-block;min-width:24px;padding:4px 6px;border:1px solid var(--l
 .celebrate i.round{width:10px;height:10px;border-radius:50%}
 @keyframes burst{0%{opacity:1;transform:translate(0,0) rotate(0)}70%{opacity:1}100%{opacity:0;transform:translate(var(--dx),var(--dy)) rotate(var(--spin))}}
 @media(max-width:600px){.wf-row{grid-template-columns:1fr 60px}.wf-row svg{grid-column:1/-1;grid-row:2}.keys-list div{grid-template-columns:1fr}}
+/* Scenario pickers: a coloured tab names each choice */
+.pick{display:inline-flex;align-items:stretch;border:1px solid var(--line-strong)}
+.pick>span{display:flex;align-items:center;justify-content:center;min-width:76px;padding:0 10px;font:700 10px/1 var(--mono);letter-spacing:.16em;text-transform:uppercase;color:#fff;background:var(--pick)}
+.pick select{border:0;border-left:3px solid var(--pick)}
+.pick:focus-within{box-shadow:0 0 0 3px color-mix(in srgb,var(--pick) 30%,transparent)}
+.pick-fault{--pick:var(--bad)}.pick-target{--pick:var(--accent)}.pick-mode{--pick:var(--violet)}
+@media(max-width:600px){.pick select{flex:1}}
