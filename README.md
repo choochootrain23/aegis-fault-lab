@@ -98,7 +98,7 @@ The page shows **Collecting a healthy baseline** with a 0/5 meter. After about t
 
 The **Suggested next** card always shows a sensible next step, but you can explore in any order.
 
-New here? Press **Take the 60-second tour** under the title for a guided look at each part of the page.
+New here? Press the yellow **TOUR** button in the top bar for a 60-second guided look at each part of the page. It stays in the bar, so you can retake it any time.
 
 1. Leave the mode on **Practice · known fault**, the fault on **Stopped service** and the target on **Shared dependency · catalogue**, then press **Start investigation**. The lab really stops the `catalog-b` container.
 2. Within about six seconds the topology changes: `gateway-a` turns **degraded** (alive, but its requests fail) and `catalog-b` **unavailable**.

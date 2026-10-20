@@ -424,9 +424,6 @@ dialog p{color:var(--muted)}
 .remedies .remedy-clear:not(:disabled){background:var(--pink);border-color:var(--pink);box-shadow:5px 5px 0 rgba(208,24,132,.2)}
 .nav-links a[href="#report-section"]{--nav-tone:var(--cyan)}
 .report-panel{--section:var(--cyan);border-bottom:1px solid var(--line)}
-.tour-button{margin-top:22px;border-color:var(--violet);color:var(--violet)}
-.tour-button:hover{background:var(--violet);color:#fff}
-.tour-button.attention{background:var(--violet);color:#fff;animation:step-glow 1.6s ease-in-out infinite}
 
 /* Incident report: separate measures, then the replay chart. */
 .report{padding:0 28px 26px}
@@ -481,3 +478,10 @@ dialog p{color:var(--muted)}
 .tour-card p{margin:0 0 16px;font-size:14px}
 .tour-actions{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap}
 @media(max-width:600px){.report{padding-inline:16px}.report-tile strong{font-size:22px}}
+
+/* Tour button: always in the sticky bar, so it is reachable from anywhere on the page. */
+.nav-tour{display:flex;align-items:center;gap:6px;padding:0 18px;border:0;border-left:1px solid var(--line);background:var(--yellow);color:var(--ink);font:700 11px/1 var(--mono);letter-spacing:.18em;text-transform:uppercase;cursor:pointer}
+.nav-tour:hover{background:#f9ab00}
+.nav-tour.attention{animation:tour-pulse 1.6s ease-in-out infinite}
+@keyframes tour-pulse{50%{background:#fde293;box-shadow:inset 0 -3px 0 var(--ink)}}
+@media(max-width:600px){.nav-tour{padding:0 12px;letter-spacing:.12em}}
