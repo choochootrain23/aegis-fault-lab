@@ -13,12 +13,13 @@ from pydantic import BaseModel, ConfigDict, Field
 PROJECT = 'aegis-rack-diagnostics'
 TARGETS = ('gateway-a', 'catalog-b')
 TOKEN = os.getenv('AEGIS_BROKER_TOKEN', '')
+READ_VERBS = ('inspect', 'resources')
 
 
 class Operation(BaseModel):
     model_config = ConfigDict(extra='forbid')
     target: Literal['gateway-a', 'catalog-b']
-    verb: Literal['inspect', 'start', 'stop']
+    verb: Literal['inspect', 'resources', 'start', 'stop']
     generation: str | None = Field(default=None, max_length=80)
 
 
@@ -79,18 +80,54 @@ class Docker:
         data = await self.resolve(op.target)
         if op.generation and data['Id'] != op.generation:
             raise ValueError('Container identity changed; inspect again')
-        if op.verb != 'inspect':
+        changed = False
+        if op.verb not in READ_VERBS:
             if not op.generation:
                 raise ValueError('Mutation requires inspected container identity')
-            response = await self.client.post('/containers/' + data['Id'] + '/' + op.verb, params={'t': 3})
-            response.raise_for_status()
+            changed = await self.mutate(data, op.verb)
             data = await self.resolve(op.target)
             if data['Id'] != op.generation:
                 raise ValueError('Container replaced during action; result uncertain')
         if op.verb in ('start', 'stop') and data['State']['Running'] != (op.verb == 'start'):
             raise ValueError('Observed state does not match requested action')
-        return {'target': op.target, 'generation': data['Id'], 'running': data['State']['Running'],
-                'status': data['State']['Status'], 'exit_code': data['State']['ExitCode']}
+        result = {'target': op.target, 'generation': data['Id'], 'running': data['State']['Running'],
+                  'status': data['State']['Status'], 'exit_code': data['State']['ExitCode'], 'changed': changed}
+        if op.verb == 'resources':
+            result.update(await self.resources(data))
+        return result
+
+    async def mutate(self, data, verb):
+        """Start or stop; return False when the container is already in the requested state."""
+        if data['State']['Running'] == (verb == 'start'):
+            return False
+        response = await self.client.post('/containers/' + data['Id'] + '/' + verb, params={'t': 3})
+        response.raise_for_status()
+        return True
+
+    async def resources(self, data):
+        """CPU use against the container limit, kernel throttling counters and memory, from Docker stats.
+
+        A non-streaming sample includes the previous reading, so CPU use is a real rate over about a second.
+        """
+        limit = data['HostConfig']['NanoCpus'] / 1e9
+        report = {'cpu_limit': limit}
+        if not data['State']['Running']:
+            return report
+        response = await self.client.get('/containers/' + data['Id'] + '/stats', params={'stream': 'false'})
+        response.raise_for_status()
+        stats = response.json()
+        cpu, before = stats.get('cpu_stats', {}), stats.get('precpu_stats', {})
+        used = cpu.get('cpu_usage', {}).get('total_usage', 0) - before.get('cpu_usage', {}).get('total_usage', 0)
+        system = cpu.get('system_cpu_usage', 0) - before.get('system_cpu_usage', 0)
+        cores = used / system * cpu.get('online_cpus', 1) if system > 0 else None
+        throttling = cpu.get('throttling_data', {})
+        memory = stats.get('memory_stats', {})
+        report.update(cpu_cores=round(cores, 3) if cores is not None else None,
+                      cpu_pct_of_limit=round(100 * cores / limit, 1) if cores is not None and limit else None,
+                      periods=throttling.get('periods'), throttled_periods=throttling.get('throttled_periods'),
+                      throttled_ms=round(throttling.get('throttled_time', 0) / 1e6, 1),
+                      memory_mib=round(memory.get('usage', 0) / 2**20, 1), memory_limit_mib=round(memory.get('limit', 0) / 2**20, 1))
+        return report
 
 
 @asynccontextmanager

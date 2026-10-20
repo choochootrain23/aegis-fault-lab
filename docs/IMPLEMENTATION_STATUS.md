@@ -54,6 +54,15 @@ Reports are under ignored `state/validation/`. The app is running at http://loca
 - Design developed further: progress tracker, state-driven suggested-next card with cycle meters (`healthy_streak` added to `/api/state`), per-check last results, animated request wire and signal colours. Backend tests, the simulator walkthrough and the real Docker browser walkthrough pass.
 - Interactive live map (`web/topology.js`) with draggable controller, broker and service nodes, state-coloured edges, keyboard movement and remembered layout; section-aware navigation; vivid Google-style palette. The simulator walkthrough covers dragging, click-vs-drag, keyboard movement, persistence, reset and the control-plane toggle; the real Docker browser walkthrough passes.
 
+## Seventh checkpoint (20 October 2026)
+
+- Three fault types on either service: stopped service, CPU starvation from a bounded runaway job, and a full 8 MiB `/tmp` causing real `ENOSPC`/HTTP 507 write failures. Challenge mode hides both the fault type and the target.
+- New checks: Resource use (Docker stats: CPU against the container limit, kernel throttling, memory) and Disk usage (statvfs and largest files). Slow requests above 300 ms count as degraded.
+- Recovery toolbox: Start service, Stop runaway job, Clear temp files. Actions that find nothing to change report *unchanged*.
+- Incident report with separate measures (no score) and a replayable latency chart, also in every archived investigation; optional guided tour.
+- Broker gained only a read-only `resources` operation. Disk and job faults use token-protected service maintenance endpoints; `init_env.py` now adds missing credentials on upgrade.
+- Validation: 100 backend tests; production scenario matrix across all faults and targets; real Docker browser challenge; simulator walkthrough; older browser reviews. See [validation](VALIDATION.md).
+
 ## Next work
 
 1. Exercise storage-pressure exhaustion and a multi-hour run; broaden accessibility/browser coverage.

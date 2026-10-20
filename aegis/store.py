@@ -81,6 +81,16 @@ class Store:
         return {'items': [self.decode_evidence(r) for r in rows[:limit]],
                 'next_cursor': rows[limit-1]['id'] if len(rows) > limit else None}
 
+    def operator_checks(self, session_id):
+        return [{'at': r['at'], 'kind': r['kind'], 'node': r['node']} for r in self.db.execute(
+            "SELECT at, kind, node FROM evidence WHERE session_id=? AND json_extract(body, '$.origin')='operator' ORDER BY at", (session_id,))]
+
+    def evidence_series(self, session_id, kinds, limit):
+        """Oldest-first observations for charts; the newest are kept when over the limit."""
+        placeholders = ','.join('?' for _ in kinds)
+        rows = self.db.execute(f'SELECT * FROM evidence WHERE session_id=? AND kind IN ({placeholders}) ORDER BY at DESC LIMIT ?', (session_id, *kinds, limit))
+        return [self.decode_evidence(r) for r in reversed(rows.fetchall())]
+
     def evidence_summary(self, session_id):
         row = self.db.execute('SELECT COUNT(*) AS count, MIN(at) AS oldest, MAX(at) AS newest FROM evidence WHERE session_id=?', (session_id,)).fetchone()
         return dict(row)

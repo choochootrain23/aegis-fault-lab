@@ -9,8 +9,10 @@ import json
 import os
 from pathlib import Path
 import secrets
+import shutil
 import socket
 import sys
+import tempfile
 import time
 
 import httpx
@@ -34,6 +36,8 @@ class ProcessFleet:
         self.generations = {node: secrets.token_hex(16) for node in self.ports}
         self.nodes = {node: f'http://127.0.0.1:{port}' for node, port in self.ports.items()}
         self.mutations = []
+        # Each service process gets its own scratch directory instead of the host's shared /tmp.
+        self.scratch = {node: tempfile.mkdtemp(prefix=f'aegis-{node}-') for node in self.ports}
 
     def running(self, node):
         process = self.processes.get(node)
@@ -43,7 +47,7 @@ class ProcessFleet:
         if self.running(node):
             return
         env = {**os.environ, 'AEGIS_ROLE': 'catalog' if node == 'catalog-b' else 'gateway',
-               'AEGIS_UPSTREAM': self.nodes['catalog-b']}
+               'AEGIS_UPSTREAM': self.nodes['catalog-b'], 'AEGIS_SCRATCH': self.scratch[node]}
         self.processes[node] = await asyncio.create_subprocess_exec(
             sys.executable, '-m', 'uvicorn', 'aegis.fleet:app', '--host', '127.0.0.1',
             '--port', str(self.ports[node]), '--no-access-log', env=env,
@@ -76,12 +80,14 @@ class ProcessFleet:
         node, verb = op['target'], op['verb']
         if node not in self.nodes or verb not in ('inspect', 'start', 'stop'):
             return httpx.Response(422)
+        changed = False
         if verb != 'inspect':
             if op['generation'] != self.generations[node]:
                 return httpx.Response(409)
+            changed = self.running(node) != (verb == 'start')
             await getattr(self, verb)(node)
-            self.mutations.append({'node': node, 'verb': verb, 'at': time.time()})
-        return httpx.Response(200, json={'target': node, 'generation': self.generations[node],
+            self.mutations.append({'node': node, 'verb': verb, 'at': time.time(), 'changed': changed})
+        return httpx.Response(200, json={'target': node, 'generation': self.generations[node], 'changed': changed,
                                         'running': self.running(node), 'status': 'running' if self.running(node) else 'exited',
                                         'source': 'test subprocess adapter; not Docker inspection'})
 
@@ -91,6 +97,8 @@ async def lifespan(app):
     if os.getenv('AEGIS_BROWSER_TEST') != '1':
         raise RuntimeError('This test-only harness requires AEGIS_BROWSER_TEST=1')
     path = Path(os.environ['AEGIS_STATE'])
+    # Service subprocesses inherit this, so maintenance-based faults work in the harness too.
+    os.environ.setdefault('AEGIS_FLEET_TOKEN', secrets.token_hex(16))
     fleet = ProcessFleet()
     with controller_ownership(path):
         store = Store(path)
@@ -119,6 +127,7 @@ async def lifespan(app):
         finally:
             for node in fleet.nodes:
                 await fleet.stop(node)
+                shutil.rmtree(fleet.scratch[node], ignore_errors=True)
             (path.parent/'process-mutations.json').write_text(json.dumps(fleet.mutations))
             store.db.close()
 

@@ -20,18 +20,18 @@ async function request(path, data) {
 }
 async function action(path, data={}, message='Action recorded') {
   if(busy)return; busy=true; document.querySelector('main').setAttribute('aria-busy','true');renderControls();toast(path==='check'?'Running diagnostic check…':'Recording your request…');
-  try { const result=await request(path,{...data,...(['recover','reset','extend','reveal','note','help'].includes(path)?{session_id:state.session.id}:{}),...(['sessions','recover','reset','extend','reveal'].includes(path)?{key:crypto.randomUUID()}: {})}); toast(result.status==='unknown'?'Outcome uncertain. Inspect actual state before retrying.':message,result.status==='unknown'); await refresh(); return result; }
+  try { const result=await request(path,{...data,...(['recover','reset','extend','reveal','note','help'].includes(path)?{session_id:state.session.id}:{}),...(['sessions','recover','reset','extend','reveal'].includes(path)?{key:crypto.randomUUID()}: {})}); toast(result.status==='unknown'?'Outcome uncertain. Inspect actual state before retrying.':result.status==='unchanged'?`Nothing changed: ${result.detail}`:message,result.status==='unknown'); await refresh(); return result; }
   catch(e){toast(e.message,true);}finally{busy=false;document.querySelector('main').setAttribute('aria-busy','false');renderControls();}
 }
 function renderControls(){
  if(!state)return; const s=state.session, active=s&&s.status!=='ended';
  $('start').disabled=!AegisView.canStart(state,connected,busy);
  $('mode').disabled=busy||active;
- $('practice-target').disabled=busy||active; $('practice-target').hidden=$('mode').value==='challenge';
+ for(const id of ['practice-target','practice-kind']){$(id).disabled=busy||active;$(id).hidden=$('mode').value==='challenge';}
  $('expiry-continue').disabled=busy||!connected; $('expiry-reset').disabled=busy||!connected;
  $('maintenance').disabled=busy||!connected;
  for(const id of ['reset','save-note','reveal'])$(id).disabled=busy||!connected||!active;
- $('recover').disabled=!AegisView.canRecover(s,connected,busy);
+ document.querySelectorAll('[data-remedy]').forEach(b=>b.disabled=!AegisView.canRecover(s,connected,busy));
  $('extend').disabled=busy||!connected||!active||['resetting','recovered'].includes(s.status);
  document.querySelectorAll('[data-check]').forEach(b=>b.disabled=busy||!connected);
  document.querySelectorAll('[data-help]').forEach(b=>b.disabled=busy||!connected||!active);
@@ -73,7 +73,7 @@ function render(){
  $('edge-label').textContent=measured?(gateway.health==='unknown'?'Previous observation is stale':measured.body.ok?'Observed business request succeeded':'Observed business request failed'):'Waiting for observed requests';
  $('scenario-reveal').textContent=s?.scenario?`Known scenario: ${label(s.scenario.kind)} on ${s.scenario.target}`:'';
  $('debrief').textContent=s?.debrief||'';
- const attempts=(s?.recovery_attempts||[]).map(a=>({at:a.at,title:`Start ${a.node}`,detail:a.status==='succeeded'?'Control action accepted; consult verification':a.detail||a.status}));
+ const attempts=(s?.recovery_attempts||[]).map(a=>({at:a.at,title:`${AegisView.remedyLabel(a.verb||'start')} · ${a.node}`,detail:a.status==='succeeded'?'Action accepted; consult verification':a.detail||a.status}));
  if(s?.reset)attempts.push({at:s.reset.at,title:s.reset.automatic?'Timer expiry reset':'Operator reset',detail:s.status==='ended'?'Baseline verified; investigation ended':'Waiting for healthy baseline; inspect unresolved failures'});
  if(s?.verified_at)attempts.push({at:s.verified_at,title:'Verification complete',detail:s.verification});
  $('action-history').innerHTML=attempts.length?attempts.sort((a,b)=>b.at-a.at).map(a=>`<div class="history-item"><strong>${esc(a.title)}</strong><span>${new Date(a.at*1000).toLocaleTimeString()}</span><span>${esc(a.detail)}</span></div>`).join(''):'<p class="panel-description">No recovery attempts yet. Freely investigate before acting.</p>';
@@ -86,7 +86,25 @@ function render(){
    if(focused)$('history').querySelector(`[data-archive="${CSS.escape(focused)}"]`)?.focus({preventScroll:true});
  }
  const usage=state.storage;$('storage-status').textContent=usage?`Evidence storage · ${(usage.live_bytes/1048576).toFixed(1)} / ${(usage.live_limit_bytes/1048576).toFixed(0)} MiB · detailed evidence retained 24h`:'Local evidence storage';
- renderEvidence();renderControls();renderTimer();
+ renderEvidence();renderControls();renderTimer();renderReport();
+}
+// The report follows the current investigation, or the most recent one, and never redraws under the reader.
+let reportKey='', reportBusy=false;
+async function renderReport(){
+ const s=state.session, id=s?.id||state.history[0]?.id;
+ if(!id){$('report').hidden=true;setText('report-badge','No investigation yet');return;}
+ const live=s&&s.id===id&&s.status!=='ended';
+ const key=id+'|'+(live?Math.floor(Date.now()/5000):'final');
+ const reading=$('report').matches(':hover')||$('report').contains(document.activeElement);
+ if(key===reportKey||reportBusy||(reading&&reportKey.startsWith(id)))return;
+ reportBusy=true;
+ try{
+  const [detail,timeline]=await Promise.all([request('investigations/'+encodeURIComponent(id)),request('investigations/'+encodeURIComponent(id)+'/timeline')]);
+  reportKey=key;AegisReport.render($('report'),detail,timeline);
+  if(detail.session.debrief){const p=document.createElement('p');p.className='report-debrief';p.textContent=detail.session.debrief;$('report').append(p);}
+  setText('report-badge',live?'Live · updating':label(detail.session.outcome||detail.session.status));
+  setText('report-intro',live?'This investigation is still running; the replay grows as new observations arrive.':'Replay of your most recent investigation. Older ones are under Investigation history.');
+ }catch(e){/* the next poll retries */}finally{reportBusy=false;}
 }
 function renderJourney(){
  const j=AegisView.journey(state,connected);
@@ -111,8 +129,8 @@ function renderTimer(){
 async function refresh(){const sequence=refreshOrder.begin();try{const next=await request('state');if(!refreshOrder.current(sequence))return;state=next;connected=true;serverOffset=state.now-Date.now()/1000;token=state.token;render();}catch(e){if(!refreshOrder.current(sequence))return;connected=false;renderControls();renderJourney();$('notice').classList.add('error');$('notice').textContent='Controller unavailable. Displayed measurements may be stale. '+e.message;document.querySelectorAll('.node-state').forEach(e=>{e.textContent='Unknown';e.className='node-state unknown';});}}
 document.querySelectorAll('[data-node]').forEach(b=>b.addEventListener('click',()=>{selected=b.dataset.node;document.querySelectorAll('[data-node]').forEach(n=>{n.classList.toggle('selected',n===b);n.setAttribute('aria-pressed',String(n===b));});$('inspector-title').textContent=selected;renderCheckResults();}));
 document.querySelectorAll('[data-check]').forEach(b=>b.addEventListener('click',()=>action('check',{node:selected,kind:b.dataset.check},'Fresh observation added to the evidence notebook')));
-$('start').addEventListener('click',()=>action('sessions',{mode:$('mode').value,target:$('practice-target').value},'Investigation started. Observe the measured effects.'));
-$('recover').addEventListener('click',()=>action('recover',{node:selected},'Start requested. Watch the verification checks.'));
+$('start').addEventListener('click',()=>action('sessions',{mode:$('mode').value,target:$('practice-target').value,kind:$('practice-kind').value},'Investigation started. Observe the measured effects.'));
+document.querySelectorAll('[data-remedy]').forEach(b=>b.addEventListener('click',()=>action('recover',{node:selected,verb:b.dataset.remedy},`${AegisView.remedyLabel(b.dataset.remedy)} requested on ${selected}. Watch the verification checks.`)));
 $('reset').addEventListener('click',()=>action('reset',{},'Reset requested. History is preserved.'));
 $('extend').addEventListener('click',()=>action('extend',{},'Investigation extended by 15 minutes'));
 $('expiry-continue').addEventListener('click',()=>action('extend',{},'Continue exploring for 15 minutes'));
@@ -154,17 +172,19 @@ async function openCitation(id,button){
  }catch(e){if(citationOrder.current(sequence))toast(e.message,true);}finally{button.disabled=false;}
 }
 async function openArchive(id){
- if(archiveBusy)return;archiveBusy=true;archiveId=id;archiveCursor=null;$('archive-citation').replaceChildren();$('archive-citation').hidden=true;$('archive-evidence').replaceChildren();$('archive-notes').replaceChildren();$('archive-warning').hidden=true;$('archive-more').disabled=true;$('archive-title').textContent='Loading investigation…';$('archive-summary').textContent='';$('archive-export').removeAttribute('href');if(!$('archive-dialog').open)$('archive-dialog').showModal();
+ if(archiveBusy)return;archiveBusy=true;archiveId=id;archiveCursor=null;$('archive-citation').replaceChildren();$('archive-citation').hidden=true;$('archive-report').replaceChildren();$('archive-evidence').replaceChildren();$('archive-notes').replaceChildren();$('archive-warning').hidden=true;$('archive-more').disabled=true;$('archive-title').textContent='Loading investigation…';$('archive-summary').textContent='';$('archive-export').removeAttribute('href');if(!$('archive-dialog').open)$('archive-dialog').showModal();
  try{const detail=await request('investigations/'+encodeURIComponent(id));const s=detail.session;$('archive-title').textContent=label(s.mode)+' investigation';$('archive-summary').textContent=`${new Date(s.started_at*1000).toLocaleString()} · ${label(s.outcome||s.status)} · ${detail.evidence_summary.count} retained observations`;
  $('archive-export').href='/api/export?session_id='+encodeURIComponent(id);
  const warning=detail.missing_citations.length?`${detail.missing_citations.length} cited observations have expired. They cannot be verified from this archive.`:detail.evidence_summary.count===0?'Detailed observations have expired or none were recorded. The summary remains available.':'';$('archive-warning').textContent=warning;$('archive-warning').hidden=!warning;
  $('archive-notes').innerHTML=(s.notes||[]).map(n=>`<div class="saved-note"><strong>Investigator note</strong><p>${esc(n.explanation)}</p><small>Uncertainty: ${esc(n.uncertainty||'Not recorded')}</small><div>Citations: ${archiveCitations(n.evidence_ids)}</div></div>`).join('')+
  (s.help||[]).map(h=>`<div class="saved-note"><strong>${esc(AegisView.helpLabel(h.level))}</strong><small>${new Date(h.at*1000).toLocaleString()}</small><p>${esc(h.message)}</p><div>Supporting observations: ${archiveCitations(h.evidence_ids)}</div></div>`).join('')+
- (s.recovery_attempts||[]).map(a=>`<div class="saved-note"><strong>Start ${esc(a.node)} · ${esc(label(a.status))}</strong><small>${new Date(a.at*1000).toLocaleString()}</small><p>${esc(a.detail||'Control result recorded. See investigation verification for measured recovery.')}</p></div>`).join('')+
+ (s.recovery_attempts||[]).map(a=>`<div class="saved-note"><strong>${esc(AegisView.remedyLabel(a.verb||'start'))} · ${esc(a.node)} · ${esc(label(a.status))}</strong><small>${new Date(a.at*1000).toLocaleString()}</small><p>${esc(a.detail||'Control result recorded. See investigation verification for measured recovery.')}</p></div>`).join('')+
  (s.recovery_evidence_ids?.length?`<div class="saved-note"><strong>Verified recovery observations</strong><p>Three consecutive healthy cycles, covering both nodes and the business request path.</p>${archiveCitations(s.recovery_evidence_ids)}</div>`:'')+
  (s.reset_evidence_ids?.length?`<div class="saved-note"><strong>Reset baseline observations</strong><p>Healthy checks after reset are recorded separately from targeted recovery.</p>${archiveCitations(s.reset_evidence_ids)}</div>`:'')+
  (s.debrief?`<p class="panel-description">${esc(s.debrief)}</p>`:'');
  $('archive-notes').querySelectorAll('[data-citation]').forEach(button=>button.addEventListener('click',()=>openCitation(button.dataset.citation,button)));
+ const timeline=await request('investigations/'+encodeURIComponent(id)+'/timeline');
+ if(archiveId===id)AegisReport.render($('archive-report'),detail,timeline);
  await archivePage();
  }catch(e){$('archive-title').textContent='Archive unavailable';$('archive-summary').textContent=e.message;}finally{archiveBusy=false;}
 }

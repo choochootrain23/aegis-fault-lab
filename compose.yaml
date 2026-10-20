@@ -19,12 +19,12 @@ services:
   catalog-b:
     <<: *common
     command: [uvicorn, aegis.fleet:app, --host, 0.0.0.0, --port, '8000', --no-access-log]
-    environment: {AEGIS_ROLE: catalog}
+    environment: {AEGIS_ROLE: catalog, AEGIS_FLEET_TOKEN: '${AEGIS_FLEET_TOKEN:?Run scripts/init_env.py first}'}
     networks: [fleet]
   gateway-a:
     <<: *common
     command: [uvicorn, aegis.fleet:app, --host, 0.0.0.0, --port, '8000', --no-access-log]
-    environment: {AEGIS_ROLE: gateway, AEGIS_UPSTREAM: 'http://catalog-b:8000'}
+    environment: {AEGIS_ROLE: gateway, AEGIS_UPSTREAM: 'http://catalog-b:8000', AEGIS_FLEET_TOKEN: '${AEGIS_FLEET_TOKEN:?Run scripts/init_env.py first}'}
     networks: [fleet]
   broker:
     <<: *common
@@ -47,6 +47,7 @@ services:
     environment:
       AEGIS_BROKER_TOKEN: ${AEGIS_BROKER_TOKEN:?Run scripts/init_env.py first}
       AEGIS_STATE: /state/lab.sqlite
+      AEGIS_FLEET_TOKEN: ${AEGIS_FLEET_TOKEN:?Run scripts/init_env.py first}
     volumes: [state:/state]
     networks: [fleet, control, operator]
 networks:

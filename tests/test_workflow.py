@@ -14,27 +14,57 @@ class Fleet:
     """Test double only; never wired into the application runtime."""
     def __init__(self):
         self.running = {'gateway-a': True, 'catalog-b': True}
+        self.busy = {'gateway-a': False, 'catalog-b': False}
+        self.full = {'gateway-a': False, 'catalog-b': False}
         self.mutations = []
         self.broker_available = True
+
+    def broker(self, op):
+        node, verb = op['target'], op['verb']
+        changed = False
+        if verb not in ('inspect', 'resources'):
+            if op['generation'] != node + '-generation':
+                return httpx.Response(409)
+            changed = self.running[node] != (verb == 'start')
+            self.running[node] = verb == 'start'
+            if changed:
+                self.mutations.append((node, verb))
+        return httpx.Response(200, json={'target': node, 'generation': node + '-generation', 'running': self.running[node],
+                                         'status': 'running' if self.running[node] else 'exited', 'exit_code': 0, 'changed': changed,
+                                         **({'cpu_limit': 0.25, 'cpu_pct_of_limit': 100.0 if self.busy[node] else 4.0} if verb == 'resources' else {})})
 
     def handle(self, request):
         if request.url.host == 'broker':
             if not self.broker_available:
                 return httpx.Response(503)
-            op = json.loads(request.content)
-            node = op['target']
-            if op['verb'] != 'inspect':
-                if op['generation'] != node + '-generation':
-                    return httpx.Response(409)
-                self.running[node] = op['verb'] == 'start'
-                self.mutations.append((node, op['verb']))
-            return httpx.Response(200, json={'target': node, 'generation': node + '-generation', 'running': self.running[node],
-                                          'status': 'running' if self.running[node] else 'exited', 'exit_code': 0})
-        node = request.url.host
+            return self.broker(json.loads(request.content))
+        node, path = request.url.host, request.url.path
         if not self.running[node]:
             raise httpx.ConnectError('Process stopped', request=request)
-        ok = request.url.path == '/live' or node == 'catalog-b' or self.running['catalog-b']
-        return httpx.Response(200 if ok else 503, json={'ok': ok, 'dependency': 'catalog-b'})
+        if path.startswith('/maintenance/'):
+            if request.headers.get('x-aegis-fleet-token') != 'fleet-token':
+                return httpx.Response(403)
+            verb = path.rsplit('/', 1)[1]
+            state = self.full if verb in ('fill', 'clear') else self.busy
+            changed = state[node] != (verb in ('fill', 'burn'))
+            state[node] = verb in ('fill', 'burn')
+            if changed:
+                self.mutations.append((node, path.rsplit('/', 1)[1]))
+            return httpx.Response(200, json={'changed': changed})
+        if path == '/diagnostics/disk':
+            return httpx.Response(200, json={'free_bytes': 0 if self.full[node] else 8_000_000, 'largest': []})
+        slow = self.busy[node] or (node == 'gateway-a' and path == '/summary' and self.busy['catalog-b'])
+        if slow and path in ('/live', '/summary'):
+            time.sleep(0.06)  # above the test SLOW_MS
+        if path == '/live':
+            return httpx.Response(200, json={'live': True})
+        if self.full[node]:
+            return httpx.Response(507, json={'ok': False, 'errno': 'ENOSPC'})
+        if node == 'gateway-a' and not self.running['catalog-b']:
+            return httpx.Response(503, json={'ok': False, 'dependency': 'catalog-b'})
+        if node == 'gateway-a' and self.full['catalog-b']:
+            return httpx.Response(503, json={'ok': False, 'upstream_status': 507})
+        return httpx.Response(200, json={'ok': True, 'dependency': 'catalog-b'})
 
 
 def run(coro):
@@ -42,7 +72,9 @@ def run(coro):
 
 
 @pytest.fixture
-def lab(tmp_path):
+def lab(tmp_path, monkeypatch):
+    monkeypatch.setenv('AEGIS_FLEET_TOKEN', 'fleet-token')
+    monkeypatch.setattr('aegis.controller.SLOW_MS', 40)
     fleet = Fleet()
     store = Store(tmp_path / 'lab.sqlite')
     client = httpx.AsyncClient(transport=httpx.MockTransport(fleet.handle))
@@ -337,4 +369,119 @@ def test_future_measurement_is_not_fresh(lab):
         for item in controller.latest.values():
             item['at'] += 60
         assert all(n['health'] == 'unknown' for n in controller.state()['nodes'])
+    run(scenario())
+
+
+async def investigate(controller):
+    for _ in range(3):
+        await controller.cycle()
+    assert controller.session['status'] == 'investigating'
+    return {n['id']: n['health'] for n in controller.state()['nodes']}
+
+
+async def verify(controller, key, node, verb):
+    result = await controller.mutate(key, node, verb)
+    controller.session['recovery_attempts'].append({'key': key, 'at': time.time(), **result})
+    controller.session['status'] = 'verifying'
+    controller.successes = 0
+    for _ in range(3):
+        await controller.cycle()
+    return result
+
+
+def test_cpu_starvation_is_slow_not_down_and_restore_recovers(lab):
+    async def scenario():
+        controller, fleet = lab
+        await baseline(controller)
+        await controller.start(Start(mode='practice', kind='cpu-starvation', key='start-cpu'))
+        assert fleet.busy['catalog-b'] and fleet.running['catalog-b']
+        assert await investigate(controller) == {'gateway-a': 'degraded', 'catalog-b': 'degraded'}
+        assert controller.latest[('catalog-b', 'liveness')]['body']['slow']
+        evidence = await controller.check('catalog-b', 'resources')
+        assert evidence['body']['cpu_pct_of_limit'] == 100.0
+        wrong = await controller.mutate('wrong-cpu', 'catalog-b', 'start')
+        assert wrong['status'] == 'unchanged' and 'nothing changed' in wrong['detail']
+        await verify(controller, 'calm-cpu', 'catalog-b', 'calm')
+        assert controller.session['status'] == 'recovered'
+        assert 'runaway background job' in controller.public_session(controller.session | {'revealed': True}).get('debrief', '')
+    run(scenario())
+
+
+def test_disk_full_fails_writes_and_clear_recovers(lab):
+    async def scenario():
+        controller, fleet = lab
+        await baseline(controller)
+        await controller.start(Start(mode='practice', kind='disk-full', target='gateway-a', key='start-disk'))
+        assert fleet.full['gateway-a']
+        assert await investigate(controller) == {'gateway-a': 'degraded', 'catalog-b': 'healthy'}
+        assert controller.latest[('gateway-a', 'business')]['body']['http_status'] == 507
+        disk = await controller.check('gateway-a', 'disk')
+        assert disk['body']['result']['free_bytes'] == 0
+        assert (await controller.mutate('wrong-clear', 'catalog-b', 'clear'))['status'] == 'unchanged'
+        await verify(controller, 'clear-disk', 'gateway-a', 'clear')
+        assert controller.session['status'] == 'recovered'
+    run(scenario())
+
+
+def test_reset_reverses_non_stop_faults(lab):
+    async def scenario():
+        controller, fleet = lab
+        await baseline(controller)
+        await controller.start(Start(mode='practice', kind='disk-full', key='start-disk-reset'))
+        await controller.reset_locked('reset-disk')
+        assert not fleet.full['catalog-b']
+        assert [r['verb'] for r in controller.session['reset']['results']] == ['start', 'start', 'clear']
+        for _ in range(3):
+            await controller.cycle()
+        assert controller.session['status'] == 'ended' and controller.session['outcome'] == 'reset'
+    run(scenario())
+
+
+def test_challenge_hides_fault_kind_and_target(lab):
+    async def scenario():
+        controller, _ = lab
+        seen = set()
+        for attempt in range(30):
+            await baseline(controller)
+            await controller.start(Start(mode='challenge', key=f'challenge-kind-{attempt:03d}'))
+            public = controller.state()
+            assert 'scenario' not in public['session'] and 'fault_kind' not in json.dumps(public)
+            seen.add(controller.session['fault_kind'])
+            await controller.reset_locked(f'reset-kind-{attempt:03d}')
+            for _ in range(3):
+                await controller.cycle()
+            if len(seen) == 3:
+                break
+        assert seen == {'service-unavailable', 'cpu-starvation', 'disk-full'}
+    run(scenario())
+
+
+def test_report_counts_without_scoring(lab):
+    async def scenario():
+        controller, _ = lab
+        await baseline(controller)
+        await controller.start(Start(mode='practice', key='start-report'))
+        await investigate(controller)
+        await controller.check('catalog-b', 'service')
+        unchanged = await controller.mutate('ineffective', 'gateway-a', 'start')
+        controller.session['recovery_attempts'].append({'key': 'ineffective', 'at': time.time(), **unchanged})
+        await verify(controller, 'effective', 'catalog-b', 'start')
+        report = controller.report(controller.session)
+        assert report['operator_checks'] == 1 and report['checks_by_kind'] == {'service': 1}
+        assert report['ineffective_attempts'] == 1 and report['effective_actions'] == 1
+        assert report['detected_after_s'] is not None and report['verified_after_s'] is not None
+        assert 'score' not in report
+        timeline = controller.timeline(controller.session['id'])
+        assert timeline['points'] and any(e['label'] == 'Recovery verified' for e in timeline['events'])
+    run(scenario())
+
+
+def test_disk_scenario_requires_fleet_token(lab):
+    async def scenario():
+        controller, fleet = lab
+        controller.fleet_token = ''
+        await baseline(controller)
+        with pytest.raises(HTTPException) as exc:
+            await controller.start(Start(mode='practice', kind='disk-full', key='start-no-token'))
+        assert exc.value.status_code == 409 and not fleet.mutations
     run(scenario())

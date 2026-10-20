@@ -19,12 +19,34 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
 from aegis.store import Store
-from aegis.guidance import explain
+from aegis.guidance import explain, SLOW_MS
 from aegis.ownership import controller_ownership
 
 NODES = {'gateway-a': 'http://gateway-a:8000', 'catalog-b': 'http://catalog-b:8000'}
-CHECKS = {'liveness': '/live', 'readiness': '/ready', 'business': '/summary', 'logs': '/diagnostics/logs'}
+CHECKS = {'liveness': '/live', 'readiness': '/ready', 'business': '/summary', 'logs': '/diagnostics/logs', 'disk': '/diagnostics/disk'}
+BROKER_CHECKS = {'service': 'inspect', 'resources': 'resources'}
 TERMINAL = {'ended'}
+# Each fault kind: the injection verb and the remedy that reverses it.
+FAULTS = {'service-unavailable': ('stop', 'start'), 'cpu-starvation': ('burn', 'calm'), 'disk-full': ('fill', 'clear')}
+REMEDIES = {remedy for _, remedy in FAULTS.values()}
+NODE_VERBS = {'fill', 'clear', 'burn', 'calm'}  # applied through the service's token-protected maintenance endpoint
+UNCHANGED = {'start': 'Already running; nothing changed', 'stop': 'Already stopped; nothing changed',
+             'calm': 'No background job running; nothing changed', 'burn': 'A background job was already running; nothing changed',
+             'clear': 'No filler file present; nothing changed', 'fill': 'Nothing changed'}
+DEBRIEFS = {
+    'service-unavailable': 'The scenario requested stopping {target}. When that succeeds, its container state reads stopped and its own probes fail. When the catalogue stops, the gateway stays live but its business requests fail, so the failure spreads; when the gateway stops, the catalogue stays healthy, so it does not. Starting the stopped service restores the request path.',
+    'cpu-starvation': 'The scenario requested a runaway background job inside {target}. When that succeeds, the service keeps running and answering, but slowly: the job uses the container\'s whole 0.25-CPU limit, the kernel throttles it, and requests queue behind it, crossing the {slow} ms threshold. Its log records the job starting. A slow catalogue makes the gateway slow, and sometimes time out, too. Stopping the job returns normal latency.',
+    'disk-full': 'The scenario requested filling {target}\'s 8 MiB /tmp with one large file. When that succeeds, the process stays live, but every business request must write a small receipt, so writes fail with ENOSPC (HTTP 507). A full catalogue fails the gateway\'s requests too; a full gateway fails only its own. Disk usage shows 100% and the filler as the largest file. Clearing it restores writes.',
+}
+
+
+def debrief(s):
+    text = DEBRIEFS[s.get('fault_kind', 'service-unavailable')].format(target=s['fault_target'], slow=SLOW_MS)
+    return (text + ' Injection outcome: ' + s.get('fault_action', {}).get('status', 'not recorded') + '. The action record explains the exercise but was not evidence available during the investigation. Other evidence-supported investigation orders are valid.')
+
+
+FaultKind = Literal['service-unavailable', 'cpu-starvation', 'disk-full']
+NodeName = Literal['gateway-a', 'catalog-b']
 
 
 class Input(BaseModel):
@@ -33,13 +55,14 @@ class Input(BaseModel):
 
 class Start(Input):
     mode: Literal['practice', 'challenge']
-    target: Literal['gateway-a', 'catalog-b'] = 'catalog-b'
+    target: NodeName = 'catalog-b'
+    kind: FaultKind = 'service-unavailable'
     key: str = Field(min_length=8, max_length=80)
 
 
 class Check(Input):
-    node: Literal['gateway-a', 'catalog-b']
-    kind: Literal['liveness', 'readiness', 'business', 'logs', 'service']
+    node: NodeName
+    kind: Literal['liveness', 'readiness', 'business', 'logs', 'service', 'resources', 'disk']
 
 
 class SessionInput(Input):
@@ -47,8 +70,12 @@ class SessionInput(Input):
 
 
 class Action(SessionInput):
-    node: Literal['gateway-a', 'catalog-b'] = 'catalog-b'
+    node: NodeName = 'catalog-b'
     key: str = Field(min_length=8, max_length=80)
+
+
+class Recover(Action):
+    verb: Literal['start', 'calm', 'clear'] = 'start'
 
 
 class Note(SessionInput):
@@ -66,6 +93,7 @@ class Lab:
         self.store, self.client = store, client
         self.nodes = nodes or NODES
         self.token = os.getenv('AEGIS_BROKER_TOKEN', '')
+        self.fleet_token = os.getenv('AEGIS_FLEET_TOKEN', '')
         self.broker_url = os.getenv('AEGIS_BROKER_URL', 'http://broker:8000')
         self.resource_check = resource_check
         self.lock = asyncio.Lock()
@@ -83,7 +111,7 @@ class Lab:
             reset_prefix = self.session.get('reset_key', '')
             for action in store.actions(self.session['id']):
                 body = action['body']
-                if body.get('verb') == 'start' and body.get('status') in ('unknown', 'succeeded') and action['key'] not in existing and not (reset_prefix and action['key'].startswith(reset_prefix + '-')):
+                if body.get('verb') in REMEDIES and body.get('status') in ('unknown', 'succeeded') and action['key'] not in existing and not (reset_prefix and action['key'].startswith(reset_prefix + '-')):
                     self.session['recovery_attempts'].append({'key': action['key'], 'at': action['at'], **body})
                     if self.session['status'] in ('observing', 'investigating'):
                         self.session['status'] = 'verifying'
@@ -91,7 +119,7 @@ class Lab:
             if injection and 'fault_action' not in self.session:
                 self.session['fault_action'] = injection['body']
             self.session['verification'] = 'Awaiting fresh checks after controller restart'
-            if self.session['status'] == 'resetting' and len(self.session.get('reset', {}).get('results', [])) < len(self.nodes):
+            if self.session['status'] == 'resetting' and len(self.session.get('reset', {}).get('results', [])) < len(self.reset_plan(self.session)):
                 self.session['verification'] = 'Reset was interrupted. Inspect current state or retry reset; no action was replayed.'
             store.save(self.session)
 
@@ -119,10 +147,11 @@ class Lab:
             self.persistence_budget()
         started = time.monotonic()
         try:
-            if kind == 'service':
-                body = {'ok': True, **await self.broker(node, 'inspect')}
+            if kind in BROKER_CHECKS:
+                body = {'ok': True, **await self.broker(node, BROKER_CHECKS[kind])}
+                body.pop('changed', None)
             else:
-                async with self.client.stream('GET', self.nodes[node] + CHECKS[kind], timeout=1.5) as response:
+                async with self.client.stream('GET', self.nodes[node] + CHECKS[kind], timeout=3) as response:
                     raw = bytearray()
                     async for chunk in response.aiter_bytes():
                         raw.extend(chunk)
@@ -130,11 +159,13 @@ class Lab:
                             raise ValueError('Response exceeds evidence limit')
                     body = {'ok': response.is_success, 'http_status': response.status_code, 'result': json.loads(raw)}
             body['duration_ms'] = round((time.monotonic() - started) * 1000, 1)
+            if body['ok'] and kind in ('liveness', 'readiness', 'business') and body['duration_ms'] > SLOW_MS:
+                body['slow'] = True
         except (httpx.HTTPError, ValueError, HTTPException) as error:
             body = {'ok': False, 'error': type(error).__name__, 'detail': 'Check unavailable or failed',
                     'duration_ms': round((time.monotonic() - started) * 1000, 1)}
         body['origin'] = origin
-        if kind == 'service' and body.get('generation'):
+        if kind in BROKER_CHECKS and body.get('generation'):
             body['generation_scope'] = 'container'
         elif isinstance(body.get('result'), dict) and body['result'].get('generation'):
             body['process_generation'] = body['result']['generation']
@@ -154,7 +185,7 @@ class Lab:
         async with self.lock:
             self.persistence_budget()
             results = await asyncio.gather(*(self.check(n, k, origin='collector') for n in self.nodes for k in ('liveness', 'business')))
-            good = all(e['body']['ok'] for e in results)
+            good = all(e['body']['ok'] and not e['body'].get('slow') for e in results)
             self.baseline = self.baseline + 1 if good else 0
             self.successes = self.successes + 1 if good else 0
             if self.successes <= 1:
@@ -169,6 +200,7 @@ class Lab:
                 return
             if self.failures >= 3 and s['status'] == 'observing':
                 s['status'] = 'investigating'
+                s['detected_at'] = time.time()
                 s['verification'] = 'Repeated failures observed; investigate the evidence'
             if s['status'] in ('verifying', 'resetting') and self.successes >= 3:
                 if s['status'] == 'resetting':
@@ -199,8 +231,16 @@ class Lab:
         if s['mode'] == 'practice' or s.get('revealed') or s['status'] == 'ended':
             result['scenario'] = {'kind': s['fault_kind'], 'target': s['fault_target']}
             if s.get('revealed') or s['status'] == 'ended':
-                result['debrief'] = ('The scenario requested stopping ' + s['fault_target'] + '. Control outcome: ' + s.get('fault_action', {}).get('status', 'not recorded') + '. Compare its service state and failed probes with the other node: a live gateway can still fail business requests when its catalogue is unavailable. Starting the stopped service should restore the request path. The action record explains the exercise, but was not evidence available during investigation. Other evidence-supported investigation orders are valid.')
+                result['debrief'] = debrief(s)
         return result
+
+    def reset_plan(self, session):
+        """Reset starts every node, then reverses a non-stop fault on its target."""
+        plan = [(node, 'start') for node in self.nodes]
+        remedy = FAULTS[session.get('fault_kind', 'service-unavailable')][1]
+        if remedy != 'start':
+            plan.append((session['fault_target'], remedy))
+        return plan
 
     def state(self):
         now = time.time()
@@ -209,7 +249,9 @@ class Lab:
             live = self.latest.get((node, 'liveness'))
             business = self.latest.get((node, 'business'))
             fresh = live and business and all(0 <= now - e['at'] < 6 for e in (live, business))
-            health = 'unknown' if not fresh else ('healthy' if business['body']['ok'] and live['body']['ok'] else ('degraded' if live['body']['ok'] else 'unavailable'))
+            fast = fresh and not live['body'].get('slow') and not business['body'].get('slow')
+            health = 'unknown' if not fresh else ('unavailable' if not live['body']['ok'] else
+                                                  'healthy' if business['body']['ok'] and fast else 'degraded')
             nodes.append({'id': node, 'role': 'gateway' if node == 'gateway-a' else 'catalogue', 'health': health,
                           'live': live, 'business': business})
         return {'nodes': nodes, 'session': self.public_session(), 'baseline_cycles': self.baseline, 'healthy_streak': self.successes,
@@ -234,7 +276,42 @@ class Lab:
         citations = self.citations(session)
         present = {e['id'] for e in self.store.evidence_by_ids(session_id, citations)}
         return {'session': public, 'evidence_summary': self.store.evidence_summary(session_id),
-                'missing_citations': [eid for eid in citations if eid not in present]}
+                'missing_citations': [eid for eid in citations if eid not in present], 'report': self.report(session)}
+
+    def report(self, s):
+        """Debrief facts, kept as separate measures rather than a score."""
+        operator = self.store.operator_checks(s['id'])
+        since = lambda at: round(at - s['started_at'], 1) if at else None
+        first_remedy = next((a for a in s.get('recovery_attempts', []) if a.get('status') == 'succeeded'), None)
+        effective = [a for a in s.get('recovery_attempts', []) if a.get('status') == 'succeeded']
+        return {'detected_after_s': since(s.get('detected_at')), 'first_check_after_s': since(operator[0]['at']) if operator else None,
+                'operator_checks': len(operator), 'checks_by_kind': {k: sum(1 for e in operator if e['kind'] == k) for k in sorted({e['kind'] for e in operator})},
+                'help_requests': len(s.get('help', [])), 'notes': len(s.get('notes', [])),
+                'recovery_attempts': len(s.get('recovery_attempts', [])),
+                'ineffective_attempts': sum(1 for a in s.get('recovery_attempts', []) if a.get('status') != 'succeeded'),
+                'first_effective_action_after_s': since(first_remedy['at']) if first_remedy else None,
+                'effective_actions': len(effective),
+                'verified_after_s': since(s.get('recovery_verified_at')), 'revealed': bool(s.get('revealed')), 'outcome': s.get('outcome')}
+
+    def timeline(self, session_id):
+        s = self.store.session(session_id)
+        if not s:
+            raise HTTPException(404, 'Investigation not found or summary retention expired')
+        points = [{'at': e['at'], 'node': e['node'], 'kind': e['kind'], 'ok': e['body'].get('ok'), 'slow': bool(e['body'].get('slow')),
+                   'ms': e['body'].get('duration_ms'), 'origin': e['body'].get('origin')}
+                  for e in self.store.evidence_series(session_id, ('liveness', 'business'), 1500)]
+        events = [{'at': s['started_at'], 'label': 'Investigation started'}]
+        if s.get('detected_at'):
+            events.append({'at': s['detected_at'], 'label': 'Failures detected'})
+        events += [{'at': h['at'], 'label': 'Help: ' + h['level']} for h in s.get('help', [])]
+        events += [{'at': a['at'], 'label': f"{a.get('verb', 'start')} {a['node']}: {a['status']}"} for a in s.get('recovery_attempts', [])]
+        if s.get('recovery_verified_at'):
+            events.append({'at': s['recovery_verified_at'], 'label': 'Recovery verified'})
+        if s.get('reset'):
+            events.append({'at': s['reset']['at'], 'label': 'Automatic reset' if s['reset'].get('automatic') else 'Reset requested'})
+        if s.get('ended_at'):
+            events.append({'at': s['ended_at'], 'label': 'Baseline verified, ended'})
+        return {'session_id': session_id, 'slow_ms': SLOW_MS, 'points': points, 'events': sorted(events, key=lambda e: e['at'])}
 
     @staticmethod
     def citations(session):
@@ -243,6 +320,14 @@ class Lab:
         ids.extend(session.get('recovery_evidence_ids', []))
         ids.extend(session.get('reset_evidence_ids', []))
         return list(dict.fromkeys(ids))
+
+    async def maintenance(self, node, verb):
+        try:
+            response = await self.client.post(self.nodes[node] + '/maintenance/' + verb, headers={'X-Aegis-Fleet-Token': self.fleet_token}, timeout=10)
+            response.raise_for_status()
+            return response.json()
+        except (httpx.HTTPError, ValueError) as error:
+            raise HTTPException(503, 'Service maintenance endpoint unavailable or rejected the operation. No success assumed.') from error
 
     async def mutate(self, key, node, verb):
         self.persistence_budget()
@@ -255,18 +340,25 @@ class Lab:
         sid = self.session['id'] if self.session else None
         self.store.save_action(key, sid, request, {'status': 'running', 'node': node, 'verb': verb})
         try:
-            target = await self.broker(node, 'inspect')
-            result = await self.broker(node, verb, target['generation'])
-            body = {'status': 'succeeded', 'node': node, 'verb': verb, 'result': result}
+            if verb in NODE_VERBS:
+                result = await self.maintenance(node, verb)
+            else:
+                target = await self.broker(node, 'inspect')
+                result = await self.broker(node, verb, target['generation'])
+            # An operation that found nothing to change is recorded honestly rather than as a success.
+            status = 'unchanged' if result.get('changed') is False else 'succeeded'
+            body = {'status': status, 'node': node, 'verb': verb, 'result': result}
+            if status == 'unchanged':
+                body['detail'] = UNCHANGED[verb]
         except HTTPException:
-            body = {'status': 'unknown', 'node': node, 'verb': verb, 'detail': 'Inspect actual state before retrying; broker did not confirm completion'}
+            body = {'status': 'unknown', 'node': node, 'verb': verb, 'detail': 'Inspect actual state before retrying; completion was not confirmed'}
         self.store.save_action(key, sid, request, body)
         return body
 
     async def start(self, data):
         async with self.lock:
             if self.session and self.session.get('start_key') == data.key:
-                if self.session['mode'] != data.mode or (data.mode == 'practice' and self.session['fault_target'] != data.target):
+                if self.session['mode'] != data.mode or (data.mode == 'practice' and (self.session['fault_target'], self.session['fault_kind']) != (data.target, data.kind)):
                     raise HTTPException(409, 'Start key reused for a different investigation')
                 return self.public_session()
             if self.store.action(data.key):
@@ -276,7 +368,10 @@ class Lab:
             if self.baseline < 5 or not self.last_cycle or time.time() - self.last_cycle > 6:
                 raise HTTPException(409, 'Five fresh healthy baseline cycles required')
             self.admission()
+            if not self.fleet_token and (data.mode == 'challenge' or data.kind == 'disk-full'):
+                raise HTTPException(409, 'The disk scenario needs AEGIS_FLEET_TOKEN. Run scripts/init_env.py, then docker compose up -d.')
             target = secrets.choice(list(self.nodes)) if data.mode == 'challenge' else data.target
+            kind = secrets.choice(list(FAULTS)) if data.mode == 'challenge' else data.kind
             # Resolve both targets before recording an active scenario or changing anything.
             for node in self.nodes:
                 inspected = await self.broker(node, 'inspect')
@@ -284,11 +379,11 @@ class Lab:
                     self.baseline = 0
                     raise HTTPException(409, 'Fleet state changed since baseline; inspect and restore it before injection')
             self.session = {'id': uuid.uuid4().hex, 'mode': data.mode, 'status': 'observing', 'started_at': time.time(),
-                            'deadline': time.time() + 900, 'fault_target': target, 'fault_kind': 'service-unavailable',
+                            'deadline': time.time() + 900, 'fault_target': target, 'fault_kind': kind,
                             'revealed': False, 'help': [], 'notes': [], 'recovery_attempts': [], 'start_key': data.key,
                             'verification': 'Collecting measured effects', 'outcome': None}
             self.store.save(self.session)
-            result = await self.mutate(data.key, target, 'stop')
+            result = await self.mutate(data.key, target, FAULTS[kind][0])
             self.session['fault_action'] = result
             if result['status'] != 'succeeded':
                 self.session['status'] = 'investigating'
@@ -301,14 +396,15 @@ class Lab:
         s = self.session
         if not s:
             raise HTTPException(409, 'No investigation to reset')
-        if s.get('reset_key') == key and len(s.get('reset', {}).get('results', [])) == len(self.nodes):
+        plan = self.reset_plan(s)
+        if s.get('reset_key') == key and len(s.get('reset', {}).get('results', [])) == len(plan):
             return self.public_session()
         if s.get('reset_key') != key:
             s['reset'] = {'automatic': automatic, 'at': time.time(), 'results': []}
         s['reset_key'] = key
         s['status'] = 'resetting'
         self.store.save(s)
-        results = [await self.mutate(key + '-' + node, node, 'start') for node in self.nodes]
+        results = [await self.mutate(key + '-' + node + ('' if verb == 'start' else '-' + verb), node, verb) for node, verb in plan]
         s['status'] = 'resetting'
         s.setdefault('reset', {'automatic': automatic, 'at': time.time()})['results'] = results
         s['verification'] = 'Reset requested; waiting for three fresh healthy cycles'
@@ -403,7 +499,7 @@ def active(session_id):
 
 
 @app.post('/api/recover')
-async def recover(data: Action):
+async def recover(data: Recover):
     lab = app.state.lab
     async with lab.lock:
         active(data.session_id)
@@ -411,7 +507,7 @@ async def recover(data: Action):
             raise HTTPException(409, 'Reset is in progress. Wait for verification or retry reset.')
         if len(lab.session['recovery_attempts']) >= 100 and not any(a['key'] == data.key for a in lab.session['recovery_attempts']):
             raise HTTPException(409, 'Recovery-attempt limit reached; reset and begin a new investigation')
-        result = await lab.mutate(data.key, data.node, 'start')
+        result = await lab.mutate(data.key, data.node, data.verb)
         if not any(a['key'] == data.key for a in lab.session['recovery_attempts']):
             lab.session['recovery_attempts'].append({'key': data.key, 'at': time.time(), **result})
             lab.session['status'] = 'verifying'
@@ -491,6 +587,11 @@ async def help_request(data: Help):
 @app.get('/api/investigations/{session_id}')
 async def investigation(session_id: str):
     return app.state.lab.session_detail(session_id)
+
+
+@app.get('/api/investigations/{session_id}/timeline')
+async def investigation_timeline(session_id: str):
+    return app.state.lab.timeline(session_id)
 
 
 @app.get('/api/investigations/{session_id}/evidence')

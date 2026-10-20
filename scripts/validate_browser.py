@@ -8,6 +8,7 @@ import uuid
 
 from playwright.sync_api import sync_playwright, expect
 from validate_f1 import Operator, BASE
+from validate_scenarios import anomalies, REMEDY
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -46,7 +47,7 @@ def main():
                 expect(page.locator('#scenario-reveal')).to_be_empty()
                 for public in (operator.request('/api/state')['session'],
                                operator.request('/api/export?session_id='+sid)['session']):
-                    assert not any(key in public for key in ('scenario', 'fault_target', 'fault_action', 'debrief'))
+                    assert not any(key in public for key in ('scenario', 'fault_target', 'fault_kind', 'fault_action', 'debrief'))
                 page.screenshot(path=str(output/'challenge.png'), full_page=True)
                 before = operator.request('/api/state')['session']
                 subprocess.run(['docker', 'compose', 'restart', 'controller'], cwd=ROOT,
@@ -63,14 +64,14 @@ def main():
                 assert current['id'] == sid
                 assert current['recovery_attempts'] == before['recovery_attempts']
                 operator.wait(lambda s:all(n['health'] != 'unknown' for n in s['nodes']), 'fresh restart measurements', sid=sid)
-                # Determine the target from fresh permitted inspection, never from the fault ledger.
-                observations = [operator.request('/api/check', {'node':node, 'kind':'service'})
-                                for node in ('gateway-a','catalog-b')]
-                stopped = [e['node'] for e in observations if e['body'].get('ok') and e['body'].get('running') is False]
-                assert len(stopped) == 1
-                expect(page.locator('#recover')).to_be_enabled(timeout=15000)
-                page.locator('#node-'+stopped[0]).click()
-                page.locator('#recover').click()
+                # Determine the fault from fresh permitted inspections, never from the fault ledger.
+                found, _ = anomalies(operator)
+                assert len(found) == 1, found
+                kind, target, _ = found[0]
+                remedy = page.locator(f'[data-remedy="{REMEDY[kind]}"]')
+                expect(remedy).to_be_enabled(timeout=15000)
+                page.locator('#node-'+target).click()
+                remedy.click()
                 expect(page.locator('#session-status')).to_have_text('recovered', timeout=25000)
                 page.locator('#reset').click()
                 expect(page.locator('#session-status')).to_have_text('ended', timeout=25000)
@@ -79,7 +80,7 @@ def main():
                 assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
                 assert not errors, errors
                 report.update(passed=True, page_errors=errors, restart_preserved_session=True,
-                              recovered_node=stopped[0])
+                              recovered_node=target, fault_kind=kind)
             finally:
                 browser.close()
     except Exception as error:

@@ -6,7 +6,7 @@ A hands-on lab for practising Linux service troubleshooting. Two small web servi
 > - **[Browser simulator](https://choochootrain23.github.io/aegis-fault-lab/)**: a quick look in any browser. Nothing is installed and **nothing in it is real**: services and measurements are generated in your tab.
 > - **Full lab (below)**: the real thing on your own machine, with real containers, real failures and measured evidence. About 10 minutes to set up.
 
-**Status:** working milestone, not a finished portfolio. One fault scenario (a stopped service) is implemented and validated on real Docker; more scenarios and an AI assistant are planned. See [current limitations](#current-limitations-and-next-gates).
+**Status:** working milestone, not a finished portfolio. Three fault types (a stopped service, CPU starvation from a runaway job, and a full disk) are implemented, each on either service, and validated end to end on real Docker; a network-delay scenario and an AI assistant are planned. See [current limitations](#current-limitations-and-next-gates).
 
 ## How it works
 
@@ -22,9 +22,10 @@ flowchart LR
   end
 ```
 
-- **gateway-a** and **catalog-b** are two small Python web services. The gateway depends on the catalogue, so stopping the catalogue breaks the gateway's requests even though the gateway itself is still running.
+- **gateway-a** and **catalog-b** are two small Python web services. The gateway depends on the catalogue, so a fault in the catalogue breaks or slows the gateway's requests even though the gateway itself is still running. Every business request also writes a small receipt to the service's 8 MiB `/tmp`, so a full disk causes real write errors.
 - The **controller** serves the web page, runs health checks every two seconds, stores every observation as evidence in SQLite, and runs the investigation rules: a fault can only start from a healthy baseline, and recovery only counts after three healthy cycles in a row.
-- The **broker** is the only part that can touch Docker. It accepts just three operations (inspect, start, stop) on these two containers and checks their identity and security settings first. The web page never gets Docker access.
+- The **broker** is the only part that can touch Docker. It accepts just four fixed operations on these two containers (inspect, read resource use, start, stop) and checks their identity and security settings first. The web page never gets Docker access.
+- The CPU and disk faults are injected and cleared through small maintenance endpoints inside each service, protected by a separate token. Filling refuses to run unless `/tmp` really is a small bounded tmpfs, and never writes more than 16 MiB.
 - The fleet containers run read-only, as a non-root user, with no Linux capabilities, capped memory/CPU and no ports open to your network. The UI listens on `localhost` only.
 
 ## Try it in your browser
@@ -71,7 +72,9 @@ python3 scripts/preflight.py
 python3 scripts/init_env.py
 ```
 
-This writes a random broker password to `.env` (readable only by you). It never overwrites an existing `.env`, and `.env` is excluded from git. You only do this once.
+This writes two random credentials to `.env` (readable only by you): one for the broker and one for the services' maintenance endpoints. It never changes existing values, and `.env` is excluded from git.
+
+**Upgrading an existing install?** Run `python3 scripts/init_env.py` again (it only adds missing credentials), then `docker compose up -d --build`.
 
 ### 4. Build and start
 
@@ -95,14 +98,18 @@ The page shows **Collecting a healthy baseline** with a 0/5 meter. After about t
 
 The **Suggested next** card always shows a sensible next step, but you can explore in any order.
 
-1. Leave the mode on **Practice · known fault** and the target on **Shared dependency · catalogue**, then press **Start investigation**. The lab really stops the `catalog-b` container.
-2. Within about six seconds the topology changes: `gateway-a` turns **degraded** (alive, but its requests fail) and `catalog-b` **unavailable**.
-3. Click a node, then run checks: **Process liveness**, **Business request**, **Container state** and **Dependency logs**. Each result is stored in the **Evidence notebook**; open a record to see the raw measurement.
-4. Stuck? **A little direction?** offers an evidence explanation, a hint or one suggested action. Help is optional and recorded.
-5. Select a node and press **Start selected service**. Starting the wrong one is allowed and is recorded as an attempt. An accepted start is not proof: the lab needs **three healthy cycles in a row** before it shows **Recovery verified**.
-6. Optionally write your diagnosis, ticking the evidence that supports it, then press **End & reset** to restore both services. Past investigations stay in **Investigation history**.
+New here? Press **Take the 60-second tour** under the title for a guided look at each part of the page.
 
-**Challenge · hidden fault** stops a random service and hides which one until you reveal it or end the attempt. The 15-minute timer can be extended; if it runs out and you don't respond within 60 seconds, the lab resets itself, even with the browser closed.
+1. Leave the mode on **Practice · known fault**, the fault on **Stopped service** and the target on **Shared dependency · catalogue**, then press **Start investigation**. The lab really stops the `catalog-b` container.
+2. Within about six seconds the topology changes: `gateway-a` turns **degraded** (alive, but its requests fail) and `catalog-b` **unavailable**.
+3. Click a node, then run checks: **Process liveness**, **Business request**, **Container state**, **Resource use**, **Disk usage** and **Service logs**. Each result is stored in the **Evidence notebook**; open a record to see the raw measurement.
+4. Stuck? **A little direction?** offers an evidence explanation, a hint or one suggested action. Help is optional and recorded.
+5. Select a node and choose a recovery action: **Start service**, **Stop runaway job** or **Clear temp files**. Trying the wrong one is allowed; it reports that nothing changed and is recorded. An accepted action is not proof: the lab needs **three healthy, fast cycles in a row** before it shows **Recovery verified**.
+6. Optionally write your diagnosis, ticking the evidence that supports it, then press **End & reset** to restore both services. The **Incident report** shows how long detection, checks and recovery took, and **Replay** animates every request over time. Past investigations, each with its own replay, stay in **Investigation history**.
+
+Then try the other faults. **CPU starvation** keeps the service up but slow: compare latency and **Resource use**. **Disk full** keeps it live but failing writes with HTTP 507: compare **Disk usage**. Try each on the gateway too, and notice which faults spread to the other service.
+
+**Challenge · hidden fault** picks a random fault type and service and hides both until you reveal them or end the attempt. The 15-minute timer can be extended; if it runs out and you don't respond within 60 seconds, the lab resets itself, even with the browser closed.
 
 ## Stop, restart and uninstall
 
@@ -129,7 +136,7 @@ Then reopen the page and press **End & reset** so the lab re-verifies a healthy 
 | Symptom | What to do |
 | --- | --- |
 | `permission denied ... docker.sock` | Your user cannot use Docker yet. Follow Docker's post-installation step above, log out and in, then retry. Do not `chmod` the socket. |
-| `Run scripts/init_env.py first` | Step 3 was skipped. Run `python3 scripts/init_env.py`. |
+| `Run scripts/init_env.py first` | Step 3 was skipped, or an older `.env` lacks the newer credential. Run `python3 scripts/init_env.py`, then `docker compose up -d`. |
 | `port is already allocated` on 8787 | Something else uses port 8787. Stop it, then `docker compose up -d` again. |
 | Page says **Untrusted host** | Browse to `http://localhost:8787` (or forward the port as in step 5) rather than an IP address. |
 | Nodes stay **Unknown** | Run `docker compose ps`; all four containers should be running. `docker compose logs controller` shows errors. |
@@ -162,7 +169,13 @@ Run one controller worker per state database. A local file lock rejects competin
 
 ## Docker walkthrough (once daemon access is available)
 
-With the project running and no active investigation:
+With the project running and no active investigation, the full scenario matrix runs every fault on both services, then challenge rounds until every fault and target has appeared:
+
+```bash
+python3 scripts/validate_scenarios.py --run
+```
+
+Each round identifies the fault from evidence alone, checks guidance, confirms that wrong remedies change nothing, verifies recovery and resets. The older stopped-service walkthrough is still available:
 
 ```bash
 python3 scripts/validate_f1.py --run

@@ -1,6 +1,14 @@
 # Proposed fault catalogue
 
-Status: design specifications, not tested procedures. Only F1 is required for the first milestone. No fault is enabled before its isolation and reset checks pass.
+Status: F1, F3 and F4 are implemented and validated on real Docker (see [validation](VALIDATION.md)); F2 remains a design specification. No fault is enabled before its isolation and reset checks pass.
+
+## Implementation notes (20 October 2026)
+
+- **F1 stopped service** is implemented as specified, on either service. Starting or stopping a container already in that state now reports *unchanged* (Docker's own 304 answer) instead of an unconfirmed result.
+- **F4 CPU starvation (new)** was first designed as the broker lowering the target's CPU limit. Measured on the lab, even Docker's minimum limit (0.01 CPU) did not slow these light requests, so it would have taught nothing. The implemented fault starts a bounded runaway background job (three threads, self-stopping after 25 minutes) inside the target's own process, still capped by its 0.25-CPU limit. Measured effect on the catalogue: median latency 390–600 ms against a 5–15 ms baseline, gateway liveness unchanged at ~8 ms. Evidence: slow probes (above 300 ms), Docker stats showing CPU at the container limit with kernel throttling, and a log entry recording the job start. Remedy: stop the job. The broker gained only a read-only `resources` operation; the earlier throttle/restore idea was dropped, so no new mutation privilege was added.
+- **F3 disk full** uses each service's existing 8 MiB `/tmp` tmpfs rather than a new 32 MiB data mount. Every business request writes a new small receipt file (rotating at 40), so a full filesystem fails real writes with `ENOSPC`, surfaced as HTTP 507; reads and liveness keep working. The fill routine refuses any scratch space larger than 64 MiB and never writes more than 16 MiB. Remedy: delete only the known filler file. Restarting the container also empties the tmpfs.
+- Injection and remedy for F3/F4 go through token-protected maintenance endpoints on the internal fleet network; the token is separate from the broker credential.
+- Reset starts every service, then reverses a non-stop fault on its target. Challenge picks the fault type as well as the target, and hides both.
 
 ## Common scenario contract
 

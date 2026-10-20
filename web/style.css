@@ -415,3 +415,69 @@ dialog p{color:var(--muted)}
 #save-note:not(:disabled){background:var(--violet);border-color:var(--violet)}
 .verification-icon{color:var(--accent)}
 .topology .edge-label{top:30px;bottom:auto;left:14px;width:auto;text-align:left;font-size:10px}
+
+/* New checks and the recovery toolbox. */
+.check-icon.cyan{background:var(--cyan)}.check-icon.pink{background:var(--pink)}
+.remedies{display:grid;gap:8px}
+.remedies .button{width:100%;justify-content:flex-start}
+.remedies .remedy-calm:not(:disabled){background:var(--orange);border-color:var(--orange);box-shadow:5px 5px 0 rgba(232,113,10,.22)}
+.remedies .remedy-clear:not(:disabled){background:var(--pink);border-color:var(--pink);box-shadow:5px 5px 0 rgba(208,24,132,.2)}
+.nav-links a[href="#report-section"]{--nav-tone:var(--cyan)}
+.report-panel{--section:var(--cyan);border-bottom:1px solid var(--line)}
+.tour-button{margin-top:22px;border-color:var(--violet);color:var(--violet)}
+.tour-button:hover{background:var(--violet);color:#fff}
+.tour-button.attention{background:var(--violet);color:#fff;animation:step-glow 1.6s ease-in-out infinite}
+
+/* Incident report: separate measures, then the replay chart. */
+.report{padding:0 28px 26px}
+.report-tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:1px;background:var(--line);border:1px solid var(--line);margin-bottom:20px}
+.report-tile{background:var(--bg);padding:14px 16px}
+.tile-label{display:block;font:600 10px/1.3 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+.report-tile strong{display:block;margin:6px 0 2px;font:620 26px/1.1 var(--sans);font-variant-numeric:tabular-nums;color:var(--ink)}
+.report-tile small{display:block;font-size:12px;color:var(--muted)}
+.report-legend{display:flex;flex-wrap:wrap;gap:8px 20px;margin-bottom:8px;font-size:12px;color:var(--ink)}
+.report-legend span{display:inline-flex;align-items:center;gap:7px}
+.line-key{display:inline-block;width:16px;height:2px;border-radius:1px;background:var(--muted)}
+.fail-key{font-style:normal;font-weight:700;color:#d93025}
+.threshold-key{display:inline-block;width:16px;border-top:1.5px dashed var(--muted)}
+.report-frame{position:relative;border:1px solid var(--line);background:var(--sheet);overflow:hidden}
+.report-chart{display:block;width:100%;height:auto}
+.report-chart .grid{stroke:rgba(16,16,20,.1);stroke-width:1}
+.report-chart .tick{font:500 10px var(--mono);fill:var(--muted)}
+.report-chart .threshold{stroke:var(--muted);stroke-width:1.5;stroke-dasharray:5 4}
+.report-chart .series{fill:none;stroke-width:2;stroke-linejoin:round;stroke-linecap:round}
+.report-chart .failure{stroke-width:2;stroke-linecap:round}
+.report-chart .event-rule{stroke:rgba(16,16,20,.22);stroke-width:1}
+.report-chart .event-marker circle{fill:var(--ink)}
+.report-chart .event-marker text{font:700 9px var(--mono);fill:var(--bg)}
+.report-chart .cursor{stroke:var(--ink);stroke-width:1.5}
+.report-chart .hit{fill:transparent;cursor:crosshair}
+.report-chart .hit:focus-visible{outline:none;stroke:var(--accent);stroke-width:2}
+.report-tooltip{position:absolute;top:8px;transform:translateX(8px);min-width:170px;padding:10px 12px;background:var(--bg);border:1px solid var(--ink);box-shadow:4px 4px 0 rgba(16,16,20,.12);font-size:12px;pointer-events:none}
+.report-tooltip strong{display:block;font:600 11px var(--mono);margin-bottom:4px}
+.report-tooltip div{display:flex;align-items:center;gap:6px}
+.report-tooltip b{font-variant-numeric:tabular-nums}
+.report-tooltip small{display:block;margin-top:4px;color:var(--muted)}
+.replay-controls{display:flex;flex-wrap:wrap;align-items:center;gap:12px;margin:12px 0}
+.replay-controls input{flex:1;min-width:160px;accent-color:var(--accent)}
+.replay-play{background:var(--accent)!important;border-color:var(--accent)!important;color:#fff!important}
+.replay-readout{flex-basis:100%;font:500 12px/1.4 var(--mono);color:var(--muted)}
+.report-events{margin:0 0 12px;padding-left:22px;columns:2 260px;font-size:13px}
+.report-events li{margin:3px 0;break-inside:avoid}
+.report-events time{font:600 11px var(--mono);color:var(--muted)}
+.report-table summary{cursor:pointer;font:600 11px var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+.report-table table{width:100%;margin-top:8px;border-collapse:collapse;font-size:12px}
+.report-table th,.report-table td{text-align:left;padding:5px 8px;border-bottom:1px solid var(--line)}
+.report-table th{font:600 10px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+.report-table{max-height:none}
+.report-table[open]{overflow:auto;max-height:320px}
+.report-debrief{margin:16px 0 0;padding:14px 16px;border-left:4px solid var(--violet);background:var(--help-soft);font-size:14px}
+.archive-dialog .report{padding:16px 28px 0}
+
+/* Tour spotlight. */
+.tour-spot{position:fixed;z-index:60;pointer-events:none;border:3px solid var(--yellow);box-shadow:0 0 0 9999px rgba(16,16,20,.55);transition:all .3s ease}
+.tour-card{position:fixed;z-index:61;width:min(380px,calc(100vw - 24px));padding:20px 22px;background:var(--bg);border:1px solid var(--ink);border-top:6px solid var(--yellow);box-shadow:10px 10px 0 rgba(16,16,20,.25)}
+.tour-card h2{font-size:20px;margin:4px 0 8px}
+.tour-card p{margin:0 0 16px;font-size:14px}
+.tour-actions{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap}
+@media(max-width:600px){.report{padding-inline:16px}.report-tile strong{font-size:22px}}

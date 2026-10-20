@@ -27,18 +27,21 @@ HTML = [
     ('src="/static/view-model.js"', 'src="view-model.js"'),
     ('src="/static/app.js"', 'src="app.js"'),
     ('src="/static/topology.js"', 'src="topology.js"'),
+    ('src="/static/report.js"', 'src="report.js"'),
+    ('src="/static/tour.js"', 'src="tour.js"'),
     ('<body>', '<body>' + STRIP + BANNER + WELCOME),
     ('<p class="wordmark" aria-hidden="true">AEGISRACK</p>', '<p class="wordmark" aria-hidden="true">AEGISRACK</p><p class="sim-stamp">Simulator</p>'),
     ('href="/" aria-label="AegisRack home"', 'href="./" aria-label="AegisRack home"'),
     ('<a href="#history-section">History</a></nav>', f'<a href="#history-section">History</a><a class="nav-install" href="{INSTALL}">Install ↗</a></nav>'),
+    ('One fault: stopped, starved of CPU, or out of disk.', 'One simulated fault: stopped, starved of CPU, or out of disk.'),
     ('<span class="local-dot"></span> Local workspace <span class="version">EARLY BUILD 01</span>', '<span class="local-dot sim-dot"></span> Simulated <span class="version">NOT REAL</span>'),
     ('Connecting to the local collector…', 'Starting the simulated collector…'),
-    ('Two real services. One interruption.', 'Two simulated services. One interruption.'),
+    ('Two real services.', 'Two simulated services.'),
     ('Container lab · shared kernel', 'Simulated in your browser'),
     ('LINUX CONTAINER <span>', 'SIMULATED NODE <span>'),
     ('<span class="eyebrow">03 / MEASURED OBSERVATIONS</span>', '<span class="eyebrow">03 / SIMULATED OBSERVATIONS</span>'),
     ('Real checks will appear here when the collector runs.', 'Simulated checks will appear here when the collector runs.'),
-    ('<span class="eyebrow">07 / PERSISTED LOCALLY</span>', '<span class="eyebrow">07 / THIS TAB ONLY</span>'),
+    ('<span class="eyebrow">08 / PERSISTED LOCALLY</span>', '<span class="eyebrow">08 / THIS TAB ONLY</span>'),
     ('Real processes & measurements. No physical hardware claims.', 'Simulator preview · generated measurements. The downloadable lab uses real processes.'),
 ]
 APP = [
@@ -63,7 +66,7 @@ def main():
     shutil.rmtree(site, ignore_errors=True)
     site.mkdir()
     web = ROOT / 'web'
-    for name in ('style.css', 'view-model.js', 'topology.js'):
+    for name in ('style.css', 'view-model.js', 'topology.js', 'report.js', 'tour.js'):
         shutil.copy2(web / name, site / name)
     shutil.copytree(web / 'fonts', site / 'fonts')
     for name in ('sim.js', 'preview.css'):
