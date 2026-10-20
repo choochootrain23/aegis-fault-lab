@@ -55,7 +55,8 @@ def main():
             page.evaluate('scrollTo(0, 0)')
             expect(page.locator('.sim-strip')).to_contain_text('SIMULATION')
             expect(page.locator('.sim-stamp')).to_be_visible()
-            expect(page.locator('.sim-banner')).to_contain_text('SIMULATOR')
+            expect(page.locator('.sim-banner')).to_have_count(0)
+            expect(page.locator('.sim-strip #sim-skip')).to_be_attached()
             page.evaluate("document.getElementById('evidence-section').scrollIntoView({block:'start'})")
             expect(page.locator('.nav-links a.nav-active')).to_have_text('Evidence')
             for link in ('Diagnosis', 'History', 'Evidence'):

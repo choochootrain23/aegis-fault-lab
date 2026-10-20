@@ -15,9 +15,7 @@ REPO = 'https://github.com/choochootrain23/aegis-fault-lab'
 INSTALL = REPO + '#run-the-full-lab-locally'
 EXPLAIN = REPO + '#how-it-works'
 
-BANNER = f'''<div class="sim-banner" role="note" aria-label="Simulator notice"><strong>SIMULATOR</strong><p>Browser-only simulation. Services, failures and measurements are <b>generated in this tab</b>; no containers run and nothing here is real. The full lab runs real Docker services on your machine.</p><div class="sim-actions"><button id="sim-skip" class="button" disabled title="Jump to 40 seconds before the timer expires">⏩ Skip to timer expiry</button><a class="button sim-explain" href="{EXPLAIN}">How it works ↗</a><a class="button sim-download" href="{INSTALL}">⬇ Install the full lab</a></div></div>'''
-
-STRIP = f'''<div class="sim-strip" role="note"><span class="sim-tag">SIMULATION</span><span class="sim-strip-text">You are using a browser simulation, <b>not the real lab</b>. Every reading is generated.</span><a href="{INSTALL}">Install the real lab on GitHub ↗</a><a href="{EXPLAIN}">How it works ↗</a></div>'''
+STRIP = f'''<div class="sim-strip" role="note" aria-label="Simulator notice"><span class="sim-tag">SIMULATION</span><span class="sim-strip-text">You are using a browser simulation, <b>not the real lab</b>. Services, failures and measurements are generated in this tab; no containers run. The full lab runs real Docker services on your machine.</span><a href="{INSTALL}">Install the real lab on GitHub ↗</a><a href="{EXPLAIN}">How it works ↗</a><button id="sim-skip" type="button" disabled title="Jump to 40 seconds before the timer expires">⏩ Skip to timer expiry</button></div>'''
 
 WELCOME = f'''<dialog id="sim-welcome" class="sim-welcome" aria-labelledby="sim-welcome-title"><div class="sim-welcome-head"><span class="sim-tag">SIMULATION</span><span class="eyebrow">Before you start</span></div><h2 id="sim-welcome-title">This is a <em>simulator</em>, not the real lab.</h2><p>AegisRack is a hands-on lab that stops real Docker services so you can practise finding and fixing the failure. This page runs the same interface against a <b>JavaScript simulation</b> in your browser:</p><ul><li><b>No containers run.</b> Services, failures and timings are generated in this tab.</li><li><b>Nothing is saved.</b> Reloading starts a fresh simulation.</li><li><b>The workflow is the same:</b> healthy baseline, injected fault, your investigation, verified recovery.</li></ul><p>To use the real thing, install the full lab from GitHub. It takes about 10 minutes on Linux or Windows (WSL2) with Docker.</p><div class="sim-welcome-actions"><a class="button primary" href="{INSTALL}">⬇ Install the full lab on GitHub</a><a class="button subtle" href="{EXPLAIN}">How it works ↗</a><button class="button sim-continue" id="sim-continue" autofocus>Explore the simulator →</button></div></dialog>'''
 
@@ -29,7 +27,7 @@ HTML = [
     ('src="/static/topology.js"', 'src="topology.js"'),
     ('src="/static/report.js"', 'src="report.js"'),
     ('src="/static/tour.js"', 'src="tour.js"'),
-    ('<body>', '<body>' + STRIP + BANNER + WELCOME),
+    ('<body>', '<body>' + STRIP + WELCOME),
     ('<p class="wordmark" aria-hidden="true">AEGISRACK</p>', '<p class="wordmark" aria-hidden="true">AEGISRACK</p><p class="sim-stamp">Simulator</p>'),
     ('href="/" aria-label="AegisRack home"', 'href="./" aria-label="AegisRack home"'),
     ('<a href="#history-section">History</a></nav>', f'<a href="#history-section">History</a><a class="nav-install" href="{INSTALL}">Install ↗</a></nav>'),
