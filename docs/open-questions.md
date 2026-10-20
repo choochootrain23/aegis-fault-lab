@@ -1,0 +1,68 @@
+# Design review questions
+
+Status: unresolved review agenda for `/grill-with-docs`. Defaults below allow a concrete design to be challenged; they are not decisions already approved for implementation.
+
+## Five consequential questions
+
+### Review progress — 20 October 2026
+
+- Round 1 Q1 settled: Data Center Technician is primary; preserve balance and meaningful FDE presence. The earlier FDE-first recommendation was rejected.
+- Round 1 Q2 settled: keep AegisRack a separate project. Cross-node investigation remains a proposed differentiator, not a separately confirmed requirement from this answer.
+- Round 1 Q3 settled: a supported failure mechanism and affected scope can count as a diagnosis without establishing the original cause. State uncertainty. Investigations must be meaningful, useful and interactive for the operator; specific interaction choices remain open.
+- Round 2 Q4 settled: prioritise real process, networking and filesystem investigations within containers. Broader OS/hardware exercises are desirable extensions if feasible, not initial prerequisites; simulated signals must remain labelled.
+- Round 2 Q5 settled: operator-driven diagnostic actions, evidence comparison and recovery choices. Investigation must allow free exploration, not a prescribed sequence. Clarify human versus AI freedom and action boundaries next.
+- Round 2 Q6 settled: integrated services, resumable investigations and a useful read-only AI assistant are required for the finished portfolio, while early milestones remain deterministic. User delegates API/provider/harness evaluation; an API-key approach is acceptable. This supersedes indefinite AI deferral as a finished-project option.
+- Round 3 Q7 settled: free choice of node, bounded diagnostic check, order and follow-up; no arbitrary shell. Offer an optional next step or solution path when needed, without forcing a sequence.
+- Round 3 Q8 settled: AI may autonomously choose and run read-only checks within time/usage limits, with visible evidence and operator interruption/redirection. Prefer a lightweight model if evaluation supports it. Recovery remains human-controlled.
+- Round 3 Q9 settled: practice and challenge modes use the same real faults. Challenge hides fault selection until reveal/end; the AI cannot read the fault record in either mode. User delegates detailed mode design.
+- Round 4 Q10 settled: operator may attempt any safe, applicable recovery without first submitting the correct diagnosis. Persist unsuccessful attempts and verify actual effects.
+- Round 4 Q11 accepted: local single-user privileged broker tradeoff. User indicated unfamiliarity; explained that Docker access is effectively a master key and a broker compromise could affect unrelated containers/the VM despite the restricted application API. Keep socket authority isolated from browser/AI and validate project ownership.
+- Round 4 Q12 settled: cloud transmission of bounded synthetic lab evidence and investigation content is permitted; exclude credentials, unrelated host logs and employer material.
+- Round 4 Q13 provisional: user intends to use an existing model subscription and accepts the proposed US$5 initial ceiling. Subscription/provider identity and whether it supports programmatic integration are unknown. Do not assume subscription fees include API credits or incur charges without a supported configured route.
+- Integration research recommends a small direct API tool loop, with lightweight SDK fallback. This recommendation must be revisited if the user's subscription supports a different sanctioned integration route.
+- Round 5 Q14: candidate subscriptions are ChatGPT Plus, Gemini Pro or Gemini Edu; no exact entitlement is established. Research supported API/integration access rather than assume consumer or education subscription benefits apply.
+- Round 5 Q15 settled: assistance is opt-in and progressive: unaided exploration → evidence highlights with brief explanations → hints → one suggested solution action at a time. Do not force a universal sequence; valid investigation order can vary by scenario. Revealing fault ground truth ends the blinded attempt and is recorded as revealed, not independently solved.
+- Round 5 Q16 settled: preserve failed recovery attempts. A separate lab reset ends the current attempt, restores and verifies baseline, and retains history. Reset is not a successful diagnosis or targeted recovery.
+- Round 6 Q17 settled: start with stopped services, delayed dependency traffic and bounded filesystem exhaustion, including local/shared dependency cases. Polish the initial scenarios; evaluate and add further faults as the project develops rather than freezing the catalogue permanently.
+- Round 6 Q18 settled: DC-focused with substantive FDE presence. Prioritise genuine measurements; optional synthetic hardware teaching cases remain explicitly separate from measured fleet telemetry and physical repair claims.
+- Round 6 Q19 settled: track diagnosis, verified recovery and assistance independently. Accept multiple supported investigation paths/explanations; no initial numerical score or AI-only correctness judgment. Restored service alone does not demonstrate understanding.
+- Round 7 Q20 settled: start with Gemini Developer API free tier and a lightweight model, subject to account eligibility and evaluation. User accepts free-tier product-improvement/human-review terms for bounded synthetic lab evidence and investigation messages. No automatic paid upgrade.
+- Round 7 Q21 settled: optional diagnosis record with explanation, evidence and uncertainty; recovery is not gated on submission. Mechanical evidence-reference checks and advisory AI feedback, not AI-certified correctness. Scenario debrief is revealed only after ending/revealing the challenge.
+- Round 7 Q22 settled: topology-centred workspace, actionable node diagnostics, persistent evidence/timeline and collapsible AI panel. User delegates detailed visual exploration and permits inspiration from other projects. Use muted backgrounds and colourful interactions; attention cues may highlight requested evidence help. Preserve unaided exploration, avoid rapid flashing, support reduced motion and do not communicate state through colour alone.
+- Round 8 Q23 settled: one active injected fault at a time, potentially affecting several nodes. Prioritise focused, deep, polished scenarios; block another until recovery/reset completes.
+- Round 8 Q24 settled: persist investigation history, reconcile actual fleet state after interruption, label stale observations/ambiguous actions and never blindly replay mutations.
+- Round 8 Q25 settled: replace the 120-second fault lease with an initial 15-minute visible timer, an explicit extension button and a continuation prompt at expiry. Extensions require resource checks. Exact grace period and no-response behaviour remain to be agreed; a prompt alone is not permission to extend indefinitely.
+- Round 9 Q26 settled: warn before expiry, then offer Continue for 15 minutes or End and reset. Show a 60-second grace countdown; no response triggers verified reset, even with browser closed. Failed cleanup remains visibly unresolved.
+- Round 9 Q27 settled: 24-hour raw evidence and 30-day summaries, bounded export of supporting evidence, expiry warnings and explicit unavailable-reference indicators.
+- Round 9 Q28 settled: prove the two-node workflow, polish one complete interactive scenario, then broaden fault coverage. AI remains required for the finished portfolio.
+- Round 10 Q29: user confirms the baseline with emphasis on a polished, attractive and interactive UI/UX, including colourful buttons and options that make important actions easy to notice. Routine engineering/layout details are delegated within the agreed constraints; meaningful scope or privilege changes return for discussion. Design review is complete; implementation has not been requested.
+
+### Original design questions still to resolve
+
+1. **Does a container fleet meet the intended learning goal?** Default: three lightweight Linux service containers, starting with two. This fits observed headroom but cannot demonstrate independent kernels, boot diagnosis, systemd administration or hardware repair. Which missing skill would justify a separate VM lab later? Accept this limitation or define the exact full-OS requirement before choosing a heavier architecture.
+2. **Is a privileged Docker broker an acceptable local trust boundary?** Default: single-user local lab, socket held only by a narrowly implemented broker. The broker still has host-level potential authority if compromised. Can we reliably validate ownership, generation, mounts and namespace identity, and keep the web/AI away from general Docker operations? If not, reduce web-based control or use manual local lifecycle actions first. Daemon permission denial must be resolved in the intended terminal before claiming runnable support.
+3. **What counts as a diagnosis, and how do we prevent answer leakage?** Default: show B's unavailability/slow response/full filesystem from independent observations, but do not infer why an operator stopped it. Keep fault audit and scenario labels outside diagnostic tools. Are service state and longer diagnostic probes sufficient to distinguish the chosen hypotheses? Agree on acceptable uncertainty and blinded evaluation cases before building AI.
+4. **Is the two-node slice small enough, and are the three fault classes worth their cost?** Default: prove stop → dependency failure → diagnosis → verified recovery before UI/AI. Then add a second gateway, isolated netem and bounded tmpfs exhaustion. Is networking privilege worth its operational complexity? Does tmpfs capacity troubleshooting meet the storage learning goal, with physical I/O claims explicitly excluded? Remove a scenario before adding infrastructure just to support it.
+5. **What measurable operator benefit justifies the AI and its data/cost boundary?** Default: report drafting and evidence navigation only; no recovery authority or local model. Which provider, acceptable per-investigation/session spend, and synthetic log export policy should apply? Compare a manual report with assisted reports before claiming benefit. The core project should still be worth demonstrating if AI is deferred.
+
+## Other decisions and risks
+
+| Topic | Proposed default | Evidence or decision needed |
+| --- | --- | --- |
+| Memory pressure | Two nodes first, 2 GiB available admission floor, no local model | Current swap use is high. Measure runtime overhead and responsiveness; reduce fleet before raising limits. |
+| Runtime visibility | Recheck from direct intended VM terminal | Restricted session exposes VMware CPU info but reports container execution and denies Docker access. Do not mistake CLI installation for working daemon support. |
+| Scope relative to sibling project | Independent `aegis-rack-diagnostics/`; no reuse assumed | The workspace already has a similar project. Decide what distinct learning/product value AegisRack adds before duplicating implementation effort. |
+| Recovery semantics | Three successful affected-path checks; retain unknown status after interruption | Are thresholds responsive yet resistant to transient success? Validate against measured start/response times. |
+| Controller outage | Persist intent, reconcile, never blindly retry mutations | How will the operator reset when both API and broker are unavailable? Document exact project-only manual steps during implementation. |
+| Netem cleanup | Fixed target namespace, owned qdisc, lease and restart reconciliation | Confirm kernel/tool support, capability containment and behaviour after target recreation. Otherwise defer F2. |
+| Retention | 24-hour raw data, 30-day summaries, bounded exports | Is this enough for interview evidence? Decide which incidents to export; enforce budget under sustained sampling. |
+| Windows access | SSH tunnel to loopback | Verify the actual VMware networking and SSH setup later. No network changes in this documentation stage. |
+| Provider privacy and usage | Only synthetic bounded evidence, no secrets, explicit usage records | Select model/provider and review current data handling/pricing before integration. Token caps are not a currency budget. |
+| UI ambition | SVG topology, timeline and evidence drawer | Prioritise readable measured state; avoid decorative graphs that suggest unobserved traffic. |
+| Portfolio claims | Local synthetic lab with real process/network/filesystem effects | Review final README/video wording against actual results and the desired job descriptions. |
+
+## Review packet and exit condition
+
+Read [vision](vision.md), [architecture](architecture.md), [roadmap](roadmap.md) and [fault catalogue](fault-catalogue.md). Challenge assumptions, attack the reset path, and request evidence for every success criterion. Record resulting decisions here with date, rationale and affected documents, then revise the whole set consistently.
+
+Design-review exit: the design tree has no unresolved branches; required runtime checks and deferred features are explicit; the first milestone has an agreed evidence/verification standard. The user confirms shared understanding before implementation is considered. Application implementation begins only after the user asks for it. `/grill-with-docs` is in progress; round 1 answers are recorded above.

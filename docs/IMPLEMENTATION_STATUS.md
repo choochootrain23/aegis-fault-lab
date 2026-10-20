@@ -1,0 +1,58 @@
+# Implementation checkpoint
+
+20 October 2026 (Singapore), fifth implementation checkpoint. Implementation authorized after design review. This file distinguishes implemented behaviour from the broader agreed design.
+
+## Implemented
+
+- Independent `gateway-a` and `catalog-b` FastAPI service processes; real HTTP dependency requests, correlation IDs, measured response durations and bounded dependency logs.
+- Compose definition with project-specific isolated networks, resource caps, non-root/read-only fleet nodes, no fleet ports, loopback-only UI and a private Docker broker.
+- Broker accepts only fixed inspect/start/stop operations on two named project services. It checks ownership, generation, networking, mounts, user, resource limits and privilege drift. No arbitrary shell or Docker proxy route.
+- SQLite evidence, session, action and diagnosis persistence. Intent precedes mutation; ambiguous interrupted actions remain unknown and visible after restart. New startup observations are required; stale data is not healthy.
+- Five-cycle baseline admission; one controlled service-unavailability scenario at a time; three-cycle verified recovery. Idempotency protects mutations and reset verification from duplicate retries.
+- Practice and hidden-target challenge modes. Fault ledger excluded from challenge state/exports until reveal/end. Optional deterministic explanations/hints/actions; no AI inference is claimed.
+- Fifteen-minute timer, explicit extension, sixty-second continuation grace, browser-independent expiry reset, reset verification and preserved history.
+- First UI: muted canvas, colourful diagnostic controls, two-node topology, fresh evidence inspection/selection, optional notes, action timeline, investigation history and clear unknown/error states. Evidence reading pauses on open/select; practice can target either node; loading/disconnection states disable inappropriate actions.
+- Archived investigations have stable paginated evidence, notes, expired-citation warnings and per-investigation exports. Exports prioritise cited observations, report omissions and stay within an 8 MiB budget.
+- Opt-in deterministic guidance uses fresh observations, names supporting evidence IDs and suggests a read-only next check. It has no access to the hidden fault ledger.
+- Session-bound requests reject stale browser actions after acquiring the workflow lock. Grace-expired extensions are rejected server-side; reset cannot erase an earlier verified recovery outcome.
+- Local resource preflight, secret initialization, dependency lock, bounded evidence/log payloads and batched retention/storage-budget guards. Active evidence is retained. Reusable SQLite pages no longer permanently block admission after retention. Maintenance can run even when collection is paused.
+- Broker contract now also checks dropped capabilities, no-new-privileges, swap/shared-memory limits, private namespaces, temporary filesystem size, restart policy and absence of device/host-resource access.
+- Restart reconciliation restores both ambiguous and completed action results when a session update was interrupted. Explicit retry can finish an interrupted reset without replaying already recorded operations. Reset intent/automatic closure is durable before mutation.
+- An OS file lock enforces one controller per database. Another worker fails clearly instead of competing for timers or mutations. Ownership releases on exit.
+- Recovery and reset each retain twelve supporting observations from their three verification cycles; archives expose those citations and exports prioritise them.
+- Summary retention starts at closure and preserves associated action history. Cleanup truncates checkpointed WAL allocation without waiting on external readers, then retries busy checkpoints. Baseline evidence excludes archived investigations.
+- Archive notes, help and actions are reviewable; citation buttons open exact retained observations or report expiry. Polling preserves history-button focus and rejects older responses. Narrow phone layouts stack topology cards; hidden controls stay hidden.
+- Evidence labels distinguish a completed inspection from a running service, and summarize failures in retained dependency logs. Requested guidance highlights exact supporting records even after they leave the latest polling window; reduced-motion users retain a static highlight.
+- Guidance treats newer successful probes as potentially contradicting an older stopped-state observation and requests fresh inspection. No hidden fault ledger is consulted.
+- Browser reads time out after five seconds; mutation requests time out after forty-five seconds with an explicit uncertain-completion message. Disconnection marks measurements unknown and disables diagnostic/maintenance/continuation actions until polling reconnects.
+
+## Validation evidence
+
+- Latest suite includes workflow, broker rejection, retention, API origin/token/host checks, evidence-scope validation, extension retries, challenge exports, cross-process ownership and real service-process integration. **80 backend tests pass**, including the real-process HTTP test. **21 pure UI-logic tests pass** for timers, freshness, request ordering, evidence labels and enabled controls; event-wiring JavaScript also parses.
+- Real-process test starts a catalogue and gateway on temporary loopback ports, verifies a business request, stops the catalogue, observes gateway liveness plus business failure, restarts the catalogue and checks three successful requests. Processes are cleaned up. This is not a Docker isolation test.
+- `docker compose config --quiet` passes with a non-secret validation placeholder.
+- Headless Chromium review passes with a real controller and isolated, explicitly labelled archive test records. Desktop (1440px), 390px and 320px screenshots were inspected. Citation lookup/expiry, escaped note content, keyboard dismissal, focus across polling, hidden controls and horizontal overflow are checked. Screenshots/report live under ignored `state/ui-review/`; rerun `tests/browser_review.py` to reproduce. This does not validate active Docker investigations.
+- The archive review also verifies a stalled controller response times out, disables actions and recovers after reconnection.
+- `tests/browser_workflow.py` passes against Chromium, the real controller and two real service subprocesses. It covers stable open evidence, saved diagnosis, guided citations outside the recent window, ineffective wrong-node recovery, verified correct recovery/reset, challenge UI, expiry extension and browser-independent automatic reset. Only process control is adapted; collector cadence/lease expiry are accelerated. Reports are under ignored `state/ui-workflow/`. The expiry screenshot was inspected. See [validation boundaries](VALIDATION.md).
+- Tests require execution outside the current sandbox because its thread wakeup restrictions hang framework file-serving tests. All test Docker operations use explicit test doubles. No unrelated containers or services were modified.
+
+## Production Docker validation
+
+Docker access is restored through the refreshed login's existing group membership. No socket permissions were changed. The shared-image build race was fixed by building only the controller's shared image. A controller-only operator bridge makes the loopback UI port reachable; fleet and broker networks remain internal.
+
+Three production rounds passed on 20 October 2026: detection **5.59–5.67 s**, verified recovery **7.36–7.41 s**, with wrong-node attempts rejected as recovery and baseline restored each round. `scripts/verify_runtime.py` passed the broker inspection contract and actual cgroup checks: 192 MiB RAM, zero swap, 0.25 CPU, 64 PIDs, UID 10001, zero effective capabilities and no-new-privileges on both fleet nodes.
+
+The real Docker Chromium challenge/restart walkthrough passed. State/export responses withheld the target, the active investigation survived controller restart, fresh inspections identified the stopped gateway, and browser recovery/reset succeeded with no JavaScript errors. The desktop challenge screenshot was inspected. An initial validation-client disconnect error was fixed and its owned investigation reset before the successful rerun; three transport regression tests cover that failure.
+
+Reports are under ignored `state/validation/`. The app is running at http://localhost:8787 with both fleet services healthy and no active investigation at this checkpoint.
+
+## Next work
+
+1. Validate the full fifteen-minute production lease and restart during an in-flight broker mutation. The test harness covers accelerated expiry; the production restart check was during investigation, not during a mutation.
+2. Measure sustained resource usage and storage pressure, and broaden accessibility/browser coverage.
+3. Publish the validated milestone with clear current limitations for portfolio review.
+4. Add the third node, bounded network/filesystem scenarios and the read-only model investigator after the remaining first-scenario gates. No model key or paid cloud configuration has been used.
+
+## Boundaries preserved
+
+Only `aegis-rack-diagnostics/` is changed. The sibling project is untouched. Runtime has no fake-fleet fallback. Virtual containers are not physical repair experience. The design documents remain the intended final scope; this checkpoint does not claim all roadmap stages are complete.

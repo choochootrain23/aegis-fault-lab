@@ -1,0 +1,121 @@
+"""Headless Chromium walkthrough of the static browser-simulator preview.
+
+Builds site/, serves it on a temporary loopback port and drives a practice and a
+challenge investigation. This validates the simulator only, never Docker or the
+real controller. Requires Playwright and Chromium (see docs/VALIDATION.md).
+Run from the project root with: python tests/preview_walkthrough.py
+"""
+import functools
+import http.server
+import json
+from pathlib import Path
+import subprocess
+import sys
+import threading
+
+ROOT = Path(__file__).resolve().parents[1]
+from playwright.sync_api import sync_playwright, expect
+
+
+def main():
+    subprocess.run([sys.executable, str(ROOT / 'scripts' / 'build_preview.py')], check=True)
+    output = ROOT / 'state' / 'ui-preview'
+    output.mkdir(parents=True, exist_ok=True)
+    handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(ROOT / 'site'))
+    handler.log_message = lambda *args: None
+    server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    url = f'http://127.0.0.1:{server.server_address[1]}/'
+    errors = []
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            page = browser.new_page(viewport={'width': 1440, 'height': 1000}, accept_downloads=True)
+            page.on('pageerror', lambda error: errors.append(str(error)))
+            page.goto(url)
+            expect(page.locator('.sim-banner')).to_contain_text('SIMULATOR')
+            expect(page.locator('footer')).not_to_contain_text('Real processes')
+            expect(page.locator('#start')).to_be_enabled(timeout=20000)
+            expect(page.locator('#node-gateway-a .node-state')).to_have_text('healthy')
+
+            # Practice: shared dependency failure, wrong-node attempt, verified recovery.
+            page.select_option('#practice-target', 'catalog-b')
+            page.click('#start')
+            expect(page.locator('#session-status')).to_have_text('investigating', timeout=15000)
+            expect(page.locator('#node-gateway-a .node-state')).to_have_text('degraded')
+            expect(page.locator('#node-catalog-b .node-state')).to_have_text('unavailable')
+            page.click('[data-check="liveness"]')
+            expect(page.locator('#toast')).to_contain_text('Fresh observation')
+            page.click('[data-check="business"]')
+            expect(page.locator('#toast')).to_contain_text('Fresh observation')
+            page.click('#node-catalog-b')
+            page.click('[data-check="service"]')
+            expect(page.locator('.evidence-row').filter(has_text='stopped').first).to_be_visible()
+            page.click('[data-help="action"]')
+            expect(page.locator('#help-result')).to_contain_text('catalog-b stopped')
+            expect(page.locator('.evidence-row.highlight')).to_have_count(1)
+            page.click('#node-gateway-a')
+            page.click('#recover')
+            expect(page.locator('#action-history')).to_contain_text('broker did not confirm', timeout=5000)
+            page.wait_for_timeout(7000)
+            expect(page.locator('#session-status')).not_to_have_text('recovered')
+            page.click('#node-catalog-b')
+            page.click('#recover')
+            expect(page.locator('#session-status')).to_have_text('recovered', timeout=15000)
+            expect(page.locator('#node-gateway-a .node-state')).to_have_text('healthy')
+            page.locator('.evidence-row input').first.check()
+            page.fill('#explanation', 'Gateway stayed live while business requests failed; catalogue container was stopped.')
+            page.click('#save-note')
+            expect(page.locator('#saved-notes')).to_contain_text('1 cited observations')
+            with page.expect_download() as download:
+                page.click('#export')
+            exported = json.loads(Path(download.value.path()).read_text())
+            assert 'SIMULATED' in exported['export_note'] and exported['evidence'], exported['export_note']
+            assert all(e['body'].get('simulated') for e in exported['evidence'])
+            page.screenshot(path=str(output / 'recovered.png'), full_page=True)
+            page.click('#reset')
+            expect(page.locator('#session-status')).to_have_text('ended', timeout=15000)
+            page.click('[data-archive]')
+            expect(page.locator('#archive-title')).to_contain_text('practice investigation')
+            page.locator('#archive-notes [data-citation]').first.click()
+            expect(page.locator('#archive-citation')).to_be_visible()
+            page.click('#archive-close')
+
+            # Challenge: hidden target, timer skip and expiry continuation.
+            page.select_option('#mode', 'challenge')
+            expect(page.locator('#start')).to_be_enabled(timeout=20000)
+            page.click('#start')
+            expect(page.locator('#session-status')).to_have_text('investigating', timeout=15000)
+            state = page.evaluate("fetch('api/state').then(r=>r.json())")
+            assert 'scenario' not in state['session'] and 'fault_target' not in state['session']
+            page.click('#sim-skip')
+            expect(page.locator('#expiry-dialog')).to_be_visible(timeout=50000)
+            expect(page.locator('#grace-text')).to_contain_text('Automatic reset')
+            page.click('#expiry-continue')
+            expect(page.locator('#expiry-dialog')).to_be_hidden()
+            expect(page.locator('#timer')).to_contain_text('remaining')
+            page.click('#reveal')
+            expect(page.locator('#scenario-reveal')).to_contain_text('service unavailable on')
+            page.click('#reset')
+            expect(page.locator('#session-status')).to_have_text('ended', timeout=15000)
+            expect(page.locator('#history .history-item')).to_have_count(2)
+
+            mobile = browser.new_page(viewport={'width': 390, 'height': 844})
+            mobile.on('pageerror', lambda error: errors.append(str(error)))
+            mobile.goto(url)
+            expect(mobile.locator('#start')).to_be_enabled(timeout=20000)
+            overflow = mobile.evaluate('document.documentElement.scrollWidth - innerWidth')
+            mobile.screenshot(path=str(output / 'mobile-390.png'), full_page=True)
+            assert overflow <= 0, f'horizontal overflow {overflow}px'
+            browser.close()
+    finally:
+        server.shutdown()
+    report = {'passed': not errors, 'page_errors': errors, 'url': url}
+    (output / 'report.json').write_text(json.dumps(report, indent=2))
+    if errors:
+        sys.exit(f'Page errors: {errors}')
+    print('Preview walkthrough passed; screenshots in state/ui-preview/')
+
+
+if __name__ == '__main__':
+    main()

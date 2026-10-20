@@ -1,0 +1,57 @@
+name: aegis-rack-diagnostics
+x-common: &common
+  image: aegis-rack-diagnostics:local
+  user: '10001:10001'
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  restart: 'no'
+  pids_limit: 64
+  mem_limit: 192m
+  memswap_limit: 192m
+  cpus: 0.25
+  shm_size: 8m
+  tmpfs: ['/tmp:size=8m,mode=1777']
+  logging:
+    driver: json-file
+    options: {max-size: '5m', max-file: '3'}
+services:
+  catalog-b:
+    <<: *common
+    command: [uvicorn, aegis.fleet:app, --host, 0.0.0.0, --port, '8000', --no-access-log]
+    environment: {AEGIS_ROLE: catalog}
+    networks: [fleet]
+  gateway-a:
+    <<: *common
+    command: [uvicorn, aegis.fleet:app, --host, 0.0.0.0, --port, '8000', --no-access-log]
+    environment: {AEGIS_ROLE: gateway, AEGIS_UPSTREAM: 'http://catalog-b:8000'}
+    networks: [fleet]
+  broker:
+    <<: *common
+    user: '0:0'
+    mem_limit: 128m
+    memswap_limit: 128m
+    command: [uvicorn, aegis.broker:app, --host, 0.0.0.0, --port, '8000', --no-access-log]
+    environment:
+      AEGIS_BROKER_TOKEN: ${AEGIS_BROKER_TOKEN:?Run scripts/init_env.py first}
+    volumes: ['/var/run/docker.sock:/var/run/docker.sock']
+    networks: [control]
+  controller:
+    <<: *common
+    build: .
+    mem_limit: 384m
+    memswap_limit: 384m
+    cpus: 0.5
+    pids_limit: 128
+    ports: ['127.0.0.1:8787:8000']
+    environment:
+      AEGIS_BROKER_TOKEN: ${AEGIS_BROKER_TOKEN:?Run scripts/init_env.py first}
+      AEGIS_STATE: /state/lab.sqlite
+    volumes: [state:/state]
+    networks: [fleet, control, operator]
+networks:
+  fleet: {internal: true}
+  control: {internal: true}
+  operator: {}
+volumes:
+  state:
