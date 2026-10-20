@@ -1,69 +1,143 @@
 # AegisRack
 
-An independent, local fleet investigation lab. Practise Linux service and dependency troubleshooting using real processes, measured evidence and human-controlled recovery. Data Center Technician learning comes first, with reliable integration, persistence and a planned read-only AI investigator supporting the FDE story.
+A hands-on lab for practising Linux service troubleshooting. Two small web services run in Docker containers; the lab deliberately stops one of them, and you investigate with real checks, decide what to restart, and watch the lab verify whether service actually came back.
 
-**Current status: Docker validation milestone, not a completed portfolio.** The production Compose deployment now runs successfully. Three real Docker fault/recovery/reset rounds and effective fleet resource/privilege checks pass. Earlier tests also cover real subprocess HTTP and Chromium UI workflows. No mock measurements are substituted in the application.
+> **Two ways to look at it**
+> - **[Browser simulator](https://choochootrain23.github.io/aegis-fault-lab/)**: a quick look in any browser. Nothing is installed and **nothing in it is real**: services and measurements are generated in your tab.
+> - **Full lab (below)**: the real thing on your own machine, with real containers, real failures and measured evidence. About 10 minutes to set up.
+
+**Status:** working milestone, not a finished portfolio. One fault scenario (a stopped service) is implemented and validated on real Docker; more scenarios and an AI assistant are planned. See [current limitations](#current-limitations-and-next-gates).
+
+## How it works
+
+```mermaid
+flowchart LR
+  you([You, in a browser]) -->|localhost:8787 only| controller
+  subgraph docker [Docker on your machine]
+    controller[Controller<br/>web UI, checks, SQLite evidence] -->|private network| gateway[gateway-a]
+    gateway -->|business requests| catalog[catalog-b]
+    controller -->|private network<br/>inspect / start / stop only| broker[Broker]
+    broker -->|Docker socket| gateway
+    broker -->|Docker socket| catalog
+  end
+```
+
+- **gateway-a** and **catalog-b** are two small Python web services. The gateway depends on the catalogue, so stopping the catalogue breaks the gateway's requests even though the gateway itself is still running.
+- The **controller** serves the web page, runs health checks every two seconds, stores every observation as evidence in SQLite, and runs the investigation rules: a fault can only start from a healthy baseline, and recovery only counts after three healthy cycles in a row.
+- The **broker** is the only part that can touch Docker. It accepts just three operations (inspect, start, stop) on these two containers and checks their identity and security settings first. The web page never gets Docker access.
+- The fleet containers run read-only, as a non-root user, with no Linux capabilities, capped memory/CPU and no ports open to your network. The UI listens on `localhost` only.
 
 ## Try it in your browser
 
 **[Open the browser simulator →](https://choochootrain23.github.io/aegis-fault-lab/)**
 
-The preview runs the real web UI against a JavaScript simulator of the controller, broker and two services. It follows the same workflow rules (baseline admission, three-cycle verified recovery, hidden-target challenges, timer expiry), but **every service and measurement in it is generated in your browser tab**. No containers run and state resets on reload. A purple *SIMULATOR* banner stays on screen throughout. For real processes, real Docker faults and measured evidence, run the full lab below.
+The simulator runs the same web UI against a JavaScript copy of the controller's rules, so you can try the workflow without installing anything. It is clearly marked **SIMULATOR**: no containers run, every number is generated in your tab, and its state resets when you reload.
 
 Try this: start a practice investigation on the shared catalogue, compare the gateway's liveness and business checks, inspect the catalogue's container state, try starting the *wrong* node first, then start the right one and watch the three verification cycles.
 
 ## Run the full lab locally
 
-Prerequisites: Linux with Docker Engine and Compose, existing authorized daemon access, at least 2 GiB available RAM and 10 GiB free disk. Python 3.14 is used in the image and development environment.
+### 1. What you need
 
-Clone the repository, then run everything from its root:
+| | Requirement |
+| --- | --- |
+| Operating system | **Linux** (tested on Ubuntu). **Windows**: use WSL2 with Ubuntu and run every command inside the Ubuntu terminal. macOS is untested. |
+| Docker | Docker Engine with the Compose v2 plugin (`docker compose version` should print a version) |
+| Python | Python 3.10 or newer, for the small setup scripts (standard library only) |
+| Resources | About 2 GiB free memory and 10 GiB free disk |
+| Tools | `git` |
+
+On Ubuntu, Docker can be installed by following [Docker's official guide](https://docs.docker.com/engine/install/ubuntu/). Your user needs permission to run `docker` without `sudo`: Docker's [post-installation step](https://docs.docker.com/engine/install/linux-postinstall/) adds you to the `docker` group (log out and back in afterwards). Note that `docker` group membership is equivalent to administrator access on that machine.
+
+Check Docker works before continuing:
+
+```bash
+docker run --rm hello-world
+```
+
+### 2. Download and check
 
 ```bash
 git clone https://github.com/choochootrain23/aegis-fault-lab.git
 cd aegis-fault-lab
 python3 scripts/preflight.py
-python3 scripts/init_env.py
-docker compose build
-docker compose up -d
 ```
 
-Open **http://localhost:8787**. The web port binds only to loopback. The fleet and broker have no published ports. For Windows access, use an existing authenticated SSH tunnel to VM port 8787; do not expose the Docker socket or change the VM network for this app.
+`preflight.py` only reads: it checks free memory and disk and that Docker supports the resource limits the lab relies on. It should end with `Preflight passed`.
 
-The shared image is built once by the controller service. The controller joins a dedicated operator bridge for localhost publishing as well as the private fleet/control networks. Only the controller joins that operator bridge; it permits controller outbound connectivity, but the application currently makes no model calls.
+### 3. Create the local secret
 
-`init_env.py` creates a mode-0600 `.env` broker credential and refuses to overwrite an existing file. Do not paste credentials into chat or commit `.env`. The controller needs no model key in this milestone. Exact installed Python dependencies are captured in `requirements.lock`; Docker uses that lock.
+```bash
+python3 scripts/init_env.py
+```
 
-If Docker permission is denied, stop and use a terminal/account with existing authorized access. Do not make the socket world-writable. Changing host permissions is not part of setup automation.
+This writes a random broker password to `.env` (readable only by you). It never overwrites an existing `.env`, and `.env` is excluded from git. You only do this once.
 
-## First investigation
+### 4. Build and start
 
-1. Wait for five healthy baseline cycles. The UI labels absent or stale observations **Unknown**.
-2. Choose practice or challenge and start. Practice lets you choose the catalogue dependency or gateway; challenge randomly stops one of the two services and withholds the selected target.
-3. Select a topology node. Run liveness, business, service-state and dependency-log checks in any order. Open evidence records and select citations. Reading or selecting pauses the evidence list so live polling cannot move your place; explicitly resume to see new observations.
-4. Optionally request explanations, a hint or one suggested action. This guidance is deterministic, uses fresh observations and cites its supporting evidence. Its suggested check is optional. It cannot read the hidden fault ledger and remains separate from the future AI assistant.
-5. Try starting the selected service. A control success is not recovery: three healthy fleet/business cycles must follow. Starting the wrong node is allowed and remains in the history.
-6. Save an optional diagnosis, export evidence, reveal the exercise or end/reset. Reset preserves the investigation and does not count as targeted recovery. If recovery was already verified, that result is preserved separately from reset/closure. Use **Review** in history to browse older evidence, open exact note/help citations, review actions and export a specific investigation. Recovery and reset each retain their own supporting observations.
+```bash
+docker compose build
+docker compose up -d
+docker compose ps
+```
 
-The timer starts at 15 minutes. Extend it explicitly, or respond to the expiry prompt within its 60-second grace period. The controller enforces expiry even when the browser closes. A stopped controller cannot enforce cleanup until it resumes; use the manual reset below if needed.
+The first build downloads a Python base image and takes a few minutes. `docker compose ps` should list four running containers: `controller`, `broker`, `gateway-a` and `catalog-b`.
 
-Challenge isolation is a learning boundary: the operator who controls Docker/the local database can discover the fault. The application hides it from normal challenge responses, exports and guidance until reveal/end. It is not a tamper-proof examination platform.
+### 5. Open the lab
 
-## Reset and stop
+Open **http://localhost:8787** in a browser on the same machine.
 
-The UI resets only the two owned fleet containers and verifies their responses. If the controller is unavailable:
+- **Lab inside a VM or on another machine?** Forward the port over SSH from the computer you browse on: `ssh -L 8787:localhost:8787 you@lab-machine`, then open http://localhost:8787 there. In VS Code Remote-SSH, the **Ports** panel can forward 8787 for you. Use `localhost`, not the machine's IP: the lab deliberately rejects other addresses.
+
+The page shows **Collecting a healthy baseline** with a 0/5 meter. After about ten seconds both nodes turn **healthy** and **Start investigation** turns green.
+
+## Your first investigation
+
+The **Suggested next** card always shows a sensible next step, but you can explore in any order.
+
+1. Leave the mode on **Practice · known fault** and the target on **Shared dependency · catalogue**, then press **Start investigation**. The lab really stops the `catalog-b` container.
+2. Within about six seconds the topology changes: `gateway-a` turns **degraded** (alive, but its requests fail) and `catalog-b` **unavailable**.
+3. Click a node, then run checks: **Process liveness**, **Business request**, **Container state** and **Dependency logs**. Each result is stored in the **Evidence notebook**; open a record to see the raw measurement.
+4. Stuck? **A little direction?** offers an evidence explanation, a hint or one suggested action. Help is optional and recorded.
+5. Select a node and press **Start selected service**. Starting the wrong one is allowed and is recorded as an attempt. An accepted start is not proof: the lab needs **three healthy cycles in a row** before it shows **Recovery verified**.
+6. Optionally write your diagnosis, ticking the evidence that supports it, then press **End & reset** to restore both services. Past investigations stay in **Investigation history**.
+
+**Challenge · hidden fault** stops a random service and hides which one until you reveal it or end the attempt. The 15-minute timer can be extended; if it runs out and you don't respond within 60 seconds, the lab resets itself, even with the browser closed.
+
+## Stop, restart and uninstall
+
+```bash
+docker compose stop        # pause everything; investigation history is kept
+docker compose up -d       # start again later
+docker compose down        # remove the containers; history is still kept in a Docker volume
+docker compose down -v     # remove containers AND all investigation history
+```
+
+Only this project's containers, networks and volume are touched; nothing else on your machine is cleaned up.
+
+If the web page stops responding mid-investigation, bring the services back with:
 
 ```bash
 docker compose start catalog-b gateway-a
 docker compose up -d controller broker
 ```
 
-Reopen the UI, inspect the current state, and use **End & reset** to reconcile and verify the baseline. Manual Docker actions do not fabricate an application success record.
+Then reopen the page and press **End & reset** so the lab re-verifies a healthy baseline.
 
-```bash
-docker compose down
-```
+## Troubleshooting
 
-The dedicated state volume is retained. No global prune or unrelated service cleanup is used. Do not add `-v` unless you intentionally want to delete investigation history.
+| Symptom | What to do |
+| --- | --- |
+| `permission denied ... docker.sock` | Your user cannot use Docker yet. Follow Docker's post-installation step above, log out and in, then retry. Do not `chmod` the socket. |
+| `Run scripts/init_env.py first` | Step 3 was skipped. Run `python3 scripts/init_env.py`. |
+| `port is already allocated` on 8787 | Something else uses port 8787. Stop it, then `docker compose up -d` again. |
+| Page says **Untrusted host** | Browse to `http://localhost:8787` (or forward the port as in step 5) rather than an IP address. |
+| Nodes stay **Unknown** | Run `docker compose ps`; all four containers should be running. `docker compose logs controller` shows errors. |
+| Preflight reports low memory | Close other programs and retry. The lab needs about 2 GiB free to run with its resource limits. |
+
+## More detail
+
+The timer, challenge secrecy, evidence retention and recovery rules are explained in [architecture](docs/architecture.md) and the [fault catalogue](docs/fault-catalogue.md). Challenge secrecy is a learning boundary, not an exam lock: whoever controls Docker on the machine can see which container stopped.
 
 ## Development and validation
 

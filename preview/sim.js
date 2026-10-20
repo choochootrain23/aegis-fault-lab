@@ -403,6 +403,14 @@ document.addEventListener('click', event => {
   }
 }, true);
 
+// Every visit and every reload starts with a reminder that this is a simulation.
+document.addEventListener('DOMContentLoaded', () => {
+  const welcome = document.getElementById('sim-welcome');
+  if (!welcome) return;
+  document.getElementById('sim-continue').addEventListener('click', () => welcome.close());
+  welcome.showModal();
+});
+
 // Preview-only control: skip ahead so visitors can see the expiry prompt and automatic reset.
 document.addEventListener('DOMContentLoaded', () => {
   const skip = document.getElementById('sim-skip');

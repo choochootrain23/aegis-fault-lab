@@ -12,3 +12,36 @@
 body{padding-bottom:110px}
 .toast{bottom:120px}
 @media(max-width:600px){.sim-banner{padding-inline:14px}.sim-banner .sim-actions{width:100%}.sim-banner .sim-actions>*{flex:1}body{padding-bottom:200px}.toast{bottom:210px}}
+
+/* Top strip: the first thing on the page. */
+.sim-strip{display:flex;flex-wrap:wrap;align-items:center;gap:8px 18px;padding:10px 24px;color:#fff;font-size:13px;
+ background:repeating-linear-gradient(-45deg,var(--accent) 0 18px,#1d48d6 18px 36px)}
+.sim-strip b{color:#fff}
+.sim-strip-text{flex:1;min-width:220px}
+.sim-strip a{font:600 11px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:#fff;text-decoration:underline;text-underline-offset:4px}
+.sim-tag{display:inline-block;padding:6px 10px;background:#fff;color:var(--accent);font:800 12px/1 var(--mono);letter-spacing:.24em}
+.sim-banner strong{font-size:13px;padding:9px 12px}
+.sim-banner .sim-explain{border-color:#ffffff80;color:#fff}
+.sim-banner .sim-explain:hover{background:#ffffff26}
+
+/* Hero stamp so no screenshot of the preview reads as the real lab. */
+.sim-stamp{display:inline-block;margin:-4px 0 26px;padding:8px 22px;border:4px solid var(--accent);color:var(--accent);
+ font:800 clamp(26px,4.6vw,52px)/1 var(--display);font-stretch:125%;letter-spacing:.08em;text-transform:uppercase;transform:rotate(-3deg);background:var(--accent-soft)}
+
+.nav-links a.nav-install{color:var(--accent);font-weight:700;border:1px solid var(--accent)}
+.nav-links a.nav-install:hover{background:var(--accent);color:#fff}
+.sim-dot{background:var(--signal)!important}
+
+/* Welcome dialog shown on every load. */
+.sim-welcome{max-width:620px;padding:0;border:0;border-top:8px solid var(--accent)}
+.sim-welcome-head{display:flex;align-items:center;gap:14px;padding:22px 32px 0}
+.sim-welcome-head .eyebrow{margin:0}
+.sim-welcome h2{font-size:30px;line-height:1.15;margin:16px 32px 12px}
+.sim-welcome p,.sim-welcome ul{margin:0 32px 14px;color:var(--ink);font-size:15px}
+.sim-welcome ul{padding-left:20px}
+.sim-welcome li{margin:6px 0}
+.sim-welcome-actions{display:flex;flex-wrap:wrap;gap:10px;padding:20px 32px 28px;border-top:1px solid var(--line);margin-top:18px}
+.sim-welcome-actions .primary{background:var(--accent);border-color:var(--accent)}
+.sim-welcome-actions .primary:hover{background:#1a43cc}
+.sim-continue{margin-left:auto}
+@media(max-width:600px){.sim-strip{padding:10px 14px}.sim-welcome h2{font-size:24px;margin-inline:20px}.sim-welcome p,.sim-welcome ul{margin-inline:20px}.sim-welcome-head,.sim-welcome-actions{padding-inline:20px}.sim-welcome-actions>*{width:100%}.sim-continue{margin-left:0}}
