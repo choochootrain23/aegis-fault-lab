@@ -185,6 +185,8 @@ def main():
             # CPU starvation on the catalogue: slow, not down; resources reveal it; stopping the job recovers.
             page.select_option('#practice-kind', 'cpu-starvation')
             page.select_option('#practice-target', 'catalog-b')
+            expect(page.locator('#scenario-title')).to_have_text('When a service is starved of CPU')
+            expect(page.locator('#scenario-number')).to_have_text('02')
             expect(page.locator('#start')).to_be_enabled(timeout=20000)
             page.click('#start')
             expect(page.locator('#session-status')).to_have_text('investigating', timeout=20000)
@@ -245,11 +247,15 @@ def main():
 
             # Challenge: hidden target, timer skip and expiry continuation.
             page.select_option('#mode', 'challenge')
+            expect(page.locator('#scenario-number')).to_have_text('??')
+            expect(page.locator('#scenario-title')).to_have_text('A hidden fault')
             expect(page.locator('#start')).to_be_enabled(timeout=20000)
             page.click('#start')
             expect(page.locator('#session-status')).to_have_text('investigating', timeout=15000)
             state = page.evaluate("fetch('api/state').then(r=>r.json())")
             assert 'scenario' not in state['session'] and 'fault_target' not in state['session']
+            heading = page.locator('.scenario-strip').inner_text()
+            assert 'gateway-a' not in heading and 'catalog-b' not in heading, 'the heading must not name the hidden target'
             journey = page.locator('#journey').inner_text()
             assert 'gateway-a' not in journey and 'catalog-b' not in journey, 'directions must not name the hidden target'
             page.click('#sim-skip')

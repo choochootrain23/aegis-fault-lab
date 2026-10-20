@@ -90,7 +90,7 @@ function render(){
  el.querySelector('.node-measure').textContent=AegisView.measurement(n);}
  const gateway=state.nodes.find(n=>n.id==='gateway-a');const measured=gateway?.business;
  AegisTopology.update(state);
- renderJourney();renderCheckResults();
+ renderJourney();renderCheckResults();renderScenario();
  $('edge-label').textContent=measured?(gateway.health==='unknown'?'Previous observation is stale':measured.body.ok?'Observed business request succeeded':'Observed business request failed'):'Waiting for observed requests';
  $('scenario-reveal').textContent=s?.scenario?`Known scenario: ${label(s.scenario.kind)} on ${s.scenario.target}`:'';
  $('debrief').textContent=s?.debrief||'';
@@ -126,6 +126,15 @@ async function renderReport(){
   setText('report-badge',live?'Live · updating':label(detail.session.outcome||detail.session.status));
   setText('report-intro',live?'This investigation is still running; the replay grows as new observations arrive.':'Replay of your most recent investigation. Older ones are under Investigation history.');
  }catch(e){/* the next poll retries */}finally{reportBusy=false;}
+}
+function renderScenario(){
+ const s=state?.session, active=s&&s.status!=='ended';
+ const copy=active?(s.scenario?AegisView.scenarioCopy(s.scenario.kind,s.scenario.target,'practice'):AegisView.scenarioCopy(null,null,'challenge'))
+  :AegisView.scenarioCopy($('practice-kind').value,$('practice-target').value,$('mode').value);
+ if(active&&s.mode==='challenge'&&s.scenario)copy.eyebrow=copy.eyebrow.replace(/^Scenario \d+/,'Challenge · revealed');
+ setText('scenario-number',copy.number);setText('scenario-eyebrow',copy.eyebrow);setText('scenario-text',copy.text);
+ const [lead,em,tail]=copy.title, sig=copy.title.join('|');
+ if($('scenario-title').dataset.sig!==sig){const mark=document.createElement('em');mark.textContent=em;$('scenario-title').replaceChildren(lead,mark,tail);$('scenario-title').dataset.sig=sig;}
 }
 function renderJourney(){
  const j=AegisView.journey(state,connected);
@@ -180,7 +189,8 @@ $('clear-selection').addEventListener('click',()=>{chosen.clear();$('selected-co
 
 $('note-form').addEventListener('submit',async e=>{e.preventDefault();const saved=await action('note',{explanation:$('explanation').value,uncertainty:$('uncertainty').value,evidence_ids:[...chosen]},'Diagnosis saved with evidence references');if(saved){$('explanation').value='';$('uncertainty').value='';chosen.clear();$('selected-count').textContent='0 evidence selected';evidenceSignature='';renderEvidence(true);}});
 $('expiry-dialog').addEventListener('cancel',e=>e.preventDefault());
-$('mode').addEventListener('change',renderControls);
+$('mode').addEventListener('change',()=>{renderControls();renderScenario();});
+for(const id of ['practice-kind','practice-target'])$(id).addEventListener('change',renderScenario);
 $('evidence-live').addEventListener('click',()=>setEvidencePaused(!evidencePaused));
 $('evidence').addEventListener('toggle',e=>{if(e.target.tagName==='DETAILS'&&e.target.open)setEvidencePaused(true);},true);
 $('maintenance').addEventListener('click',()=>action('maintenance',{},'Retention cleanup complete. Active investigation evidence is preserved.'));

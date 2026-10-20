@@ -54,6 +54,21 @@ globalThis.AegisView = Object.freeze({
   faultLabel(kind) {
     return ({'service-unavailable':'Stopped service','cpu-starvation':'CPU starvation','disk-full':'Disk full','config-drift':'Config drift'})[kind]||kind;
   },
+  // Scenario heading: the selected fault and target, the running practice scenario, or a hidden challenge.
+  scenarioCopy(kind, target, mode) {
+    if (mode==='challenge') return {number:'??', eyebrow:'Challenge · hidden fault', title:['A ','hidden',' fault'],
+      text:'One of four faults on one of the two services, picked at random and kept secret. Find it from the evidence, fix it, then reveal it to check.'};
+    const kinds=['service-unavailable','cpu-starvation','disk-full','config-drift'];
+    const copy={
+      'service-unavailable':{title:['When a service ','stops',''], text:'Its container is stopped, so its own checks fail.'},
+      'cpu-starvation':{title:['When a service is ','starved',' of CPU'], text:'A runaway job uses its whole CPU limit. It still answers, just slowly.'},
+      'disk-full':{title:['When the disk ','fills up',''], text:'Its 8 MiB /tmp is full. The process stays live, but every write fails with HTTP 507.'},
+      'config-drift':{title:['When config ','drifts',''], text:'A bad reload changes one setting. Liveness, CPU and disk look normal, yet requests fail.'},
+    }[kind]||{title:['A ','fault',''], text:''};
+    const scope=target==='gateway-a'?'On the gateway, a local failure: see whether the catalogue stays healthy.':'On the shared catalogue: see whether the gateway fails with it.';
+    return {number:String(kinds.indexOf(kind)+1).padStart(2,'0'), eyebrow:`Scenario ${String(kinds.indexOf(kind)+1).padStart(2,'0')} · ${this.faultLabel(kind)} · ${target}`,
+      title:copy.title, text:`${copy.text} ${scope}`};
+  },
   timer(session, serverNow) {
     if (!session || ['ended', 'recovered', 'resetting'].includes(session.status)) {
       return {running:false, expired:false, remaining:0, grace:0, warning:false};
