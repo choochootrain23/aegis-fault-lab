@@ -46,12 +46,16 @@ The real Docker Chromium challenge/restart walkthrough passed. State/export resp
 
 Reports are under ignored `state/validation/`. The app is running at http://localhost:8787 with both fleet services healthy and no active investigation at this checkpoint.
 
+## Sixth checkpoint (20 October 2026)
+
+- Published to https://github.com/choochootrain23/aegis-fault-lab with a GitHub Pages browser simulator. The simulator reuses the real UI with a JavaScript stand-in controller; every measurement in it is generated and permanently labelled. `tests/preview_walkthrough.py` passes.
+- Production restart during an in-flight mutation and the unaccelerated fifteen-minute lease both pass, with resource samples. See [validation](VALIDATION.md).
+- Both the app and the simulator now follow an editorial visual style inspired by getartcraft.com, with self-hosted OFL fonts and colour reserved for state and diagnostics. The real Docker browser walkthrough passes on the restyled UI.
+
 ## Next work
 
-1. Validate the full fifteen-minute production lease and restart during an in-flight broker mutation. The test harness covers accelerated expiry; the production restart check was during investigation, not during a mutation.
-2. Measure sustained resource usage and storage pressure, and broaden accessibility/browser coverage.
-3. Publish the validated milestone with clear current limitations for portfolio review.
-4. Add the third node, bounded network/filesystem scenarios and the read-only model investigator after the remaining first-scenario gates. No model key or paid cloud configuration has been used.
+1. Exercise storage-pressure exhaustion and a multi-hour run; broaden accessibility/browser coverage.
+2. Add the third node, bounded network/filesystem scenarios and the read-only model investigator after the remaining first-scenario gates. No model key or paid cloud configuration has been used.
 
 ## Boundaries preserved
 

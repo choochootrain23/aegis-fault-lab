@@ -18,7 +18,9 @@ The lab has several distinct validation layers. Passing one does not establish t
 
 The production Docker walkthrough now passes all three rounds. Detection took 5.59–5.67 seconds; verified recovery took 7.36–7.41 seconds. Effective fleet cgroup/privilege checks pass via `scripts/verify_runtime.py`. The real Docker browser challenge/restart/recovery walkthrough also passes via `scripts/validate_browser.py --run`, with no JavaScript page errors. Reports and screenshots are retained under ignored `state/validation/`.
 
-A controller restart during an active investigation is validated. Restart during an in-flight mutation, the full unaccelerated production lease and sustained pressure remain separate outstanding checks. Do not describe the entire roadmap as complete.
+A controller restart during an active investigation is validated.
+
+Two further production gates passed on 20 October 2026 via `scripts/validate_gates.py`. **Restart during an in-flight mutation:** the controller was killed 0.15 s after a recovery start was sent; after restart the action was recorded as unknown with the reconciliation note, Docker logged exactly one start (the broker completed it independently), nothing was replayed, and recovery was credited only after twelve fresh healthy observations. **Unaccelerated lease:** with no browser attached, the fifteen-minute timer expired, the sixty-second grace elapsed and the verified automatic reset ended the investigation 69 s after the deadline, citing twelve baseline observations, with both nodes healthy. Over that 16-minute run the controller used 45–49 MiB and at most 2% CPU, the broker about 16 MiB, the gateway about 19 MiB; host available memory stayed between 2.8 and 3.3 GiB, swap use was flat at about 1.4 GiB and the database grew from 3.0 to 4.1 MiB. Storage-pressure exhaustion and multi-hour runs remain untested. Do not describe the entire roadmap as complete.
 
 ## Reproduce browser reviews
 

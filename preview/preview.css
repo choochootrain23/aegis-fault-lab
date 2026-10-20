@@ -1,13 +1,14 @@
-/* Simulator banner for the static preview. Always visible so no screenshot can pass as the real lab. */
-.sim-banner{position:sticky;top:0;z-index:20;display:flex;flex-wrap:wrap;align-items:center;gap:10px 18px;padding:10px 20px 10px 96px;background:#5b3f8c;color:#fff;font-size:12px;line-height:1.45;box-shadow:0 2px 10px #0002}
-.sim-banner strong{letter-spacing:1.2px;font-size:11px;background:#fff;color:#5b3f8c;border-radius:5px;padding:3px 8px;white-space:nowrap}
-.sim-banner p{margin:0;flex:1;min-width:240px}
-.sim-banner a{color:#fff;text-decoration:underline;font-weight:600}
+/* Simulator banner for the static preview. Fixed to the bottom edge so no screenshot can pass as the real lab. */
+.sim-banner{position:fixed;left:0;right:0;bottom:0;z-index:40;display:flex;flex-wrap:wrap;align-items:center;gap:10px 20px;padding:12px 24px calc(12px + env(safe-area-inset-bottom,0px));background:var(--ink);color:var(--bg);font-size:13px;line-height:1.45;border-top:3px solid var(--accent)}
+.sim-banner strong{font:700 11px/1 var(--mono);letter-spacing:.2em;background:var(--accent);color:#fff;padding:7px 10px;white-space:nowrap}
+.sim-banner p{margin:0;flex:1;min-width:240px;color:#d9d8d4}
+.sim-banner p b{color:#fff}
 .sim-banner .sim-actions{display:flex;gap:8px;flex-wrap:wrap}
-.sim-banner .button{padding:7px 12px;font-size:11px;border-radius:7px}
-.sim-banner .sim-download{background:#fff;color:#4a2f78}
-.sim-banner .sim-download:hover{background:#efe8fb}
-.sim-banner #sim-skip{background:#ffffff1f;border-color:#ffffff66;color:#fff}
-.sim-banner #sim-skip:hover:not(:disabled){background:#ffffff33}
-.rail{z-index:21}
-@media(max-width:600px){.sim-banner{padding:10px 14px 10px 66px}.sim-banner .sim-actions{width:100%}.sim-banner .sim-actions>*{flex:1}}
+.sim-banner .button{padding:10px 14px;font-size:10px}
+.sim-banner .sim-download{background:var(--bg);color:var(--ink);border-color:var(--bg)}
+.sim-banner .sim-download:hover{background:#fff}
+.sim-banner #sim-skip{border-color:#ffffff80;color:#fff}
+.sim-banner #sim-skip:hover:not(:disabled){background:#ffffff26}
+body{padding-bottom:110px}
+.toast{bottom:120px}
+@media(max-width:600px){.sim-banner{padding-inline:14px}.sim-banner .sim-actions{width:100%}.sim-banner .sim-actions>*{flex:1}body{padding-bottom:200px}.toast{bottom:210px}}

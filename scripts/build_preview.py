@@ -26,9 +26,9 @@ HTML = [
     ('Two real services. One interruption.', 'Two simulated services. One interruption.'),
     ('Container lab · shared kernel', 'Simulated in your browser'),
     ('LINUX CONTAINER <span>', 'SIMULATED NODE <span>'),
-    ('<span class="eyebrow">MEASURED OBSERVATIONS</span>', '<span class="eyebrow">SIMULATED OBSERVATIONS</span>'),
+    ('<span class="eyebrow">03 / MEASURED OBSERVATIONS</span>', '<span class="eyebrow">03 / SIMULATED OBSERVATIONS</span>'),
     ('Real checks will appear here when the collector runs.', 'Simulated checks will appear here when the collector runs.'),
-    ('<span class="eyebrow">PERSISTED LOCALLY</span>', '<span class="eyebrow">THIS TAB ONLY</span>'),
+    ('<span class="eyebrow">07 / PERSISTED LOCALLY</span>', '<span class="eyebrow">07 / THIS TAB ONLY</span>'),
     ('Real processes & measurements. No physical hardware claims.', 'Simulator preview · generated measurements. The downloadable lab uses real processes.'),
 ]
 APP = [
@@ -55,6 +55,7 @@ def main():
     web = ROOT / 'web'
     for name in ('style.css', 'view-model.js'):
         shutil.copy2(web / name, site / name)
+    shutil.copytree(web / 'fonts', site / 'fonts')
     for name in ('sim.js', 'preview.css'):
         shutil.copy2(ROOT / 'preview' / name, site / name)
     (site / 'index.html').write_text(replace_all((web / 'index.html').read_text(), HTML, 'index.html'))

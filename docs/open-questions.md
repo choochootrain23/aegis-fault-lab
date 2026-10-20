@@ -36,6 +36,7 @@ Status: unresolved review agenda for `/grill-with-docs`. Defaults below allow a 
 - Round 9 Q27 settled: 24-hour raw evidence and 30-day summaries, bounded export of supporting evidence, expiry warnings and explicit unavailable-reference indicators.
 - Round 9 Q28 settled: prove the two-node workflow, polish one complete interactive scenario, then broaden fault coverage. AI remains required for the finished portfolio.
 - Round 10 Q29: user confirms the baseline with emphasis on a polished, attractive and interactive UI/UX, including colourful buttons and options that make important actions easy to notice. Routine engineering/layout details are delegated within the agreed constraints; meaningful scope or privilege changes return for discussion. Design review is complete; implementation has not been requested.
+- 20 October 2026 visual direction: user asked for both the real app and the browser simulator to follow the editorial style of getartcraft.com. Adopted its structure and typography (warm off-white canvas, ruled hairline grid, wide display headings with italic serif accents, mono uppercase labels, square black/outlined buttons). To honour Q22/Q29, colour stays reserved for meaning: health states, the four diagnostic checks and the primary recovery action. Fonts are self-hosted (OFL) so the strict same-origin CSP and offline local use are unchanged.
 
 ### Original design questions still to resolve
 

@@ -140,7 +140,7 @@ Detailed records are retained for 24 hours; active-investigation evidence is pro
 
 ## Current limitations and next gates
 
-- Full fifteen-minute production expiry, interruption during an in-flight broker mutation, and sustained resource/storage-pressure behavior still need deployment validation.
+- The unaccelerated fifteen-minute expiry and a controller kill during an in-flight Docker action now pass in production (see [validation](docs/VALIDATION.md)). Storage-pressure exhaustion and multi-hour runs still need deployment validation.
 - Desktop/mobile screenshots, archive interactions, connection loss/recovery and a real-process active investigation have been reviewed in headless Chromium. The real Docker browser challenge/restart/recovery walkthrough now also passes. Broader accessibility auditing and other browsers remain outstanding.
 - Only service-unavailability scenarios are implemented. Network delay, filesystem exhaustion and the third node remain deferred until the first scenario is polished and validated.
 - No AI calls are implemented. Gemini free tier/lightweight model is the agreed later direction; no subscription or paid billing is configured.
@@ -148,3 +148,5 @@ Detailed records are retained for 24 hours; active-investigation evidence is pro
 - Containers share a kernel. Synthetic business content and deliberately injected faults are labelled; no physical repair or hardware telemetry claims are made.
 
 See [implementation checkpoint](docs/IMPLEMENTATION_STATUS.md), [vision](docs/vision.md), [architecture](docs/architecture.md) and [roadmap](docs/roadmap.md).
+
+Fonts in `web/fonts/` (Archivo, Inter, Geist Mono, Instrument Serif) are self-hosted under the SIL Open Font License; see `web/fonts/LICENSES.txt`.
