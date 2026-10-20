@@ -52,6 +52,7 @@ Reports are under ignored `state/validation/`. The app is running at http://loca
 - Production restart during an in-flight mutation and the unaccelerated fifteen-minute lease both pass, with resource samples. See [validation](VALIDATION.md).
 - Both the app and the simulator now follow an editorial visual style inspired by getartcraft.com, with self-hosted OFL fonts and colour reserved for state and diagnostics. The real Docker browser walkthrough passes on the restyled UI.
 - Design developed further: progress tracker, state-driven suggested-next card with cycle meters (`healthy_streak` added to `/api/state`), per-check last results, animated request wire and signal colours. Backend tests, the simulator walkthrough and the real Docker browser walkthrough pass.
+- Interactive live map (`web/topology.js`) with draggable controller, broker and service nodes, state-coloured edges, keyboard movement and remembered layout; section-aware navigation; vivid Google-style palette. The simulator walkthrough covers dragging, click-vs-drag, keyboard movement, persistence, reset and the control-plane toggle; the real Docker browser walkthrough passes.
 
 ## Next work
 

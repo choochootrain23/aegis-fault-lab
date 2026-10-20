@@ -15,7 +15,7 @@ body{padding-bottom:110px}
 
 /* Top strip: the first thing on the page. */
 .sim-strip{display:flex;flex-wrap:wrap;align-items:center;gap:8px 18px;padding:10px 24px;color:#fff;font-size:13px;
- background:repeating-linear-gradient(-45deg,var(--accent) 0 18px,#1d48d6 18px 36px)}
+ background:repeating-linear-gradient(-45deg,var(--accent) 0 18px,#1765cc 18px 36px)}
 .sim-strip b{color:#fff}
 .sim-strip-text{flex:1;min-width:220px}
 .sim-strip a{font:600 11px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:#fff;text-decoration:underline;text-underline-offset:4px}
@@ -42,6 +42,6 @@ body{padding-bottom:110px}
 .sim-welcome li{margin:6px 0}
 .sim-welcome-actions{display:flex;flex-wrap:wrap;gap:10px;padding:20px 32px 28px;border-top:1px solid var(--line);margin-top:18px}
 .sim-welcome-actions .primary{background:var(--accent);border-color:var(--accent)}
-.sim-welcome-actions .primary:hover{background:#1a43cc}
+.sim-welcome-actions .primary:hover{background:#1765cc}
 .sim-continue{margin-left:auto}
 @media(max-width:600px){.sim-strip{padding:10px 14px}.sim-welcome h2{font-size:24px;margin-inline:20px}.sim-welcome p,.sim-welcome ul{margin-inline:20px}.sim-welcome-head,.sim-welcome-actions{padding-inline:20px}.sim-welcome-actions>*{width:100%}.sim-continue{margin-left:0}}

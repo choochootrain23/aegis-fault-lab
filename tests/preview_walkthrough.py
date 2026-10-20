@@ -8,6 +8,7 @@ Run from the project root with: python tests/preview_walkthrough.py
 import functools
 import http.server
 import json
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -41,10 +42,51 @@ def main():
             expect(page.locator('.sim-strip')).to_contain_text('SIMULATION')
             expect(page.locator('.sim-stamp')).to_be_visible()
             expect(page.locator('.sim-banner')).to_contain_text('SIMULATOR')
+            page.evaluate("document.getElementById('evidence-section').scrollIntoView({block:'start'})")
+            expect(page.locator('.nav-links a.nav-active')).to_have_text('Evidence')
+            for link in ('Diagnosis', 'History', 'Evidence'):
+                page.click(f'.nav-links a:text-is("{link}")')
+                expect(page.locator('.nav-links a.nav-active')).to_have_text(link)
+            page.wait_for_timeout(1000)
+            page.evaluate('scrollTo(0, 0)')
+            expect(page.locator('.nav-links a.nav-active')).to_have_text('Fleet')
             expect(page.locator('footer')).not_to_contain_text('Real processes')
             expect(page.locator('#next-title')).to_have_text('Collecting a healthy baseline')
             expect(page.locator('#start')).to_be_enabled(timeout=20000)
             expect(page.locator('#next-title')).to_have_text('Ready when you are')
+
+            # Live map: drag moves a node and its edge; a drag is not a click; layout persists and resets.
+            catalog = page.locator('#node-catalog-b')
+            page.evaluate("document.getElementById('topology').scrollIntoView({block:'center'})")
+            edge_before = page.locator('#edge').get_attribute('d')
+            box = catalog.bounding_box()
+            page.mouse.move(box['x'] + box['width'] / 2, box['y'] + box['height'] / 2)
+            page.mouse.down()
+            page.mouse.move(box['x'] + box['width'] / 2 - 60, box['y'] + box['height'] / 2 + 70, steps=8)
+            page.mouse.up()
+            moved = catalog.bounding_box()
+            assert abs(moved['y'] - box['y']) > 40, 'drag did not move the node'
+            assert page.locator('#edge').get_attribute('d') != edge_before, 'edge did not follow the node'
+            expect(page.locator('#inspector-title')).to_have_text('gateway-a')
+            catalog.click()
+            expect(page.locator('#inspector-title')).to_have_text('catalog-b')
+            page.locator('[data-graph-node="broker"]').focus()
+            broker_before = page.locator('[data-graph-node="broker"]').bounding_box()
+            page.keyboard.press('Shift+ArrowLeft')
+            assert page.locator('[data-graph-node="broker"]').bounding_box()['x'] < broker_before['x'] - 5
+            expect(page.locator('#edge-control-catalog-b')).to_have_attribute('d', re.compile(r'^M'))
+            page.reload()
+            page.click('#sim-continue')
+            page.evaluate("document.getElementById('topology').scrollIntoView({block:'center'})")
+            assert abs(page.locator('#node-catalog-b').bounding_box()['y'] - moved['y']) < 3, 'layout was not remembered'
+            page.click('#topology-plane')
+            expect(page.locator('[data-graph-node="controller"]')).to_be_hidden()
+            page.click('#topology-plane')
+            page.click('#topology-reset')
+            assert abs(page.locator('#node-catalog-b').bounding_box()['y'] - box['y']) < 3, 'reset did not restore the layout'
+            page.click('#node-gateway-a')
+            expect(page.locator('#start')).to_be_enabled(timeout=20000)
+            page.screenshot(path=str(output / 'map.png'))
             expect(page.locator('#steps li.current')).to_have_text('02Start')
             expect(page.locator('#node-gateway-a .node-state')).to_have_text('healthy')
 
@@ -63,7 +105,7 @@ def main():
             expect(page.locator('.evidence-row').filter(has_text='stopped').first).to_be_visible()
             expect(page.locator('[data-check="service"] .check-result')).to_contain_text('stopped')
             expect(page.locator('#next-title')).to_have_text('Find the boundary of the failure')
-            expect(page.locator('#edge')).to_have_class('failed')
+            expect(page.locator('#edge')).to_have_class(re.compile(r'\bfailed\b'))
             page.screenshot(path=str(output / 'investigating.png'))
             page.click('[data-help="action"]')
             expect(page.locator('#help-result')).to_contain_text('catalog-b stopped')
@@ -77,7 +119,7 @@ def main():
             page.click('#recover')
             expect(page.locator('#session-status')).to_have_text('recovered', timeout=15000)
             expect(page.locator('#next-title')).to_have_text('Recovery verified')
-            expect(page.locator('#edge')).to_have_class('flowing')
+            expect(page.locator('#edge')).to_have_class(re.compile(r'\bflowing\b'))
             expect(page.locator('#node-gateway-a .node-state')).to_have_text('healthy')
             page.locator('.evidence-row input').first.check()
             page.fill('#explanation', 'Gateway stayed live while business requests failed; catalogue container was stopped.')

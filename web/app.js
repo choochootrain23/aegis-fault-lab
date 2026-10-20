@@ -68,8 +68,7 @@ function render(){
  el.dataset.health=n.health;badge.textContent=label(n.health);badge.className='node-state '+n.health;
  el.querySelector('.node-measure').textContent=AegisView.measurement(n);}
  const gateway=state.nodes.find(n=>n.id==='gateway-a');const measured=gateway?.business;
- $('edge').classList.toggle('failed',!!measured&&!measured.body.ok);
- $('edge').classList.toggle('flowing',!!measured&&measured.body.ok&&gateway.health!=='unknown');
+ AegisTopology.update(state);
  renderJourney();renderCheckResults();
  $('edge-label').textContent=measured?(gateway.health==='unknown'?'Previous observation is stale':measured.body.ok?'Observed business request succeeded':'Observed business request failed'):'Waiting for observed requests';
  $('scenario-reveal').textContent=s?.scenario?`Known scenario: ${label(s.scenario.kind)} on ${s.scenario.target}`:'';
@@ -172,3 +171,19 @@ async function openArchive(id){
 async function archivePage(){const page=await request('investigations/'+encodeURIComponent(archiveId)+'/evidence?limit=30'+(archiveCursor?'&before='+encodeURIComponent(archiveCursor):''));$('archive-evidence').insertAdjacentHTML('beforeend',page.items.map(archiveRecord).join(''));archiveCursor=page.next_cursor;$('archive-more').disabled=!archiveCursor;}
 $('archive-more').addEventListener('click',async()=>{if(archiveBusy)return;archiveBusy=true;$('archive-more').disabled=true;try{await archivePage();}catch(e){toast(e.message,true);}finally{archiveBusy=false;}});
 async function poll(){await refresh();setTimeout(poll,2000);}poll();setInterval(renderTimer,1000);
+// Highlight the navigation link for the section currently in view.
+const navTargets=[...document.querySelectorAll('.nav-links a[href^="#"]')].map(a=>({a,el:document.querySelector(a.getAttribute('href'))?.closest('.panel,.history-grid')})).filter(t=>t.el);
+function markNav(current){for(const t of navTargets){t.a.classList.toggle('nav-active',t===current);if(t===current)t.a.setAttribute('aria-current','location');else t.a.removeAttribute('aria-current');}}
+// The section filling most of the viewport wins; short final sections still win once they dominate the screen.
+function spy(){
+ if(performance.now()<(spy.lock||0))return;
+ const navBottom=document.querySelector('.topnav').getBoundingClientRect().bottom;
+ let current=navTargets[0], best=0;
+ for(const t of navTargets){const r=t.el.getBoundingClientRect();const visible=Math.min(r.bottom,innerHeight)-Math.max(r.top,navBottom);if(visible>best){best=visible;current=t;}}
+ markNav(current);
+}
+// A clicked link stays highlighted even if the page cannot scroll its section to the top.
+for(const t of navTargets)t.a.addEventListener('click',()=>{spy.lock=performance.now()+900;markNav(t);});
+for(const type of ['wheel','touchstart','keydown'])addEventListener(type,()=>{spy.lock=0;},{passive:true});
+addEventListener('scroll',()=>{if(spy.queued)return;spy.queued=true;requestAnimationFrame(()=>{spy.queued=false;spy();});},{passive:true});
+addEventListener('resize',spy);spy();

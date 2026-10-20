@@ -26,6 +26,7 @@ HTML = [
     ('<link rel="stylesheet" href="/static/style.css">', '<link rel="stylesheet" href="style.css"><link rel="stylesheet" href="preview.css"><script src="sim.js"></script>'),
     ('src="/static/view-model.js"', 'src="view-model.js"'),
     ('src="/static/app.js"', 'src="app.js"'),
+    ('src="/static/topology.js"', 'src="topology.js"'),
     ('<body>', '<body>' + STRIP + BANNER + WELCOME),
     ('<p class="wordmark" aria-hidden="true">AEGISRACK</p>', '<p class="wordmark" aria-hidden="true">AEGISRACK</p><p class="sim-stamp">Simulator</p>'),
     ('href="/" aria-label="AegisRack home"', 'href="./" aria-label="AegisRack home"'),
@@ -62,7 +63,7 @@ def main():
     shutil.rmtree(site, ignore_errors=True)
     site.mkdir()
     web = ROOT / 'web'
-    for name in ('style.css', 'view-model.js'):
+    for name in ('style.css', 'view-model.js', 'topology.js'):
         shutil.copy2(web / name, site / name)
     shutil.copytree(web / 'fonts', site / 'fonts')
     for name in ('sim.js', 'preview.css'):
