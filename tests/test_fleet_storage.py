@@ -15,6 +15,7 @@ def service(tmp_path, monkeypatch):
     monkeypatch.setattr(fleet, 'SCRATCH', tmp_path)
     monkeypatch.setattr(fleet, 'FLEET_TOKEN', 'fleet-token')
     fleet.LOGS.clear()
+    fleet.config.update(fleet.DEPLOYED)
 
     async def call(method, path, **kwargs):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=fleet.app), base_url='http://catalog-b') as client:
@@ -80,3 +81,27 @@ def test_runaway_job_starts_once_logs_and_stops(service):
     assert stopped == {'changed': True, 'stopped_threads': fleet.JOB_THREADS}
     assert not any(t.is_alive() for t in fleet.job_threads)
     assert service('POST', '/maintenance/calm', headers=TOKEN).json()['changed'] is False
+
+
+def test_drift_breaks_catalogue_source_and_restore_reapplies_it(service):
+    assert service('GET', '/diagnostics/config').json()['drifted'] == []
+    assert service('POST', '/maintenance/drift').status_code == 403
+    assert service('POST', '/maintenance/drift', headers=TOKEN).json()['changed'] is True
+    assert service('POST', '/maintenance/drift', headers=TOKEN).json()['changed'] is False
+    report = service('GET', '/diagnostics/config').json()
+    assert report['drifted'] == ['catalogue_source'] and report['settings'][0]['deployed'] == 'builtin:lab-v1'
+    failed = service('GET', '/catalog')
+    assert failed.status_code == 500 and failed.json()['error'] == 'FileNotFoundError'
+    trace = service('GET', '/diagnostics/trace').json()
+    assert trace['request_ok'] is False and trace['failed_at'] == 'catalogue load' and len(trace['spans']) == 1
+    assert any(e.get('event') == 'configuration reloaded' for e in fleet.LOGS)
+    assert service('POST', '/maintenance/restore', headers=TOKEN).json() == {'changed': True, 'restored': ['catalogue_source']}
+    assert service('POST', '/maintenance/restore', headers=TOKEN).json()['changed'] is False
+    assert service('GET', '/catalog').status_code == 200
+
+
+def test_trace_times_each_step_of_a_healthy_request(service):
+    trace = service('GET', '/diagnostics/trace').json()
+    assert trace['request_ok'] is True and trace['failed_at'] is None
+    assert [s['name'] for s in trace['spans']] == ['catalogue load', 'receipt write']
+    assert all(s['ms'] >= 0 and s['start_ms'] >= 0 for s in trace['spans'])

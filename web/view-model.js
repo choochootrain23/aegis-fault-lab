@@ -17,6 +17,17 @@ globalThis.AegisView = Object.freeze({
       const disk=body.result||{};
       return {text:`Disk ${disk.used_pct}% used · ${this.bytes(disk.free_bytes)} free`,tone:disk.free_bytes<65536?'red':disk.used_pct>=80?'amber':'green'};
     }
+    if(record.kind==='config'){
+      const config=body.result||{}, drifted=config.drifted||[];
+      if(!Array.isArray(config.settings))return {text:'Config read · detail unavailable',tone:'amber'};
+      return drifted.length?{text:`Config drifted · ${drifted.join(', ')} differs from deployed`,tone:'red'}:{text:`Config matches deployed · ${config.settings.length} settings`,tone:'green'};
+    }
+    if(record.kind==='trace'){
+      const trace=body.result||{}, slowest=this.slowestSpan(trace);
+      if(trace.request_ok===false)return {text:`Trace · failed at ${trace.failed_at||'unknown step'}`,tone:'red'};
+      const where=slowest&&slowest.ms>=(body.outside_handler_ms||0)?`${slowest.name} ${slowest.ms} ms`:`outside handler ${body.outside_handler_ms} ms`;
+      return {text:`Trace · ${body.duration_ms} ms · slowest: ${where}`,tone:body.duration_ms>300?'amber':'green'};
+    }
     if(record.kind==='service'){
       if(body.running===false)return {text:'Inspection complete · stopped',tone:'red'};
       if(body.running===true)return {text:'Inspection complete · running',tone:'green'};
@@ -30,15 +41,18 @@ globalThis.AegisView = Object.freeze({
     }
     return {text:'Check succeeded',tone:'green'};
   },
+  slowestSpan(trace) {
+    return (trace?.spans||[]).reduce((a,b)=>(!a||b.ms>a.ms?b:a),null);
+  },
   bytes(value) {
     if(value==null)return 'unknown';
     return value>=1048576?`${(value/1048576).toFixed(1)} MiB`:value>=1024?`${Math.round(value/1024)} KiB`:`${value} B`;
   },
   remedyLabel(verb) {
-    return ({start:'Start service',calm:'Stop runaway job',clear:'Clear temp files'})[verb]||verb;
+    return ({start:'Start service',calm:'Stop runaway job',clear:'Clear temp files',restore:'Restore config'})[verb]||verb;
   },
   faultLabel(kind) {
-    return ({'service-unavailable':'Stopped service','cpu-starvation':'CPU starvation','disk-full':'Disk full'})[kind]||kind;
+    return ({'service-unavailable':'Stopped service','cpu-starvation':'CPU starvation','disk-full':'Disk full','config-drift':'Config drift'})[kind]||kind;
   },
   timer(session, serverNow) {
     if (!session || ['ended', 'recovered', 'resetting'].includes(session.status)) {
@@ -71,7 +85,7 @@ globalThis.AegisView = Object.freeze({
       return {step:1, tone:'go', title:s?'Ready for another investigation':'Ready when you are', detail:'Choose practice (known fault) or challenge (hidden fault), then press Start investigation.', meter:null};
     }
     if (s.status==='observing') return {step:2, tone:'wait', title:'Fault injected. Watch the topology', detail:'Checks run every two seconds. Repeated failures open the investigation.', meter:null};
-    if (s.status==='investigating') return {step:2, tone:'focus', title:'Find the boundary of the failure', detail:'Select a node and run checks in any order. Compare liveness, latency and business requests, then inspect container state, resource use and disk. When the evidence points to a cause, try the matching recovery action.', meter:null};
+    if (s.status==='investigating') return {step:2, tone:'focus', title:'Find the boundary of the failure', detail:'Select a node and run checks in any order. Compare liveness, latency and business requests, then inspect container state, resources, disk and running config. A trace shows where a request spends its time. When the evidence points to a cause, try the matching recovery action.', meter:null};
     if (s.status==='verifying' && /has not restored/.test(s.verification||'')) return {step:4, tone:'alert', title:'Not restored yet', detail:'Affected checks still fail or stay slow. Re-check both nodes; a different action or node may be needed.', meter:{done:streak, total:3}};
     if (s.status==='verifying') return {step:4, tone:'wait', title:'Verifying recovery', detail:'An accepted action is not proof. Three consecutive healthy, fast cycles are required.', meter:{done:streak, total:3}};
     if (s.status==='recovered') return {step:5, tone:'done', title:'Recovery verified', detail:'Record what the evidence supports in your diagnosis, then End & reset to close the investigation.', meter:null};
@@ -84,6 +98,8 @@ globalThis.AegisView = Object.freeze({
     if(body.ok&&record.kind==='service')outcome=body.running?'running':body.running===false?'stopped':'unknown';
     else if(body.ok&&record.kind==='resources')outcome=body.cpu_pct_of_limit==null?'no sample':`CPU ${body.cpu_pct_of_limit}%`;
     else if(body.ok&&record.kind==='disk')outcome=`${body.result?.used_pct}% used`;
+    else if(body.ok&&record.kind==='config')outcome=body.result?.drifted?.length?'drifted':'matches';
+    else if(body.ok&&record.kind==='trace')outcome=body.result?.request_ok===false?'failed':'traced';
     else if(body.slow)outcome='slow';
     return {text:`${result.tone==='green'?'✓':result.tone==='red'?'✕':'•'} ${outcome}${body.duration_ms!=null?' · '+body.duration_ms+' ms':''}`, tone:result.tone};
   },

@@ -6,7 +6,7 @@ A hands-on lab for practising Linux service troubleshooting. Two small web servi
 > - **[Browser simulator](https://choochootrain23.github.io/aegis-fault-lab/)**: a quick look in any browser. Nothing is installed and **nothing in it is real**: services and measurements are generated in your tab.
 > - **Full lab (below)**: the real thing on your own machine, with real containers, real failures and measured evidence. About 10 minutes to set up.
 
-**Status:** working milestone, not a finished portfolio. Three fault types (a stopped service, CPU starvation from a runaway job, and a full disk) are implemented, each on either service, and validated end to end on real Docker; a network-delay scenario and an AI assistant are planned. See [current limitations](#current-limitations-and-next-gates).
+**Status:** working milestone, not a finished portfolio. Four fault types (a stopped service, CPU starvation from a runaway job, a full disk and a bad configuration reload) are implemented, each on either service, and validated end to end on real Docker; a network-delay scenario and an AI assistant are planned. See [current limitations](#current-limitations-and-next-gates).
 
 ## How it works
 
@@ -25,7 +25,7 @@ flowchart LR
 - **gateway-a** and **catalog-b** are two small Python web services. The gateway depends on the catalogue, so a fault in the catalogue breaks or slows the gateway's requests even though the gateway itself is still running. Every business request also writes a small receipt to the service's 8 MiB `/tmp`, so a full disk causes real write errors.
 - The **controller** serves the web page, runs health checks every two seconds, stores every observation as evidence in SQLite, and runs the investigation rules: a fault can only start from a healthy baseline, and recovery only counts after three healthy cycles in a row.
 - The **broker** is the only part that can touch Docker. It accepts just four fixed operations on these two containers (inspect, read resource use, start, stop) and checks their identity and security settings first. The web page never gets Docker access.
-- The CPU and disk faults are injected and cleared through small maintenance endpoints inside each service, protected by a separate token. Filling refuses to run unless `/tmp` really is a small bounded tmpfs, and never writes more than 16 MiB.
+- The CPU, disk and configuration faults are injected and cleared through small maintenance endpoints inside each service, protected by a separate token. Filling refuses to run unless `/tmp` really is a small bounded tmpfs, and never writes more than 16 MiB.
 - The fleet containers run read-only, as a non-root user, with no Linux capabilities, capped memory/CPU and no ports open to your network. The UI listens on `localhost` only.
 
 ## Try it in your browser
@@ -102,12 +102,14 @@ New here? Press the yellow **TOUR** button in the top bar for a 60-second guided
 
 1. Leave the mode on **Practice · known fault**, the fault on **Stopped service** and the target on **Shared dependency · catalogue**, then press **Start investigation**. The lab really stops the `catalog-b` container.
 2. Within about six seconds the topology changes: `gateway-a` turns **degraded** (alive, but its requests fail) and `catalog-b` **unavailable**.
-3. Click a node, then run checks: **Process liveness**, **Business request**, **Container state**, **Resource use**, **Disk usage** and **Service logs**. Each result is stored in the **Evidence notebook**; open a record to see the raw measurement.
+3. Click a node, then run checks: **Process liveness**, **Business request**, **Container state**, **Resource use**, **Disk usage**, **Running config**, **Request trace** and **Service logs**. The trace times each step of one request (the upstream call, the receipt write, and time spent outside the handler) as a waterfall, so you can see where a request is slow or where it breaks. Each result is stored in the **Evidence notebook**; open a record to see the raw measurement.
 4. Stuck? **A little direction?** offers an evidence explanation, a hint or one suggested action. Help is optional and recorded.
-5. Select a node and choose a recovery action: **Start service**, **Stop runaway job** or **Clear temp files**. Trying the wrong one is allowed; it reports that nothing changed and is recorded. An accepted action is not proof: the lab needs **three healthy, fast cycles in a row** before it shows **Recovery verified**.
+5. Select a node and choose a recovery action: **Start service**, **Stop runaway job**, **Clear temp files** or **Restore config**. Trying the wrong one is allowed; it reports that nothing changed and is recorded. An accepted action is not proof: the lab needs **three healthy, fast cycles in a row** before it shows **Recovery verified**.
 6. Optionally write your diagnosis, ticking the evidence that supports it, then press **End & reset** to restore both services. The **Incident report** shows how long detection, checks and recovery took, and **Replay** animates every request over time. Past investigations, each with its own replay, stay in **Investigation history**.
 
-Then try the other faults. **CPU starvation** keeps the service up but slow: compare latency and **Resource use**. **Disk full** keeps it live but failing writes with HTTP 507: compare **Disk usage**. Try each on the gateway too, and notice which faults spread to the other service.
+Then try the other faults. **CPU starvation** keeps the service up but slow: compare latency and **Resource use**. **Disk full** keeps it live but failing writes with HTTP 507: compare **Disk usage**. **Config drift** is the subtle one: on the gateway it looks exactly like a stopped catalogue until you check the catalogue directly and compare the gateway's **Running config** with what was deployed. Try each on the gateway too, and notice which faults spread to the other service.
+
+Keyboard shortcuts speed up reading: **G** and **C** select a node, **1**–**8** run its checks, **E** explains the evidence, **P** pauses the notebook and **?** lists them all. Nothing that changes the fleet has a shortcut.
 
 **Challenge · hidden fault** picks a random fault type and service and hides both until you reveal them or end the attempt. The 15-minute timer can be extended; if it runs out and you don't respond within 60 seconds, the lab resets itself, even with the browser closed.
 
@@ -229,7 +231,7 @@ Detailed records are retained for 24 hours; active-investigation evidence is pro
 
 - The unaccelerated fifteen-minute expiry and a controller kill during an in-flight Docker action now pass in production (see [validation](docs/VALIDATION.md)). Storage-pressure exhaustion and multi-hour runs still need deployment validation.
 - Desktop/mobile screenshots, archive interactions, connection loss/recovery and a real-process active investigation have been reviewed in headless Chromium. The real Docker browser challenge/restart/recovery walkthrough now also passes. Broader accessibility auditing and other browsers remain outstanding.
-- Only service-unavailability scenarios are implemented. Network delay, filesystem exhaustion and the third node remain deferred until the first scenario is polished and validated.
+- Four scenarios are implemented: stopped service, CPU starvation, disk full and config drift. Network delay and a third node remain deferred.
 - No AI calls are implemented. Gemini free tier/lightweight model is the agreed later direction; no subscription or paid billing is configured.
 - Retention and archive/export behaviour have regression coverage, but sustained runtime storage-pressure recovery and detailed metric charts remain work ahead. At a hard persistence failure the application cannot safely promise automated cleanup; the documented project-only manual reset remains available.
 - Containers share a kernel. Synthetic business content and deliberately injected faults are labelled; no physical repair or hardware telemetry claims are made.

@@ -79,7 +79,8 @@ def main():
             page.mouse.move(box['x'] + box['width'] / 2 - 60, box['y'] + box['height'] / 2 + 70, steps=8)
             page.mouse.up()
             moved = catalog.bounding_box()
-            in_map = lambda: page.evaluate("(() => { const n = document.getElementById('node-catalog-b').getBoundingClientRect(), m = document.getElementById('topology').getBoundingClientRect(); return [n.x - m.x, n.y - m.y]; })()")
+            # Layouts are stored as fractions of the map, so compare node centres as fractions too.
+            in_map = lambda: page.evaluate("(() => { const n = document.getElementById('node-catalog-b').getBoundingClientRect(), m = document.getElementById('topology').getBoundingClientRect(); return [(n.x + n.width / 2 - m.x) / m.width, (n.y + n.height / 2 - m.y) / m.height]; })()")
             moved_in_map = in_map()
             assert abs(moved['y'] - box['y']) > 40, 'drag did not move the node'
             assert page.locator('#edge').get_attribute('d') != edge_before, 'edge did not follow the node'
@@ -97,15 +98,24 @@ def main():
             page.evaluate("document.getElementById('topology').scrollIntoView({block:'center'})")
             page.wait_for_timeout(300)
             after_reload = in_map()
-            assert all(abs(a - b) < 3 for a, b in zip(after_reload, moved_in_map)), f'layout was not remembered: {moved_in_map} -> {after_reload}'
+            assert all(abs(a - b) < 0.01 for a, b in zip(after_reload, moved_in_map)), f'layout was not remembered: {moved_in_map} -> {after_reload}'
             page.click('#topology-plane')
             expect(page.locator('[data-graph-node="controller"]')).to_be_hidden()
             page.click('#topology-plane')
             page.click('#topology-reset')
-            assert abs(in_map()[1] - moved_in_map[1]) > 40, 'reset did not restore the layout'
+            assert abs(in_map()[1] - moved_in_map[1]) > 0.08, 'reset did not restore the layout'
             page.click('#node-gateway-a')
             expect(page.locator('#start')).to_be_enabled(timeout=20000)
             page.screenshot(path=str(output / 'map.png'))
+            expect(page.locator('.packets.dependency')).to_have_class(re.compile(r'\bflow\b'))
+            page.keyboard.press('?')
+            expect(page.locator('#keys-dialog')).to_be_visible()
+            page.keyboard.press('Escape')
+            expect(page.locator('#keys-dialog')).to_be_hidden()
+            page.keyboard.press('c')
+            expect(page.locator('#inspector-title')).to_have_text('catalog-b')
+            page.keyboard.press('g')
+            expect(page.locator('#inspector-title')).to_have_text('gateway-a')
             expect(page.locator('#steps li.current')).to_have_text('02Start')
             expect(page.locator('#node-gateway-a .node-state')).to_have_text('healthy')
 
@@ -125,6 +135,7 @@ def main():
             expect(page.locator('[data-check="service"] .check-result')).to_contain_text('stopped')
             expect(page.locator('#next-title')).to_have_text('Find the boundary of the failure')
             expect(page.locator('#edge')).to_have_class(re.compile(r'\bfailed\b'))
+            expect(page.locator('.packets.dependency')).to_have_class(re.compile(r'\bblocked\b'))
             page.screenshot(path=str(output / 'investigating.png'))
             page.click('[data-help="action"]')
             expect(page.locator('#help-result')).to_contain_text('catalog-b stopped')
@@ -138,6 +149,7 @@ def main():
             page.click('#recover')
             expect(page.locator('#session-status')).to_have_text('recovered', timeout=15000)
             expect(page.locator('#next-title')).to_have_text('Recovery verified')
+            expect(page.locator('#celebrate .celebrate-banner')).to_be_visible()
             expect(page.locator('#edge')).to_have_class(re.compile(r'\bflowing\b'))
             expect(page.locator('#node-gateway-a .node-state')).to_have_text('healthy')
             page.locator('.evidence-row input').first.check()
@@ -202,6 +214,34 @@ def main():
             page.click('#reset')
             expect(page.locator('#session-status')).to_have_text('ended', timeout=15000)
 
+            # Config drift on the gateway: looks like a dependency failure until the catalogue and config are read.
+            page.select_option('#practice-kind', 'config-drift')
+            page.select_option('#practice-target', 'gateway-a')
+            expect(page.locator('#start')).to_be_enabled(timeout=20000)
+            page.click('#start')
+            expect(page.locator('#session-status')).to_have_text('investigating', timeout=20000)
+            expect(page.locator('#node-catalog-b .node-state')).to_have_text('healthy')
+            page.click('#node-gateway-a')
+            page.keyboard.press('6')
+            expect(page.locator('[data-check="config"] .check-result')).to_contain_text('drifted')
+            page.keyboard.press('7')
+            expect(page.locator('[data-check="trace"] .check-result')).to_contain_text('failed')
+            trace = page.locator('.evidence-row').filter(has_text='Trace · failed').first
+            trace.locator('summary').click()
+            expect(trace.locator('.waterfall')).to_contain_text('ConnectError')
+            config = page.locator('.evidence-row').filter(has_text='Config drifted').first
+            config.locator('summary').click()
+            expect(config.locator('.config-table tr.drifted')).to_contain_text(':8080')
+            page.screenshot(path=str(output / 'config-drift.png'))
+            page.click('[data-help="evidence"]')
+            expect(page.locator('#help-result')).to_contain_text('running config')
+            page.click('[data-help="action"]')
+            expect(page.locator('#help-result')).to_contain_text('restoring the deployed config')
+            page.click('[data-remedy="restore"]')
+            expect(page.locator('#session-status')).to_have_text('recovered', timeout=20000)
+            page.click('#reset')
+            expect(page.locator('#session-status')).to_have_text('ended', timeout=15000)
+
             # Challenge: hidden target, timer skip and expiry continuation.
             page.select_option('#mode', 'challenge')
             expect(page.locator('#start')).to_be_enabled(timeout=20000)
@@ -221,7 +261,7 @@ def main():
             expect(page.locator('#scenario-reveal')).to_contain_text('Known scenario:')
             page.click('#reset')
             expect(page.locator('#session-status')).to_have_text('ended', timeout=15000)
-            expect(page.locator('#history .history-item')).to_have_count(4)
+            expect(page.locator('#history .history-item')).to_have_count(5)
 
             mobile = browser.new_page(viewport={'width': 390, 'height': 844})
             mobile.on('pageerror', lambda error: errors.append(str(error)))

@@ -26,7 +26,7 @@ export function run(){
   });
   check('Fetched logs summarize retained failures without claiming current outage',()=>{
     const result=view.evidenceResult({kind:'logs',body:{ok:true,result:{entries:[{ok:true},{ok:false},{ok:false}]}}});
-    assert.equal(result.tone,'amber');assert.equal(result.text,'Logs fetched · 2 failed / 3 retained requests');
+    assert.equal(result.tone,'amber');assert.equal(result.text,'Logs fetched · 2 failed / 3 retained entries');
   });
   check('No timer without a session',()=>assert.equal(view.timer(null,100).running,false));
   check('Healthy session has 15 minute timer',()=>assert.equal(view.timer({status:'investigating',deadline:1000},100).remaining,900));
@@ -45,6 +45,17 @@ export function run(){
   check('Collector error blocks start',()=>assert.equal(view.canStart({...healthy,collector_error:'Persistence interrupted'},true,false),false));
   check('An active session blocks another',()=>assert.equal(view.canStart({...healthy,session:{status:'recovered'}},true,false),false));
   check('Stale results are not displayed as fresh success',()=>assert.equal(view.measurement({health:'unknown',business:{body:{ok:true,duration_ms:1}}}),'No fresh measurement'));
+  check('Drifted config is a red finding',()=>{
+    const result=view.evidenceResult({kind:'config',body:{ok:true,result:{drifted:['upstream'],settings:[{key:'upstream',drifted:true}]}}});
+    assert.equal(result.tone,'red');assert.match(result.text,/upstream/);
+  });
+  check('Failed trace names the failing step',()=>{
+    assert.match(view.evidenceResult({kind:'trace',body:{ok:true,duration_ms:9,result:{request_ok:false,failed_at:'catalogue load',spans:[]}}}).text,/catalogue load/);
+  });
+  check('Slow trace names the slowest step',()=>{
+    const result=view.evidenceResult({kind:'trace',body:{ok:true,duration_ms:620,outside_handler_ms:20,result:{request_ok:true,spans:[{name:'receipt write',ms:4},{name:'upstream catalog-b:8000/catalog',ms:590}]}}});
+    assert.equal(result.tone,'amber');assert.match(result.text,/upstream catalog-b:8000\/catalog 590 ms/);
+  });
   // Parse the actual event wiring too; layout/visual review still requires a browser.
   new vm.Script(readFileSync(new URL('../web/app.js',import.meta.url),'utf8'));
   return {passed,scope:'Pure UI state and timer decisions; frontend JavaScript parsed. No visual/browser validation.'};

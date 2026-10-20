@@ -29,6 +29,13 @@ job_threads = []
 BOOT = str(uuid.uuid4())
 LOGS = deque(maxlen=200)
 receipt_counter = 0
+# Runtime settings. The deployed values come from the image and environment; a drift fault overrides
+# one in memory, as a bad hot reload would, and restore reapplies the deployed values.
+DEPLOYED = {'gateway': {'upstream': UPSTREAM, 'upstream_timeout_s': 1.0},
+            'catalog': {'catalogue_source': 'builtin:lab-v1', 'receipt_ring': RECEIPTS}}.get(ROLE, {})
+DRIFT = {'gateway': ('upstream', UPSTREAM.rsplit(':', 1)[0] + ':8080'),
+         'catalog': ('catalogue_source', 'file:' + str(SCRATCH / 'catalogue-v2.json'))}.get(ROLE)
+config = dict(DEPLOYED)
 
 
 @asynccontextmanager
@@ -52,7 +59,7 @@ def write_receipt(kind):
     folder = SCRATCH / 'receipts'
     folder.mkdir(exist_ok=True)
     (folder / f'{BOOT[:8]}-{receipt_counter:08d}.json').write_text(json.dumps({'at': time.time(), 'kind': kind, 'generation': BOOT, 'pad': 'x' * 160}))
-    stale = sorted(folder.iterdir())[:-RECEIPTS]
+    stale = sorted(folder.iterdir())[:-config.get('receipt_ring', RECEIPTS)]
     for path in stale:
         path.unlink(missing_ok=True)
 
@@ -70,21 +77,37 @@ async def live():
     return {'live': True, 'role': ROLE, 'generation': BOOT}
 
 
+def load_catalogue():
+    """Items from the configured source. Only the built-in dataset is deployed, so any file source is missing."""
+    source = config.get('catalogue_source', 'builtin:lab-v1')
+    if source.startswith('file:'):
+        return json.loads(Path(source[5:]).read_text())['items']
+    return [{'sku': 'LAB-001', 'name': 'Synthetic component', 'quantity': 12}]
+
+
 @app.get('/catalog')
 async def catalog():
     started = time.monotonic()
     try:
+        items = load_catalogue()
+    except (OSError, ValueError, KeyError) as error:
+        result = {'ok': False, 'error': type(error).__name__, 'detail': 'catalogue source unavailable', 'source': config.get('catalogue_source'),
+                  'generation': BOOT, 'duration_ms': round((time.monotonic() - started) * 1000, 1)}
+        LOGS.append({'at': time.time(), **result})
+        return JSONResponse(result, status_code=500)
+    try:
         write_receipt('catalog')
     except OSError as error:
         return storage_failure(error, started)
-    return {'items': [{'sku': 'LAB-001', 'name': 'Synthetic component', 'quantity': 12}], 'generation': BOOT}
+    return {'items': items, 'generation': BOOT}
 
 
 async def dependency():
     started = time.monotonic()
     correlation = str(uuid.uuid4())
     try:
-        response = await app.state.client.get(UPSTREAM + '/catalog', headers={'X-Correlation-ID': correlation})
+        response = await app.state.client.get(config['upstream'] + '/catalog', headers={'X-Correlation-ID': correlation},
+                                              timeout=config['upstream_timeout_s'])
         response.raise_for_status()
         result = {'ok': True, 'dependency': 'catalog-b', 'correlation': correlation, 'catalog': response.json()}
         status = 200
@@ -137,6 +160,47 @@ async def disk():
     files = sorted((p for p in SCRATCH.rglob('*') if p.is_file()), key=lambda p: p.stat().st_size, reverse=True)
     return {'mount': str(SCRATCH), 'total_bytes': total, 'free_bytes': free, 'used_pct': round(100 * (total - free) / total, 1) if total else None,
             'largest': [{'path': str(p.relative_to(SCRATCH)), 'bytes': p.stat().st_size} for p in files[:5]], 'file_count': len(files), 'generation': BOOT}
+
+
+@app.get('/diagnostics/config')
+async def running_config():
+    settings = [{'key': key, 'value': config[key], 'deployed': value, 'drifted': config[key] != value} for key, value in DEPLOYED.items()]
+    return {'role': ROLE, 'settings': settings, 'drifted': [s['key'] for s in settings if s['drifted']], 'generation': BOOT}
+
+
+@app.get('/diagnostics/trace')
+async def trace():
+    """One traced business request: how long each step took and where it failed."""
+    started = time.monotonic()
+    spans = []
+
+    def span(name, began, ok, **detail):
+        spans.append({'name': name, 'start_ms': round((began - started) * 1000, 1), 'ms': round((time.monotonic() - began) * 1000, 1), 'ok': ok, **detail})
+        return ok
+
+    began = time.monotonic()
+    if ROLE == 'gateway':
+        name = 'upstream ' + config['upstream'].split('//')[-1] + '/catalog'
+        try:
+            response = await app.state.client.get(config['upstream'] + '/catalog', timeout=config['upstream_timeout_s'])
+            ok = span(name, began, response.is_success, status=response.status_code)
+        except httpx.HTTPError as error:
+            ok = span(name, began, False, error=type(error).__name__)
+    else:
+        try:
+            load_catalogue()
+            ok = span('catalogue load', began, True, source=config['catalogue_source'])
+        except (OSError, ValueError, KeyError) as error:
+            ok = span('catalogue load', began, False, source=config['catalogue_source'], error=type(error).__name__)
+    if ok:
+        began = time.monotonic()
+        try:
+            write_receipt('trace')
+            ok = span('receipt write', began, True)
+        except OSError as error:
+            ok = span('receipt write', began, False, error=errno.errorcode.get(error.errno, 'OSError'))
+    return {'request_ok': ok, 'failed_at': next((s['name'] for s in spans if not s['ok']), None), 'spans': spans,
+            'handler_ms': round((time.monotonic() - started) * 1000, 1), 'generation': BOOT}
 
 
 def authorize(token):
@@ -210,3 +274,26 @@ async def calm(x_aegis_fleet_token: str = Header(default='')):
     if running:
         LOGS.append({'at': time.time(), 'ok': True, 'event': 'background job stopped', 'job': 'catalogue reindex', 'generation': BOOT})
     return {'changed': bool(running), 'stopped_threads': len(running)}
+
+
+@app.post('/maintenance/drift')
+async def drift(x_aegis_fleet_token: str = Header(default='')):
+    """Fault injection: override one runtime setting, as a bad hot reload would."""
+    authorize(x_aegis_fleet_token)
+    key, value = DRIFT
+    if config[key] == value:
+        return {'changed': False}
+    config[key] = value
+    LOGS.append({'at': time.time(), 'ok': True, 'event': 'configuration reloaded', 'changed': {key: value}, 'generation': BOOT})
+    return {'changed': True, 'key': key}
+
+
+@app.post('/maintenance/restore')
+async def restore(x_aegis_fleet_token: str = Header(default='')):
+    """Recovery: reapply the deployed settings."""
+    authorize(x_aegis_fleet_token)
+    drifted = sorted(key for key, value in DEPLOYED.items() if config[key] != value)
+    config.update(DEPLOYED)
+    if drifted:
+        LOGS.append({'at': time.time(), 'ok': True, 'event': 'configuration restored', 'keys': drifted, 'generation': BOOT})
+    return {'changed': bool(drifted), 'restored': drifted}

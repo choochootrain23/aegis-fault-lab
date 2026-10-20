@@ -23,20 +23,24 @@ from aegis.guidance import explain, SLOW_MS
 from aegis.ownership import controller_ownership
 
 NODES = {'gateway-a': 'http://gateway-a:8000', 'catalog-b': 'http://catalog-b:8000'}
-CHECKS = {'liveness': '/live', 'readiness': '/ready', 'business': '/summary', 'logs': '/diagnostics/logs', 'disk': '/diagnostics/disk'}
+CHECKS = {'liveness': '/live', 'readiness': '/ready', 'business': '/summary', 'logs': '/diagnostics/logs', 'disk': '/diagnostics/disk',
+          'config': '/diagnostics/config', 'trace': '/diagnostics/trace'}
 BROKER_CHECKS = {'service': 'inspect', 'resources': 'resources'}
 TERMINAL = {'ended'}
 # Each fault kind: the injection verb and the remedy that reverses it.
-FAULTS = {'service-unavailable': ('stop', 'start'), 'cpu-starvation': ('burn', 'calm'), 'disk-full': ('fill', 'clear')}
+FAULTS = {'service-unavailable': ('stop', 'start'), 'cpu-starvation': ('burn', 'calm'), 'disk-full': ('fill', 'clear'),
+          'config-drift': ('drift', 'restore')}
 REMEDIES = {remedy for _, remedy in FAULTS.values()}
-NODE_VERBS = {'fill', 'clear', 'burn', 'calm'}  # applied through the service's token-protected maintenance endpoint
+NODE_VERBS = {'fill', 'clear', 'burn', 'calm', 'drift', 'restore'}  # applied through the service's token-protected maintenance endpoint
 UNCHANGED = {'start': 'Already running; nothing changed', 'stop': 'Already stopped; nothing changed',
              'calm': 'No background job running; nothing changed', 'burn': 'A background job was already running; nothing changed',
-             'clear': 'No filler file present; nothing changed', 'fill': 'Nothing changed'}
+             'clear': 'No filler file present; nothing changed', 'fill': 'Nothing changed',
+             'restore': 'Running config already matches the deployed settings; nothing changed', 'drift': 'Setting already overridden; nothing changed'}
 DEBRIEFS = {
     'service-unavailable': 'The scenario requested stopping {target}. When that succeeds, its container state reads stopped and its own probes fail. When the catalogue stops, the gateway stays live but its business requests fail, so the failure spreads; when the gateway stops, the catalogue stays healthy, so it does not. Starting the stopped service restores the request path.',
     'cpu-starvation': 'The scenario requested a runaway background job inside {target}. When that succeeds, the service keeps running and answering, but slowly: the job uses the container\'s whole 0.25-CPU limit, the kernel throttles it, and requests queue behind it, crossing the {slow} ms threshold. Its log records the job starting. A slow catalogue makes the gateway slow, and sometimes time out, too. Stopping the job returns normal latency.',
     'disk-full': 'The scenario requested filling {target}\'s 8 MiB /tmp with one large file. When that succeeds, the process stays live, but every business request must write a small receipt, so writes fail with ENOSPC (HTTP 507). A full catalogue fails the gateway\'s requests too; a full gateway fails only its own. Disk usage shows 100% and the filler as the largest file. Clearing it restores writes.',
+    'config-drift': 'The scenario requested a bad runtime configuration reload on {target}. When that succeeds, the process stays live and its container keeps running, so liveness, container state, CPU and disk all look normal. On the gateway, the upstream address points at a port nothing listens on, so every business request fails to connect, which looks like a stopped catalogue until the catalogue is checked directly. On the catalogue, the data source points at a dataset that was never deployed, so its business requests fail with HTTP 500 and the gateway\'s fail with them. The running config shows the drifted setting next to its deployed value, and the log records the reload. Restoring the deployed config fixes it.',
 }
 
 
@@ -45,8 +49,9 @@ def debrief(s):
     return (text + ' Injection outcome: ' + s.get('fault_action', {}).get('status', 'not recorded') + '. The action record explains the exercise but was not evidence available during the investigation. Other evidence-supported investigation orders are valid.')
 
 
-FaultKind = Literal['service-unavailable', 'cpu-starvation', 'disk-full']
+FaultKind = Literal['service-unavailable', 'cpu-starvation', 'disk-full', 'config-drift']
 NodeName = Literal['gateway-a', 'catalog-b']
+CheckKind = Literal['liveness', 'readiness', 'business', 'logs', 'service', 'resources', 'disk', 'config', 'trace']
 
 
 class Input(BaseModel):
@@ -62,7 +67,7 @@ class Start(Input):
 
 class Check(Input):
     node: NodeName
-    kind: Literal['liveness', 'readiness', 'business', 'logs', 'service', 'resources', 'disk']
+    kind: CheckKind
 
 
 class SessionInput(Input):
@@ -75,7 +80,7 @@ class Action(SessionInput):
 
 
 class Recover(Action):
-    verb: Literal['start', 'calm', 'clear'] = 'start'
+    verb: Literal['start', 'calm', 'clear', 'restore'] = 'start'
 
 
 class Note(SessionInput):
@@ -161,6 +166,9 @@ class Lab:
             body['duration_ms'] = round((time.monotonic() - started) * 1000, 1)
             if body['ok'] and kind in ('liveness', 'readiness', 'business') and body['duration_ms'] > SLOW_MS:
                 body['slow'] = True
+            if kind == 'trace' and isinstance(body.get('result'), dict) and body['result'].get('handler_ms') is not None:
+                # Time the request spent outside the handler: connection, queueing and scheduling under CPU pressure.
+                body['outside_handler_ms'] = round(max(0.0, body['duration_ms'] - body['result']['handler_ms']), 1)
         except (httpx.HTTPError, ValueError, HTTPException) as error:
             body = {'ok': False, 'error': type(error).__name__, 'detail': 'Check unavailable or failed',
                     'duration_ms': round((time.monotonic() - started) * 1000, 1)}
@@ -368,8 +376,8 @@ class Lab:
             if self.baseline < 5 or not self.last_cycle or time.time() - self.last_cycle > 6:
                 raise HTTPException(409, 'Five fresh healthy baseline cycles required')
             self.admission()
-            if not self.fleet_token and (data.mode == 'challenge' or data.kind == 'disk-full'):
-                raise HTTPException(409, 'The disk scenario needs AEGIS_FLEET_TOKEN. Run scripts/init_env.py, then docker compose up -d.')
+            if not self.fleet_token and (data.mode == 'challenge' or FAULTS[data.kind][0] in NODE_VERBS):
+                raise HTTPException(409, 'This scenario needs AEGIS_FLEET_TOKEN. Run scripts/init_env.py, then docker compose up -d.')
             target = secrets.choice(list(self.nodes)) if data.mode == 'challenge' else data.target
             kind = secrets.choice(list(FAULTS)) if data.mode == 'challenge' else data.kind
             # Resolve both targets before recording an active scenario or changing anything.
@@ -598,7 +606,7 @@ async def investigation_timeline(session_id: str):
 async def investigation_evidence(session_id: str, limit: int = Query(default=50, ge=1, le=100),
                                  before: str | None = Query(default=None, max_length=80),
                                  node: Literal['gateway-a', 'catalog-b'] | None = None,
-                                 kind: Literal['liveness', 'readiness', 'business', 'logs', 'service'] | None = None):
+                                 kind: CheckKind | None = None):
     lab = app.state.lab
     lab.session_detail(session_id)
     try:

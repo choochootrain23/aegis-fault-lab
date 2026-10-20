@@ -2,7 +2,7 @@
 import time
 
 SLOW_MS = 300  # request checks slower than this count as degraded, not healthy
-INSPECTIONS = ('service', 'resources', 'disk')
+INSPECTIONS = ('service', 'resources', 'disk', 'config', 'trace')
 
 
 def explain(latest, level, now=None):
@@ -22,6 +22,14 @@ def explain(latest, level, now=None):
         elif live['body']['ok'] and not business['body']['ok'] and result.get('upstream_status') == 507:
             message = 'The gateway is live, but the catalogue answered its request with HTTP 507 (insufficient storage). The catalogue is reachable yet cannot write; check its disk usage.'
             suggested = {'node':'catalog-b','kind':'disk'}
+        elif live['body']['ok'] and not business['body']['ok'] and result.get('upstream_status') == 500:
+            message = 'The gateway is live, but the catalogue answered its request with HTTP 500. The catalogue is reachable yet failing internally; compare its logs and running config with what was deployed.'
+            suggested = {'node':'catalog-b','kind':'config'}
+        elif live['body']['ok'] and not live['body'].get('slow') and not business['body']['ok'] and catalogue_healthy(fresh):
+            catalogue = fresh[('catalog-b', 'business')]
+            ids.append(catalogue['id'])
+            message = 'The gateway is live but its business request fails, while the catalogue answers its own business requests quickly. The catalogue works, so the break is on the gateway\'s path to it: trace a gateway request and compare the gateway\'s running config with its deployed settings.'
+            suggested = {'node':'gateway-a','kind':'config'}
         elif live['body']['ok'] and not business['body']['ok']:
             message = 'The gateway responds to liveness checks but its business request fails. Its own process is reachable; inspect the catalogue dependency before concluding the gateway is down.'
             suggested = {'node':'catalog-b','kind':'service'}
@@ -44,9 +52,14 @@ def explain(latest, level, now=None):
         else:
             message += ' No fresh inspection yet supports a specific recovery action. Gather the suggested check first.'
     elif level == 'hint':
-        message += ' Compare process state, latency and storage with request behaviour; one failed check is not a complete diagnosis.'
+        message += ' Compare process state, latency, storage and running config with request behaviour; one failed check is not a complete diagnosis.'
     return {'level':level, 'message':message, 'evidence_ids':ids, 'suggested_check':suggested,
             'source':'deterministic_observation_rules', 'observed_at':now}
+
+
+def catalogue_healthy(fresh):
+    record = fresh.get(('catalog-b', 'business'))
+    return bool(record and record['body'].get('ok') and not record['body'].get('slow'))
 
 
 def newer_success(fresh, record):
@@ -69,6 +82,9 @@ def remedy(fresh):
         elif kind == 'disk' and (body.get('result') or {}).get('free_bytes') is not None and body['result']['free_bytes'] < 64 * 1024:
             largest = (body['result'].get('largest') or [{}])[0].get('path', 'one file')
             action = f"Disk usage shows {node}'s /tmp full, mostly {largest}. You can try clearing its temporary files, then verify business requests write receipts again."
+        elif kind == 'config' and (body.get('result') or {}).get('drifted'):
+            setting = next(s for s in body['result']['settings'] if s['drifted'])
+            action = f"The running config on {node} differs from its deployed settings: {setting['key']} is {setting['value']} but {setting['deployed']} was deployed. You can try restoring the deployed config, then verify business requests succeed again."
         else:
             continue
         newer = newer_success(fresh, record) if kind == 'service' else None

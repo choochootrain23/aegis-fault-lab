@@ -33,7 +33,7 @@ HTML = [
     ('<p class="wordmark" aria-hidden="true">AEGISRACK</p>', '<p class="wordmark" aria-hidden="true">AEGISRACK</p><p class="sim-stamp">Simulator</p>'),
     ('href="/" aria-label="AegisRack home"', 'href="./" aria-label="AegisRack home"'),
     ('<a href="#history-section">History</a></nav>', f'<a href="#history-section">History</a><a class="nav-install" href="{INSTALL}">Install ↗</a></nav>'),
-    ('One fault: stopped, starved of CPU, or out of disk.', 'One simulated fault: stopped, starved of CPU, or out of disk.'),
+    ('One fault: stopped, starved of CPU, out of disk, or misconfigured.', 'One simulated fault: stopped, starved of CPU, out of disk, or misconfigured.'),
     ('<span class="local-dot"></span> Local workspace <span class="version">EARLY BUILD 01</span>', '<span class="local-dot sim-dot"></span> Simulated <span class="version">NOT REAL</span>'),
     ('Connecting to the local collector…', 'Starting the simulated collector…'),
     ('Two real services.', 'Two simulated services.'),

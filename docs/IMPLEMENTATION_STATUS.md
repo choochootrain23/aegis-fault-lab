@@ -63,10 +63,18 @@ Reports are under ignored `state/validation/`. The app is running at http://loca
 - Broker gained only a read-only `resources` operation. Disk and job faults use token-protected service maintenance endpoints; `init_env.py` now adds missing credentials on upgrade.
 - Validation: 100 backend tests; production scenario matrix across all faults and targets; real Docker browser challenge; simulator walkthrough; older browser reviews. See [validation](VALIDATION.md).
 
+## Eighth checkpoint (20 October 2026)
+
+- **Fourth fault: config drift.** A bad runtime reload overrides one setting in memory: the gateway's upstream moves to a port nothing listens on (looks exactly like a stopped catalogue from the gateway's side), or the catalogue's data source moves to a dataset that was never deployed (HTTP 500). Liveness, container state, CPU and disk stay normal. Remedy: **Restore config**. Reset reverses it; a container restart also reloads the deployed values.
+- **Two new diagnostic tools.** **Running config** lists each setting beside its deployed value and flags drift. **Request trace** times each step of one business request (upstream call, catalogue load, receipt write) and the controller adds the time spent outside the handler, shown as a waterfall with the slowest step highlighted, so slowness and failures can be located rather than guessed.
+- Guidance gained two rules: a catalogue answering HTTP 500 points at its running config, and a failing gateway beside a healthy, fast catalogue points at the gateway's own path and config. Action guidance cites a drifted config check.
+- Reliability: the evidence-browsing API now accepts every check kind (resource, disk, config and trace records could not be filtered before); polling backs off to 16 s while the controller is unreachable, announces reconnection, slows to 10 s in a hidden tab and refreshes immediately on return; a scenario that needs the fleet token is refused up front for every maintenance-based fault, not only disk-full.
+- Interface: request packets travel the live map (green and quick when healthy, amber and slow when degraded, red and stopping halfway when requests fail), remedy tags name the verb and the path it actually took, check buttons show a scanning bar while running, toasts carry a tone, verified recovery gets a brief celebration (a plain message under reduced motion), and keyboard shortcuts (**?** lists them) cover reading and checking but never fleet changes.
+
 ## Next work
 
 1. Exercise storage-pressure exhaustion and a multi-hour run; broaden accessibility/browser coverage.
-2. Add the third node, bounded network/filesystem scenarios and the read-only model investigator after the remaining first-scenario gates. No model key or paid cloud configuration has been used.
+2. Add the third node, the network-delay scenario and the read-only model investigator after the remaining first-scenario gates. No model key or paid cloud configuration has been used.
 
 ## Boundaries preserved
 

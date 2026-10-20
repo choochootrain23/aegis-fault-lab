@@ -37,6 +37,52 @@ for (const edge of EDGES) {
   Object.assign(edge, {path, tag});
 }
 
+// Packets travel each edge to show measured traffic: quick and green when healthy, slow and amber
+// when degraded, and stopping halfway in red when requests fail. Hidden with reduced motion.
+const still = matchMedia('(prefers-reduced-motion: reduce)');
+const FLOW = {flow: {period: 1.4}, slow: {period: 4.2}, blocked: {period: 1.8}};
+for (const edge of EDGES.filter(e => e.kind !== 'control')) {
+  const group = document.createElementNS(SVG, 'g');
+  group.classList.add('packets', edge.kind);
+  const count = edge.kind === 'dependency' ? 3 : 1;
+  edge.packets = Array.from({length: count}, (_, i) => {
+    const dot = document.createElementNS(SVG, 'circle');
+    dot.setAttribute('r', edge.kind === 'dependency' ? 4.5 : 3);
+    group.append(dot);
+    return {dot, t: i / count};
+  });
+  edge.flow = 'off';
+  edge.group = group;
+  svg.append(group);
+}
+function setFlow(edge, mode, tone) {
+  edge.flow = still.matches ? 'off' : mode;
+  edge.group.setAttribute('class', `packets ${edge.kind} ${edge.flow} ${tone || ''}`);
+}
+let last = 0;
+function animate(time) {
+  const dt = Math.min(0.1, (time - last) / 1000 || 0);
+  last = time;
+  for (const edge of EDGES) {
+    if (!edge.packets || edge.flow === 'off' || (edge.kind === 'check' && !plane) || !edge.path.getAttribute('d')) continue;
+    // A hidden edge (collapsed plane, small screens) has no geometry to follow.
+    let length = 0;
+    try { length = edge.path.getTotalLength(); } catch { /* not rendered */ }
+    if (!length || edge.path.getClientRects().length === 0) continue;
+    for (const packet of edge.packets) {
+      packet.t = (packet.t + dt / FLOW[edge.flow].period) % 1;
+      // A failing request gets halfway, then fades where it is refused.
+      const along = edge.flow === 'blocked' ? Math.min(packet.t, 0.5) : packet.t;
+      const point = edge.path.getPointAtLength(along * length);
+      packet.dot.setAttribute('cx', point.x.toFixed(1));
+      packet.dot.setAttribute('cy', point.y.toFixed(1));
+      packet.dot.setAttribute('opacity', edge.flow === 'blocked' && packet.t > 0.5 ? (1 - (packet.t - 0.5) * 2).toFixed(2) : '1');
+    }
+  }
+  requestAnimationFrame(animate);
+}
+requestAnimationFrame(animate);
+
 function clamp(id, [x, y]) {
   const el = nodes[id], w = map.clientWidth || 1, h = map.clientHeight || 1;
   const hx = el.offsetWidth / 2 / w + .01, hy = el.offsetHeight / 2 / h + .01;
@@ -150,21 +196,26 @@ function update(state) {
   const byId = Object.fromEntries(state.nodes.map(n => [n.id, n]));
   const gateway = byId['gateway-a'], measured = gateway?.business, stale = !measured || gateway.health === 'unknown';
   const dependency = EDGES[0];
-  tone(dependency, stale ? '' : measured.body.ok ? 'flowing ok' : 'failed bad');
-  dependency.tag.textContent = stale ? 'requests · no fresh data' : measured.body.ok ? `requests · ${measured.body.duration_ms} ms` : 'requests failing';
+  const slow = !stale && measured.body.ok && measured.body.slow;
+  tone(dependency, stale ? '' : slow ? 'flowing warn' : measured.body.ok ? 'flowing ok' : 'failed bad');
+  dependency.tag.textContent = stale ? 'requests · no fresh data' : measured.body.ok ? `requests · ${measured.body.duration_ms} ms${slow ? ' · slow' : ''}` : 'requests failing';
+  setFlow(dependency, stale || gateway.health === 'unavailable' ? 'off' : slow ? 'slow' : measured.body.ok ? 'flow' : 'blocked', slow ? 'warn' : measured?.body.ok ? 'ok' : 'bad');
   // Operator recovery and reset are the operator's own actions; the hidden fault injection is never drawn.
-  const s = state.session, recent = [];
-  for (const attempt of s?.recovery_attempts || []) if (state.now - attempt.at < 4) recent.push(attempt.node);
-  if (s?.reset && state.now - s.reset.at < 4) recent.push('gateway-a', 'catalog-b');
+  const s = state.session, recent = {};
+  for (const attempt of s?.recovery_attempts || []) if (state.now - attempt.at < 4) recent[attempt.node] = attempt.verb || 'start';
+  if (s?.reset && state.now - s.reset.at < 4) Object.assign(recent, {'gateway-a': 'reset', 'catalog-b': 'reset'});
   for (const edge of EDGES.slice(1)) {
     if (edge.kind === 'check') {
       const health = byId[edge.node]?.health;
-      tone(edge, TONE[health] || '');
-      edge.tag.textContent = health && health !== 'unknown' ? `checks · ${health}` : 'checks · unknown';
+      // Job, disk and config remedies travel from the controller to the service's maintenance endpoint.
+      const verb = !['start', 'reset'].includes(recent[edge.node]) && recent[edge.node];
+      tone(edge, verb ? 'active' : TONE[health] || '');
+      edge.tag.textContent = verb ? `${verb} sent` : health && health !== 'unknown' ? `checks · ${health}` : 'checks · unknown';
+      setFlow(edge, health && health !== 'unknown' ? 'flow' : 'off', TONE[health]);
     } else {
-      const active = recent.includes(edge.node);
-      tone(edge, active ? 'active' : '');
-      edge.tag.textContent = active ? 'start sent' : 'inspect · start · stop';
+      const verb = ['start', 'reset'].includes(recent[edge.node]) && recent[edge.node];
+      tone(edge, verb ? 'active' : '');
+      edge.tag.textContent = verb ? `${verb} sent` : 'inspect · start · stop';
     }
   }
 }

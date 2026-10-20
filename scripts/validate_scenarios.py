@@ -9,6 +9,7 @@ Reports go to ignored state/validation/.
 import argparse
 from datetime import datetime, timezone
 import json
+from collections import Counter
 from pathlib import Path
 import time
 import uuid
@@ -18,8 +19,8 @@ from validate_f1 import Operator, BASE
 
 ROOT = Path(__file__).resolve().parents[1]
 OTHER = {'gateway-a': 'catalog-b', 'catalog-b': 'gateway-a'}
-KINDS = ('service-unavailable', 'cpu-starvation', 'disk-full')
-REMEDY = {'service-unavailable': 'start', 'cpu-starvation': 'calm', 'disk-full': 'clear'}
+KINDS = ('service-unavailable', 'cpu-starvation', 'disk-full', 'config-drift')
+REMEDY = {'service-unavailable': 'start', 'cpu-starvation': 'calm', 'disk-full': 'clear', 'config-drift': 'restore'}
 # Health right after detection. The slow catalogue can also make gateway requests time out,
 # so the gateway may read degraded through either slowness or failure.
 EXPECTED = {('service-unavailable', 'catalog-b'): {'gateway-a': 'degraded', 'catalog-b': 'unavailable'},
@@ -27,7 +28,9 @@ EXPECTED = {('service-unavailable', 'catalog-b'): {'gateway-a': 'degraded', 'cat
             ('cpu-starvation', 'catalog-b'): {'gateway-a': 'degraded', 'catalog-b': 'degraded'},
             ('cpu-starvation', 'gateway-a'): {'gateway-a': 'degraded', 'catalog-b': 'healthy'},
             ('disk-full', 'catalog-b'): {'gateway-a': 'degraded', 'catalog-b': 'degraded'},
-            ('disk-full', 'gateway-a'): {'gateway-a': 'degraded', 'catalog-b': 'healthy'}}
+            ('disk-full', 'gateway-a'): {'gateway-a': 'degraded', 'catalog-b': 'healthy'},
+            ('config-drift', 'catalog-b'): {'gateway-a': 'degraded', 'catalog-b': 'degraded'},
+            ('config-drift', 'gateway-a'): {'gateway-a': 'degraded', 'catalog-b': 'healthy'}}
 
 
 def check(operator, node, kind):
@@ -54,17 +57,19 @@ def start(operator, mode, target=None, kind=None):
 
 
 def anomalies(operator):
-    """Inspect both nodes three ways and report what the evidence shows, without the fault record."""
+    """Inspect both nodes four ways and report what the evidence shows, without the fault record."""
     found, evidence = [], {}
     for node in OTHER:
-        service, resources, disk = (check(operator, node, k) for k in ('service', 'resources', 'disk'))
-        evidence[node] = {'service': service, 'resources': resources, 'disk': disk}
+        service, resources, disk, config = (check(operator, node, k) for k in ('service', 'resources', 'disk', 'config'))
+        evidence[node] = {'service': service, 'resources': resources, 'disk': disk, 'config': config}
         if service['body'].get('running') is False:
             found.append(('service-unavailable', node, service))
         elif (resources['body'].get('cpu_pct_of_limit') or 0) >= 80:
             found.append(('cpu-starvation', node, resources))
         elif disk['body'].get('ok') and disk['body']['result']['free_bytes'] < 64 * 1024:
             found.append(('disk-full', node, disk))
+        elif config['body'].get('ok') and config['body']['result']['drifted']:
+            found.append(('config-drift', node, config))
     return found, evidence
 
 
@@ -75,8 +80,13 @@ def diagnose(operator, sid, state, mode):
     found, _ = anomalies(operator)
     ensure(len(found) == 1, f'expected exactly one anomaly, saw {[(k, n) for k, n, _ in found]}')
     kind, target, inspection = found[0]
-    health = {n['id']: n['health'] for n in operator.request('/api/state')['nodes']}
-    ensure(health == EXPECTED[(kind, target)], f'unexpected measured effects for {kind} on {target}: {health}')
+    # Health is a per-cycle sample and CPU starvation is statistical, so judge the usual reading over several cycles.
+    samples = []
+    for _ in range(5):
+        samples.append({n['id']: n['health'] for n in operator.request('/api/state')['nodes']})
+        time.sleep(2)
+    health = {node: Counter(sample[node] for sample in samples).most_common(1)[0][0] for node in OTHER}
+    ensure(health == EXPECTED[(kind, target)], f'unexpected measured effects for {kind} on {target}: {health} from {samples}')
     business = check(operator, 'gateway-a', 'business')
     # CPU starvation is statistical: judge the recent gateway requests, not one sample.
     recent = [e for e in operator.request('/api/state')['evidence'] if e['node'] == 'gateway-a' and e['kind'] == 'business'][:10]
@@ -143,7 +153,7 @@ def main():
                 print(f'practice {kind} {target}: detect {detect}s, recovery {recovery}s, {ended["outcome"]}', flush=True)
                 sid = None
         kinds_seen, targets_seen = set(), set()
-        for attempt in range(14):
+        for attempt in range(24):
             if kinds_seen == set(KINDS) and targets_seen == set(OTHER):
                 break
             sid, state, detect = start(operator, 'challenge')

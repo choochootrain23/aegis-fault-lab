@@ -5,7 +5,7 @@ const STEPS = [
   ['#topology', 'The live map', 'Your two services, plus the controller that checks them and the broker that can start or stop them. Edges show live state. Drag any node to rearrange the map.'],
   ['#journey', 'Suggested next', 'This card always shows a sensible next step, and the tracker shows where you are. It is a suggestion: explore in any order.'],
   ['.scenario-strip', 'Start a scenario', 'Practice lets you pick the fault and its target. Challenge picks a hidden fault for you to find. Start once the baseline is healthy.'],
-  ['.checks', 'Run checks', 'Inspect the selected node: liveness, a full business request, container state, CPU use, disk and logs. Each chip shows that check\'s latest result.'],
+  ['.checks', 'Run checks', 'Inspect the selected node: liveness, a full business request, container state, CPU, disk, running config, a timed request trace and logs. Keys 1 to 8 run them too. Each chip shows that check\'s latest result.'],
   ['.recovery-box', 'Recovery toolbox', 'Try a fix on the selected node. An action that finds nothing to change says so, and recovery only counts after three healthy, fast cycles.'],
   ['#evidence-section', 'Evidence notebook', 'Every check lands here as a record. Open one for the raw measurement, and tick records to cite them in your diagnosis.'],
   ['.guidance', 'A little direction', 'Stuck? Ask for an explanation, a hint or one suggested action. Help is optional and recorded honestly in your report.'],

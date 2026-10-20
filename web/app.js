@@ -7,7 +7,8 @@ let state, selected = 'gateway-a', busy = false, token = '', chosen = new Set(),
 const esc = text => String(text ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const label = text => String(text || '').replaceAll('_', ' ').replaceAll('-', ' ');
 function setText(id,text){if($(id).textContent!==text)$(id).textContent=text;}
-function toast(text, error=false) { const el=$('toast'); el.textContent=text; el.classList.toggle('error',error); el.hidden=false; clearTimeout(toast.timer); toast.timer=setTimeout(()=>el.hidden=true,6000); }
+// Tone: true or 'error' for failures, 'ok' for confirmed good news, otherwise neutral progress.
+function toast(text, tone=false) { const el=$('toast'), kind=tone===true?'error':tone||'info'; el.textContent=text; el.dataset.tone=kind; el.classList.toggle('error',kind==='error'); el.hidden=false; el.classList.remove('enter'); void el.offsetWidth; el.classList.add('enter'); clearTimeout(toast.timer); toast.timer=setTimeout(()=>el.hidden=true,kind==='error'?9000:6000); }
 async function request(path, data) {
   const abort=new AbortController(), deadline=setTimeout(()=>abort.abort(),data?45000:5000);
   try{
@@ -20,7 +21,7 @@ async function request(path, data) {
 }
 async function action(path, data={}, message='Action recorded') {
   if(busy)return; busy=true; document.querySelector('main').setAttribute('aria-busy','true');renderControls();toast(path==='check'?'Running diagnostic check…':'Recording your request…');
-  try { const result=await request(path,{...data,...(['recover','reset','extend','reveal','note','help'].includes(path)?{session_id:state.session.id}:{}),...(['sessions','recover','reset','extend','reveal'].includes(path)?{key:crypto.randomUUID()}: {})}); toast(result.status==='unknown'?'Outcome uncertain. Inspect actual state before retrying.':result.status==='unchanged'?`Nothing changed: ${result.detail}`:message,result.status==='unknown'); await refresh(); return result; }
+  try { const result=await request(path,{...data,...(['recover','reset','extend','reveal','note','help'].includes(path)?{session_id:state.session.id}:{}),...(['sessions','recover','reset','extend','reveal'].includes(path)?{key:crypto.randomUUID()}: {})}); toast(result.status==='unknown'?'Outcome uncertain. Inspect actual state before retrying.':result.status==='unchanged'?`Nothing changed: ${result.detail}`:message,result.status==='unknown'?'error':result.status==='unchanged'?'warn':'ok'); await refresh(); return result; }
   catch(e){toast(e.message,true);}finally{busy=false;document.querySelector('main').setAttribute('aria-busy','false');renderControls();}
 }
 function renderControls(){
@@ -46,12 +47,32 @@ function renderEvidence(force=false){
  const sig=evidence.map(e=>e.id).join(','); if(sig===evidenceSignature)return; evidenceSignature=sig;
  const open=new Set([...document.querySelectorAll('.evidence-row details[open]')].map(e=>e.dataset.id));
  $('evidence-count').textContent=state.evidence.length;
- $('evidence').innerHTML=evidence.length?evidence.map(e=>`<div class="evidence-row"><input type="checkbox" aria-label="Select evidence ${esc(e.id)}" data-evidence="${esc(e.id)}" ${chosen.has(e.id)?'checked':''}><details data-id="${esc(e.id)}" ${open.has(e.id)?'open':''}><summary><i class="dot ${AegisView.evidenceResult(e).tone}"></i><strong>${esc(e.node)}</strong><span class="kind">${esc(label(e.kind))} · ${e.body.origin==='operator'?'your check':'collector'} · ${esc(AegisView.evidenceResult(e).text)}</span><time>${new Date(e.at*1000).toLocaleTimeString()}</time></summary><p class="evidence-id">Evidence ${esc(e.id)}</p><pre>${esc(JSON.stringify(e.body,null,2))}</pre></details></div>`).join(''):'<div class="empty">No matching evidence yet.<br><small>Choose a diagnostic check to gather observations.</small></div>';
+ $('evidence').innerHTML=evidence.length?evidence.map(e=>`<div class="evidence-row"><input type="checkbox" aria-label="Select evidence ${esc(e.id)}" data-evidence="${esc(e.id)}" ${chosen.has(e.id)?'checked':''}><details data-id="${esc(e.id)}" ${open.has(e.id)?'open':''}><summary><i class="dot ${AegisView.evidenceResult(e).tone}"></i><strong>${esc(e.node)}</strong><span class="kind">${esc(label(e.kind))} · ${e.body.origin==='operator'?'your check':'collector'} · ${esc(AegisView.evidenceResult(e).text)}</span><time>${new Date(e.at*1000).toLocaleTimeString()}</time></summary><p class="evidence-id">Evidence ${esc(e.id)}</p>${detailView(e)}<pre>${esc(JSON.stringify(e.body,null,2))}</pre></details></div>`).join(''):'<div class="empty">No matching evidence yet.<br><small>Choose a diagnostic check to gather observations.</small></div>';
  document.querySelectorAll('[data-evidence]').forEach(el=>el.addEventListener('change',()=>{setEvidencePaused(true); if(el.checked&&chosen.size>=20){el.checked=false;toast('Select up to 20 evidence records for one diagnosis.',true);return;}el.checked?chosen.add(el.dataset.evidence):chosen.delete(el.dataset.evidence);$('selected-count').textContent=chosen.size+' evidence selected';$('clear-selection').disabled=chosen.size===0;}));
 }
+// Readable views of structured results, shown above the raw JSON.
+function detailView(e){
+ const result=e.body?.result;
+ if(e.kind==='trace'&&Array.isArray(result?.spans)){
+  const total=Math.max(e.body.duration_ms||0,1), outside=e.body.outside_handler_ms||0;
+  const rows=[{name:'outside handler · connection, queueing',start:0,ms:outside,tone:'outside'},
+   ...result.spans.map(s=>({name:s.name,start:outside+s.start_ms,ms:s.ms,tone:s.ok?'ok':'bad',note:s.error||(s.status&&s.status!==200?'HTTP '+s.status:'')}))];
+  const slowest=rows.reduce((a,b)=>b.ms>a.ms?b:a);
+  return `<div class="waterfall"><p class="waterfall-head">Request trace · ${esc(total)} ms round trip${result.request_ok?'':` · failed at ${esc(result.failed_at)}`}</p>${rows.map(r=>{
+   const x=Math.min(99,r.start/total*100), w=Math.max(0.8,Math.min(100-x,r.ms/total*100));
+   return `<div class="wf-row ${r.tone}${r===slowest&&r.ms>0?' slowest':''}"><span class="wf-name">${esc(r.name)}${r.note?` · <b>${esc(r.note)}</b>`:''}</span><svg viewBox="0 0 100 10" preserveAspectRatio="none" aria-hidden="true"><rect class="wf-track" width="100" height="10"/><rect class="wf-bar" x="${x.toFixed(2)}" width="${w.toFixed(2)}" height="10"/></svg><span class="wf-ms">${esc(r.ms)} ms</span></div>`;}).join('')}</div>`;
+ }
+ if(e.kind==='config'&&Array.isArray(result?.settings)){
+  return `<table class="config-table"><thead><tr><th>Setting</th><th>Running</th><th>Deployed</th></tr></thead><tbody>${result.settings.map(s=>`<tr class="${s.drifted?'drifted':''}"><td>${esc(s.key)}</td><td>${esc(s.value)}${s.drifted?' <b>≠</b>':''}</td><td>${esc(s.deployed)}</td></tr>`).join('')}</tbody></table>`;
+ }
+ return '';
+}
 function setEvidencePaused(paused){evidencePaused=paused;$('evidence-live').textContent=paused?'Resume live updates':'Pause updates';$('evidence-live').setAttribute('aria-pressed',String(!paused));$('evidence-status').textContent=paused?'Reading paused · your evidence stays in place':'Following new observations';if(!paused){evidenceSignature='';renderEvidence();}}
+let lastStatus;
 function render(){
  const s=state.session;
+ if(s&&lastSession===s.id&&lastStatus&&lastStatus!=='recovered'&&s.status==='recovered')celebrate();
+ lastStatus=s?.status;
  if(lastSession!==s?.id){chosen.clear();lastSession=s?.id;evidencePaused=false;evidenceSignature='';setEvidencePaused(false);$('help-result').hidden=true;$('suggested-check').hidden=true;suggestedCheck=null;$('selected-count').textContent='0 evidence selected';}
  const unknown=state.nodes.every(n=>n.health==='unknown');
  const active=s&&s.status!=='ended';
@@ -126,9 +147,11 @@ function renderTimer(){
  $('timer').textContent=timer.expired?'Time expired':`${Math.floor(timer.remaining/60)}:${String(timer.remaining%60).padStart(2,'0')} remaining${timer.warning?' · extend soon':''}`;
  if(timer.expired){setText('grace-text',`Automatic reset in ${timer.grace} seconds if you do not continue.`);if(!dialog.open&&!$('archive-dialog').open)dialog.showModal();}else if(dialog.open)dialog.close();
 }
-async function refresh(){const sequence=refreshOrder.begin();try{const next=await request('state');if(!refreshOrder.current(sequence))return;state=next;connected=true;serverOffset=state.now-Date.now()/1000;token=state.token;render();}catch(e){if(!refreshOrder.current(sequence))return;connected=false;renderControls();renderJourney();$('notice').classList.add('error');$('notice').textContent='Controller unavailable. Displayed measurements may be stale. '+e.message;document.querySelectorAll('.node-state').forEach(e=>{e.textContent='Unknown';e.className='node-state unknown';});}}
+let outage=0;
+const retryDelay=()=>Math.min(16000,2000*2**Math.min(outage-1,3));
+async function refresh(){const sequence=refreshOrder.begin();try{const next=await request('state');if(!refreshOrder.current(sequence))return;state=next;connected=true;serverOffset=state.now-Date.now()/1000;token=state.token;if(outage){toast('Reconnected to the controller. Measurements are live again.','ok');outage=0;}render();}catch(e){if(!refreshOrder.current(sequence))return;connected=false;outage++;if(state)renderControls();renderJourney();$('notice').classList.add('error');$('notice').textContent=`Controller unavailable. Displayed measurements may be stale. ${e.message} Retrying in ${Math.round(retryDelay()/1000)} s.`;document.querySelectorAll('.node-state').forEach(e=>{e.textContent='Unknown';e.className='node-state unknown';});}}
 document.querySelectorAll('[data-node]').forEach(b=>b.addEventListener('click',()=>{selected=b.dataset.node;document.querySelectorAll('[data-node]').forEach(n=>{n.classList.toggle('selected',n===b);n.setAttribute('aria-pressed',String(n===b));});$('inspector-title').textContent=selected;renderCheckResults();}));
-document.querySelectorAll('[data-check]').forEach(b=>b.addEventListener('click',()=>action('check',{node:selected,kind:b.dataset.check},'Fresh observation added to the evidence notebook')));
+document.querySelectorAll('[data-check]').forEach(b=>b.addEventListener('click',async()=>{if(busy)return;b.classList.add('running');try{await action('check',{node:selected,kind:b.dataset.check},'Fresh observation added to the evidence notebook');}finally{b.classList.remove('running');}}));
 $('start').addEventListener('click',()=>action('sessions',{mode:$('mode').value,target:$('practice-target').value,kind:$('practice-kind').value},'Investigation started. Observe the measured effects.'));
 document.querySelectorAll('[data-remedy]').forEach(b=>b.addEventListener('click',()=>action('recover',{node:selected,verb:b.dataset.remedy},`${AegisView.remedyLabel(b.dataset.remedy)} requested on ${selected}. Watch the verification checks.`)));
 $('reset').addEventListener('click',()=>action('reset',{},'Reset requested. History is preserved.'));
@@ -162,7 +185,7 @@ $('evidence-live').addEventListener('click',()=>setEvidencePaused(!evidencePause
 $('evidence').addEventListener('toggle',e=>{if(e.target.tagName==='DETAILS'&&e.target.open)setEvidencePaused(true);},true);
 $('maintenance').addEventListener('click',()=>action('maintenance',{},'Retention cleanup complete. Active investigation evidence is preserved.'));
 $('archive-close').addEventListener('click',()=>$('archive-dialog').close());
-function archiveRecord(e){return `<details class="archive-record"><summary><strong>${esc(e.node)}</strong> · ${esc(label(e.kind))} · ${esc(AegisView.evidenceResult(e).text)} <time>${new Date(e.at*1000).toLocaleString()}</time></summary><p class="evidence-id">${esc(e.id)}</p><pre>${esc(JSON.stringify(e.body,null,2))}</pre></details>`;}
+function archiveRecord(e){return `<details class="archive-record"><summary><strong>${esc(e.node)}</strong> · ${esc(label(e.kind))} · ${esc(AegisView.evidenceResult(e).text)} <time>${new Date(e.at*1000).toLocaleString()}</time></summary><p class="evidence-id">${esc(e.id)}</p>${detailView(e)}<pre>${esc(JSON.stringify(e.body,null,2))}</pre></details>`;}
 function archiveCitations(ids){return ids.length?ids.map(id=>`<button class="button compact citation" data-citation="${esc(id)}" title="Open this exact observation">↗ ${esc(id.slice(0,8))}</button>`).join(' '):'None recorded';}
 async function openCitation(id,button){
  const session=archiveId, sequence=citationOrder.begin();button.disabled=true;
@@ -190,7 +213,41 @@ async function openArchive(id){
 }
 async function archivePage(){const page=await request('investigations/'+encodeURIComponent(archiveId)+'/evidence?limit=30'+(archiveCursor?'&before='+encodeURIComponent(archiveCursor):''));$('archive-evidence').insertAdjacentHTML('beforeend',page.items.map(archiveRecord).join(''));archiveCursor=page.next_cursor;$('archive-more').disabled=!archiveCursor;}
 $('archive-more').addEventListener('click',async()=>{if(archiveBusy)return;archiveBusy=true;$('archive-more').disabled=true;try{await archivePage();}catch(e){toast(e.message,true);}finally{archiveBusy=false;}});
-async function poll(){await refresh();setTimeout(poll,2000);}poll();setInterval(renderTimer,1000);
+// Poll every two seconds; back off while the controller is unreachable and slow down in a hidden tab.
+let pollTimer;
+function schedule(ms){clearTimeout(pollTimer);pollTimer=setTimeout(poll,ms);}
+async function poll(){await refresh();schedule(!connected?retryDelay():document.hidden?10000:2000);}
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)schedule(0);});
+poll();setInterval(renderTimer,1000);
+// A short burst when recovery is verified; a plain message when motion is reduced.
+function celebrate(){
+ toast('Recovery verified: three healthy, fast cycles in a row.','ok');
+ if(matchMedia('(prefers-reduced-motion: reduce)').matches)return;
+ const host=$('celebrate'),colours=['#1a73e8','#d93025','#fbbc04','#1e8e3e','#9334e6','#12b5cb','#e8710a'];
+ const banner=document.createElement('div');banner.className='celebrate-banner';banner.innerHTML='<span>✓</span><strong>Recovery verified</strong><small>Three healthy, fast cycles in a row</small>';
+ host.replaceChildren(banner);
+ for(let i=0;i<64;i++){const bit=document.createElement('i');const angle=Math.random()*Math.PI*2,reach=140+Math.random()*260;
+  bit.style.setProperty('--dx',`${Math.cos(angle)*reach}px`);bit.style.setProperty('--dy',`${Math.sin(angle)*reach*0.7+120}px`);
+  bit.style.setProperty('--spin',`${Math.round(Math.random()*720-360)}deg`);bit.style.setProperty('--delay',`${Math.random()*120}ms`);
+  bit.style.background=colours[i%colours.length];if(i%3===0)bit.classList.add('round');host.append(bit);}
+ host.hidden=false;clearTimeout(celebrate.timer);celebrate.timer=setTimeout(()=>{host.hidden=true;host.replaceChildren();},2600);
+}
+// Keyboard shortcuts for reading and checking. Nothing that changes the fleet has a shortcut.
+$('keys-open').addEventListener('click',()=>$('keys-dialog').showModal());
+$('keys-close').addEventListener('click',()=>$('keys-dialog').close());
+addEventListener('keydown',e=>{
+ if(e.defaultPrevented||e.ctrlKey||e.metaKey||e.altKey||e.target.closest?.('input,textarea,select,[contenteditable]'))return;
+ if(document.body.classList.contains('touring')||document.querySelector('dialog[open]'))return;
+ const key=e.key.toLowerCase(), press=el=>{if(el&&!el.disabled)el.click();};
+ if(key==='?')$('keys-dialog').showModal();
+ else if(key==='g'||key==='c')press($(key==='g'?'node-gateway-a':'node-catalog-b'));
+ else if(/^[1-9]$/.test(key)&&!e.shiftKey)press(document.querySelectorAll('[data-check]')[Number(key)-1]);
+ else if(key==='e')press(document.querySelector('[data-help="evidence"]'));
+ else if(key==='p')press($('evidence-live'));
+ else if(key==='t')press($('tour-start'));
+ else return;
+ e.preventDefault();
+});
 // Highlight the navigation link for the section currently in view.
 const navTargets=[...document.querySelectorAll('.nav-links a[href^="#"]')].map(a=>({a,el:document.querySelector(a.getAttribute('href'))?.closest('.panel,.history-grid')})).filter(t=>t.el);
 function markNav(current){for(const t of navTargets){t.a.classList.toggle('nav-active',t===current);if(t===current)t.a.setAttribute('aria-current','location');else t.a.removeAttribute('aria-current');}}

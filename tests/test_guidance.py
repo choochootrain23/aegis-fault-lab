@@ -97,3 +97,31 @@ def test_older_success_does_not_override_new_stopped_inspection():
                      'action', now=103)
     assert result['evidence_ids'] == [stopped['id']]
     assert 'try starting' in result['message']
+
+
+def test_failing_gateway_with_healthy_catalogue_points_at_gateway_config():
+    latest={('gateway-a','liveness'):observation('gateway-a','liveness',duration_ms=3),
+            ('gateway-a','business'):observation('gateway-a','business',False,result={'error':'ConnectError'}),
+            ('catalog-b','business'):observation('catalog-b','business',duration_ms=6)}
+    result=explain(latest,'evidence',now=101)
+    assert result['suggested_check']=={'node':'gateway-a','kind':'config'}
+    assert 'catalog-b-business' in result['evidence_ids']
+
+
+def test_catalogue_500_points_at_catalogue_config():
+    latest={('gateway-a','liveness'):observation('gateway-a','liveness'),
+            ('gateway-a','business'):observation('gateway-a','business',False,result={'upstream_status':500})}
+    assert explain(latest,'evidence',now=101)['suggested_check']=={'node':'catalog-b','kind':'config'}
+
+
+def test_drifted_config_supports_restore():
+    config=observation('gateway-a','config',result={'drifted':['upstream'],'settings':[
+        {'key':'upstream','value':'http://catalog-b:8080','deployed':'http://catalog-b:8000','drifted':True}]})
+    result=explain({('gateway-a','config'):config},'action',now=101)
+    assert result['evidence_ids']==[config['id']]
+    assert 'restoring the deployed config' in result['message'] and ':8080' in result['message']
+
+
+def test_matching_config_supports_no_action():
+    config=observation('gateway-a','config',result={'drifted':[],'settings':[]})
+    assert 'No fresh inspection' in explain({('gateway-a','config'):config},'action',now=101)['message']

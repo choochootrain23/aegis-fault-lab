@@ -16,6 +16,7 @@ class Fleet:
         self.running = {'gateway-a': True, 'catalog-b': True}
         self.busy = {'gateway-a': False, 'catalog-b': False}
         self.full = {'gateway-a': False, 'catalog-b': False}
+        self.drifted = {'gateway-a': False, 'catalog-b': False}
         self.mutations = []
         self.broker_available = True
 
@@ -45,14 +46,20 @@ class Fleet:
             if request.headers.get('x-aegis-fleet-token') != 'fleet-token':
                 return httpx.Response(403)
             verb = path.rsplit('/', 1)[1]
-            state = self.full if verb in ('fill', 'clear') else self.busy
-            changed = state[node] != (verb in ('fill', 'burn'))
-            state[node] = verb in ('fill', 'burn')
+            state = {'fill': self.full, 'clear': self.full, 'burn': self.busy, 'calm': self.busy, 'drift': self.drifted, 'restore': self.drifted}[verb]
+            changed = state[node] != (verb in ('fill', 'burn', 'drift'))
+            state[node] = verb in ('fill', 'burn', 'drift')
             if changed:
                 self.mutations.append((node, path.rsplit('/', 1)[1]))
             return httpx.Response(200, json={'changed': changed})
         if path == '/diagnostics/disk':
             return httpx.Response(200, json={'free_bytes': 0 if self.full[node] else 8_000_000, 'largest': []})
+        if path == '/diagnostics/config':
+            drifted = ['upstream'] if self.drifted[node] else []
+            return httpx.Response(200, json={'drifted': drifted, 'settings': [{'key': 'upstream', 'value': 'http://catalog-b:8080' if drifted else 'http://catalog-b:8000',
+                                                                               'deployed': 'http://catalog-b:8000', 'drifted': bool(drifted)}]})
+        if path == '/diagnostics/trace':
+            return httpx.Response(200, json={'request_ok': not self.drifted[node], 'spans': [], 'handler_ms': 2.0})
         slow = self.busy[node] or (node == 'gateway-a' and path == '/summary' and self.busy['catalog-b'])
         if slow and path in ('/live', '/summary'):
             time.sleep(0.06)  # above the test SLOW_MS
@@ -60,6 +67,10 @@ class Fleet:
             return httpx.Response(200, json={'live': True})
         if self.full[node]:
             return httpx.Response(507, json={'ok': False, 'errno': 'ENOSPC'})
+        if self.drifted[node]:
+            return httpx.Response(503 if node == 'gateway-a' else 500, json={'ok': False, 'error': 'ConnectError' if node == 'gateway-a' else 'FileNotFoundError'})
+        if node == 'gateway-a' and self.drifted['catalog-b']:
+            return httpx.Response(503, json={'ok': False, 'upstream_status': 500})
         if node == 'gateway-a' and not self.running['catalog-b']:
             return httpx.Response(503, json={'ok': False, 'dependency': 'catalog-b'})
         if node == 'gateway-a' and self.full['catalog-b']:
@@ -441,7 +452,7 @@ def test_challenge_hides_fault_kind_and_target(lab):
     async def scenario():
         controller, _ = lab
         seen = set()
-        for attempt in range(30):
+        for attempt in range(40):
             await baseline(controller)
             await controller.start(Start(mode='challenge', key=f'challenge-kind-{attempt:03d}'))
             public = controller.state()
@@ -450,9 +461,9 @@ def test_challenge_hides_fault_kind_and_target(lab):
             await controller.reset_locked(f'reset-kind-{attempt:03d}')
             for _ in range(3):
                 await controller.cycle()
-            if len(seen) == 3:
+            if len(seen) == 4:
                 break
-        assert seen == {'service-unavailable', 'cpu-starvation', 'disk-full'}
+        assert seen == {'service-unavailable', 'cpu-starvation', 'disk-full', 'config-drift'}
     run(scenario())
 
 
@@ -484,4 +495,35 @@ def test_disk_scenario_requires_fleet_token(lab):
         with pytest.raises(HTTPException) as exc:
             await controller.start(Start(mode='practice', kind='disk-full', key='start-no-token'))
         assert exc.value.status_code == 409 and not fleet.mutations
+    run(scenario())
+
+
+def test_config_drift_looks_like_a_dependency_failure_until_config_is_read(lab):
+    async def scenario():
+        controller, fleet = lab
+        await baseline(controller)
+        await controller.start(Start(mode='practice', kind='config-drift', target='gateway-a', key='start-drift'))
+        assert fleet.drifted['gateway-a'] and fleet.running['gateway-a']
+        assert await investigate(controller) == {'gateway-a': 'degraded', 'catalog-b': 'healthy'}
+        config = await controller.check('gateway-a', 'config')
+        assert config['body']['result']['drifted'] == ['upstream']
+        trace = await controller.check('gateway-a', 'trace')
+        assert trace['body']['outside_handler_ms'] >= 0
+        assert (await controller.mutate('wrong-start', 'gateway-a', 'start'))['status'] == 'unchanged'
+        assert (await controller.mutate('wrong-restore', 'catalog-b', 'restore'))['status'] == 'unchanged'
+        await verify(controller, 'restore-config', 'gateway-a', 'restore')
+        assert controller.session['status'] == 'recovered'
+        assert 'configuration reload' in controller.public_session(controller.session | {'revealed': True})['debrief']
+    run(scenario())
+
+
+def test_reset_restores_drifted_config(lab):
+    async def scenario():
+        controller, fleet = lab
+        await baseline(controller)
+        await controller.start(Start(mode='practice', kind='config-drift', key='start-drift-reset'))
+        assert fleet.drifted['catalog-b']
+        await controller.reset_locked('reset-drift')
+        assert not fleet.drifted['catalog-b']
+        assert [r['verb'] for r in controller.session['reset']['results']] == ['start', 'start', 'restore']
     run(scenario())
