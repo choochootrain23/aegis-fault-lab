@@ -266,3 +266,81 @@ dialog p{color:var(--muted)}
  .checks button{min-height:52px}.compact{min-height:36px}
  .toast{left:12px;right:12px;bottom:12px;max-width:none}
 }
+
+/* Journey, signal colour and motion: directions are suggestions, colour marks what needs attention. */
+:root{--go:#14803c;--go-soft:#d9f2e1;--signal:#e58a00;--signal-soft:#fdeccc;--help:#7b3fe4;--help-soft:#efe6fd}
+.signature{display:flex;justify-content:center;gap:6px;margin:-6px 0 26px}
+.signature i{width:44px;height:6px;background:var(--ok)}
+.signature i:nth-child(2){background:var(--accent)}.signature i:nth-child(3){background:var(--violet)}.signature i:nth-child(4){background:var(--orange)}
+.hero-meta span::after{content:'';display:inline-block;width:7px;height:7px;margin-left:8px;border-radius:50%;vertical-align:1px}
+.m-observe::after{background:var(--accent)}.m-investigate::after{background:var(--violet)}.m-verify::after{background:var(--ok)}
+.hero{padding-block:56px 44px}
+
+.journey{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);border-bottom:1px solid var(--line);--tone:var(--signal);--tone-soft:var(--signal-soft)}
+.journey[data-tone=go]{--tone:var(--go);--tone-soft:var(--go-soft)}
+.journey[data-tone=focus]{--tone:var(--accent);--tone-soft:var(--accent-soft)}
+.journey[data-tone=alert]{--tone:var(--bad);--tone-soft:var(--bad-soft)}
+.journey[data-tone=done]{--tone:var(--ok);--tone-soft:var(--ok-soft)}
+.steps{display:grid;grid-template-columns:repeat(6,1fr);margin:0;padding:22px 28px;list-style:none;counter-reset:step;align-items:center;gap:0}
+.steps li{position:relative;display:flex;flex-direction:column;gap:8px;padding:12px 10px 12px 0;font:600 11px/1.2 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--faint)}
+.steps li::before{content:'';height:4px;background:var(--line);transition:background .3s}
+.steps li b{font-weight:500;letter-spacing:.1em}
+.steps li.done{color:var(--ink)}
+.steps li.done::before{background:var(--ink)}
+.steps li.done b::after{content:' ✓';color:var(--ok)}
+.steps li.current{color:var(--tone)}
+.steps li.current::before{background:var(--tone);animation:step-glow 1.6s ease-in-out infinite}
+@keyframes step-glow{50%{opacity:.45}}
+.next-step{position:relative;padding:22px 28px 22px 34px;background:var(--tone-soft);border-left:1px solid var(--line);transition:background .3s}
+.next-step::before{content:'';position:absolute;left:0;top:0;bottom:0;width:6px;background:var(--tone)}
+.next-label{display:block;margin-bottom:6px;font:600 10px/1 var(--mono);letter-spacing:.2em;text-transform:uppercase;color:var(--tone)}
+.next-step h2{font-size:22px}
+.next-step p{margin:6px 0 0;font-size:14px;color:var(--ink);opacity:.8}
+.meter{display:flex;align-items:center;gap:5px;margin-top:12px}
+.meter i{width:28px;height:10px;border:1px solid var(--tone);background:transparent;transition:background .3s}
+.meter i.filled{background:var(--tone)}
+.meter span{margin-left:8px;font:600 11px/1 var(--mono);letter-spacing:.08em;color:var(--tone)}
+
+/* Coloured actions */
+.primary#start:not(:disabled),#start.primary{background:var(--go);border-color:var(--go)}
+#start:hover:not(:disabled){background:#0f6a31}
+#start:not(:disabled){box-shadow:5px 5px 0 rgba(20,128,60,.25)}
+.recovery:not(:disabled){box-shadow:5px 5px 0 rgba(37,87,245,.25)}
+#extend.attention{background:var(--signal);border-color:var(--signal);color:#fff;animation:step-glow 1.2s ease-in-out infinite}
+.help-options button:hover:not(:disabled){background:var(--help);color:#fff}
+.help-options button>span{color:var(--help)}
+.help-result{border-left-color:var(--help);background:var(--help-soft)}
+.guide-symbol{color:var(--help)}
+.suggested-check{border-color:var(--help);color:var(--help)}
+#save-note:not(:disabled){background:var(--violet);border-color:var(--violet)}
+.notice{border-left:6px solid var(--accent)}
+.notice.error{border-left-color:var(--bad)}
+.status-strip #session-status{padding:4px 8px;background:var(--ink);color:var(--bg)}
+
+/* Per-check last result for the selected node */
+.checks button>span:nth-child(2){flex:1}
+.check-result{font:600 10px/1 var(--mono);letter-spacing:.06em;padding:5px 7px;border:1px solid var(--line);color:var(--muted);white-space:nowrap}
+.check-result.green{color:var(--ok);background:var(--ok-soft);border-color:transparent}
+.check-result.red{color:var(--bad);background:var(--bad-soft);border-color:transparent}
+.check-result.amber{color:var(--warn);background:var(--warn-soft);border-color:transparent}
+.checks button:hover:not(:disabled) .check-icon{transform:scale(1.08)}
+.check-icon{transition:transform .15s}
+
+/* Live wire: dashes travel while requests succeed; a failed path turns solid red. */
+.connection path#edge{stroke-width:2.5}
+.connection path#edge.flowing{stroke:var(--ok);opacity:1;animation:wire 1s linear infinite}
+.connection path#edge.failed{stroke-dasharray:4 10;stroke-width:3}
+@keyframes wire{to{stroke-dashoffset:-24}}
+.node.changed{animation:node-change 1.1s ease-out 1}
+@keyframes node-change{0%{box-shadow:0 0 0 0 rgba(37,87,245,.55)}100%{box-shadow:0 0 0 18px rgba(37,87,245,0)}}
+.node[data-health=unavailable]{border-color:var(--bad)}
+.node[data-health=degraded]{border-color:#d08a1a}
+
+@media(max-width:900px){.journey{grid-template-columns:1fr}.next-step{border-left:0;border-top:1px solid var(--line)}}
+@media(max-width:600px){.steps{grid-template-columns:repeat(3,1fr);row-gap:4px;padding:16px}.next-step{padding:18px 16px 18px 22px}.signature i{width:30px}.hero-meta span::after{display:none}}
+/* Check rows: icon | name | arrow, with the last result on its own line under the name. */
+.checks button{display:grid;grid-template-columns:34px minmax(0,1fr) auto;grid-template-areas:'icon text arrow' 'icon result arrow';column-gap:14px;row-gap:6px;align-items:center}
+.checks button>.check-icon{grid-area:icon;align-self:start}
+.checks button>span:nth-child(2){grid-area:text}
+.checks button>.check-result{grid-area:result;justify-self:start}
+.checks button>span:last-child{grid-area:arrow;margin-left:0}

@@ -35,7 +35,10 @@ def main():
             page.goto(url)
             expect(page.locator('.sim-banner')).to_contain_text('SIMULATOR')
             expect(page.locator('footer')).not_to_contain_text('Real processes')
+            expect(page.locator('#next-title')).to_have_text('Collecting a healthy baseline')
             expect(page.locator('#start')).to_be_enabled(timeout=20000)
+            expect(page.locator('#next-title')).to_have_text('Ready when you are')
+            expect(page.locator('#steps li.current')).to_have_text('02Start')
             expect(page.locator('#node-gateway-a .node-state')).to_have_text('healthy')
 
             # Practice: shared dependency failure, wrong-node attempt, verified recovery.
@@ -51,6 +54,10 @@ def main():
             page.click('#node-catalog-b')
             page.click('[data-check="service"]')
             expect(page.locator('.evidence-row').filter(has_text='stopped').first).to_be_visible()
+            expect(page.locator('[data-check="service"] .check-result')).to_contain_text('stopped')
+            expect(page.locator('#next-title')).to_have_text('Find the boundary of the failure')
+            expect(page.locator('#edge')).to_have_class('failed')
+            page.screenshot(path=str(output / 'investigating.png'))
             page.click('[data-help="action"]')
             expect(page.locator('#help-result')).to_contain_text('catalog-b stopped')
             expect(page.locator('.evidence-row.highlight')).to_have_count(1)
@@ -62,6 +69,8 @@ def main():
             page.click('#node-catalog-b')
             page.click('#recover')
             expect(page.locator('#session-status')).to_have_text('recovered', timeout=15000)
+            expect(page.locator('#next-title')).to_have_text('Recovery verified')
+            expect(page.locator('#edge')).to_have_class('flowing')
             expect(page.locator('#node-gateway-a .node-state')).to_have_text('healthy')
             page.locator('.evidence-row input').first.check()
             page.fill('#explanation', 'Gateway stayed live while business requests failed; catalogue container was stopped.')
@@ -88,6 +97,8 @@ def main():
             expect(page.locator('#session-status')).to_have_text('investigating', timeout=15000)
             state = page.evaluate("fetch('api/state').then(r=>r.json())")
             assert 'scenario' not in state['session'] and 'fault_target' not in state['session']
+            journey = page.locator('#journey').inner_text()
+            assert 'gateway-a' not in journey and 'catalog-b' not in journey, 'directions must not name the hidden target'
             page.click('#sim-skip')
             expect(page.locator('#expiry-dialog')).to_be_visible(timeout=50000)
             expect(page.locator('#grace-text')).to_contain_text('Automatic reset')

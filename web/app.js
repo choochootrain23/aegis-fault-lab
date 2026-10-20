@@ -62,10 +62,15 @@ function render(){
  $('session-status').textContent=s?label(s.status):'Baseline collection';
  $('session-dot').className='dot '+(s?.status==='recovered'?'green':s&&s.status!=='ended'?'amber':'');
  $('verification').textContent=s?.verification||'A successful control action is followed by three healthy verification cycles.';
- for(const n of state.nodes){const el=$('node-'+n.id); const badge=el.querySelector('.node-state');badge.textContent=label(n.health);badge.className='node-state '+n.health;
+ for(const n of state.nodes){const el=$('node-'+n.id); const badge=el.querySelector('.node-state');
+ // Pulse once when measured health changes so the operator notices it without constant motion.
+ if(el.dataset.health&&el.dataset.health!==n.health){el.classList.remove('changed');void el.offsetWidth;el.classList.add('changed');}
+ el.dataset.health=n.health;badge.textContent=label(n.health);badge.className='node-state '+n.health;
  el.querySelector('.node-measure').textContent=AegisView.measurement(n);}
  const gateway=state.nodes.find(n=>n.id==='gateway-a');const measured=gateway?.business;
  $('edge').classList.toggle('failed',!!measured&&!measured.body.ok);
+ $('edge').classList.toggle('flowing',!!measured&&measured.body.ok&&gateway.health!=='unknown');
+ renderJourney();renderCheckResults();
  $('edge-label').textContent=measured?(gateway.health==='unknown'?'Previous observation is stale':measured.body.ok?'Observed business request succeeded':'Observed business request failed'):'Waiting for observed requests';
  $('scenario-reveal').textContent=s?.scenario?`Known scenario: ${label(s.scenario.kind)} on ${s.scenario.target}`:'';
  $('debrief').textContent=s?.debrief||'';
@@ -84,15 +89,28 @@ function render(){
  const usage=state.storage;$('storage-status').textContent=usage?`Evidence storage · ${(usage.live_bytes/1048576).toFixed(1)} / ${(usage.live_limit_bytes/1048576).toFixed(0)} MiB · detailed evidence retained 24h`:'Local evidence storage';
  renderEvidence();renderControls();renderTimer();
 }
+function renderJourney(){
+ const j=AegisView.journey(state,connected);
+ $('journey').dataset.tone=j.tone;
+ document.querySelectorAll('#steps li').forEach((li,i)=>{li.classList.toggle('done',i<j.step);li.classList.toggle('current',i===j.step);if(i===j.step)li.setAttribute('aria-current','step');else li.removeAttribute('aria-current');});
+ setText('next-title',j.title);setText('next-detail',j.detail);
+ const meter=$('meter');meter.hidden=!j.meter;
+ if(j.meter){const sig=j.meter.done+'/'+j.meter.total;if(meter.dataset.sig!==sig){meter.dataset.sig=sig;meter.innerHTML=Array.from({length:j.meter.total},(_,i)=>`<i class="${i<j.meter.done?'filled':''}"></i>`).join('')+`<span>${sig} healthy cycles</span>`;}}
+}
+function renderCheckResults(){
+ if(!state)return;
+ document.querySelectorAll('[data-check]').forEach(b=>{const out=b.querySelector('.check-result');const record=state.evidence.find(e=>e.node===selected&&e.kind===b.dataset.check);const summary=AegisView.checkSummary(record);out.textContent=summary.text;out.className='check-result '+summary.tone;});
+}
 function renderTimer(){
  const timer=AegisView.timer(state?.session,Date.now()/1000+serverOffset),dialog=$('expiry-dialog');
- if(!timer.running){$('timer').textContent='No active timer';$('timer').classList.remove('timer-warning');if(dialog.open)dialog.close();return;}
+ if(!timer.running){$('timer').textContent='No active timer';$('timer').classList.remove('timer-warning');$('extend').classList.remove('attention');if(dialog.open)dialog.close();return;}
  $('timer').classList.toggle('timer-warning',timer.warning||timer.expired);
+ $('extend').classList.toggle('attention',timer.warning||timer.expired);
  $('timer').textContent=timer.expired?'Time expired':`${Math.floor(timer.remaining/60)}:${String(timer.remaining%60).padStart(2,'0')} remaining${timer.warning?' · extend soon':''}`;
  if(timer.expired){setText('grace-text',`Automatic reset in ${timer.grace} seconds if you do not continue.`);if(!dialog.open&&!$('archive-dialog').open)dialog.showModal();}else if(dialog.open)dialog.close();
 }
-async function refresh(){const sequence=refreshOrder.begin();try{const next=await request('state');if(!refreshOrder.current(sequence))return;state=next;connected=true;serverOffset=state.now-Date.now()/1000;token=state.token;render();}catch(e){if(!refreshOrder.current(sequence))return;connected=false;renderControls();$('notice').classList.add('error');$('notice').textContent='Controller unavailable. Displayed measurements may be stale. '+e.message;document.querySelectorAll('.node-state').forEach(e=>{e.textContent='Unknown';e.className='node-state unknown';});}}
-document.querySelectorAll('[data-node]').forEach(b=>b.addEventListener('click',()=>{selected=b.dataset.node;document.querySelectorAll('[data-node]').forEach(n=>{n.classList.toggle('selected',n===b);n.setAttribute('aria-pressed',String(n===b));});$('inspector-title').textContent=selected;}));
+async function refresh(){const sequence=refreshOrder.begin();try{const next=await request('state');if(!refreshOrder.current(sequence))return;state=next;connected=true;serverOffset=state.now-Date.now()/1000;token=state.token;render();}catch(e){if(!refreshOrder.current(sequence))return;connected=false;renderControls();renderJourney();$('notice').classList.add('error');$('notice').textContent='Controller unavailable. Displayed measurements may be stale. '+e.message;document.querySelectorAll('.node-state').forEach(e=>{e.textContent='Unknown';e.className='node-state unknown';});}}
+document.querySelectorAll('[data-node]').forEach(b=>b.addEventListener('click',()=>{selected=b.dataset.node;document.querySelectorAll('[data-node]').forEach(n=>{n.classList.toggle('selected',n===b);n.setAttribute('aria-pressed',String(n===b));});$('inspector-title').textContent=selected;renderCheckResults();}));
 document.querySelectorAll('[data-check]').forEach(b=>b.addEventListener('click',()=>action('check',{node:selected,kind:b.dataset.check},'Fresh observation added to the evidence notebook')));
 $('start').addEventListener('click',()=>action('sessions',{mode:$('mode').value,target:$('practice-target').value},'Investigation started. Observe the measured effects.'));
 $('recover').addEventListener('click',()=>action('recover',{node:selected},'Start requested. Watch the verification checks.'));

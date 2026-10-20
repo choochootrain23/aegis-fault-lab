@@ -212,7 +212,7 @@ class Lab:
             health = 'unknown' if not fresh else ('healthy' if business['body']['ok'] and live['body']['ok'] else ('degraded' if live['body']['ok'] else 'unavailable'))
             nodes.append({'id': node, 'role': 'gateway' if node == 'gateway-a' else 'catalogue', 'health': health,
                           'live': live, 'business': business})
-        return {'nodes': nodes, 'session': self.public_session(), 'baseline_cycles': self.baseline,
+        return {'nodes': nodes, 'session': self.public_session(), 'baseline_cycles': self.baseline, 'healthy_streak': self.successes,
                 'collector_error': self.collector_error, 'last_cycle': self.last_cycle,
                 'evidence': self.store.evidence(self.session['id'], 60) if self.session else self.store.baseline_evidence(),
                 'ai': {'available': False, 'reason': 'AI integration is a later milestone; manual investigation is fully available.'},

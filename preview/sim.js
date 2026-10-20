@@ -147,7 +147,7 @@ function state() {
       revealed: p.revealed, recovery_verified_at: p.recovery_verified_at ?? null, notes_count: p.notes.length, help_count: p.help.length,
       evidence: evidenceSummary(s.id)};
   });
-  return {nodes, session: publicSession(), baseline_cycles: lab.baseline, collector_error: null, last_cycle: lab.lastCycle,
+  return {nodes, session: publicSession(), baseline_cycles: lab.baseline, healthy_streak: lab.successes, collector_error: null, last_cycle: lab.lastCycle,
     evidence: lab.session ? sessionEvidence(lab.session.id, 60) : newestFirst(evidence.filter(e => !e.session_id)).slice(0, 60),
     ai: {available: false, reason: 'AI integration is a later milestone; manual investigation is fully available.'},
     now: t, history, storage: storage(), token: 'simulator',

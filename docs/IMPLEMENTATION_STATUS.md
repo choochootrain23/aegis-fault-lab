@@ -51,6 +51,7 @@ Reports are under ignored `state/validation/`. The app is running at http://loca
 - Published to https://github.com/choochootrain23/aegis-fault-lab with a GitHub Pages browser simulator. The simulator reuses the real UI with a JavaScript stand-in controller; every measurement in it is generated and permanently labelled. `tests/preview_walkthrough.py` passes.
 - Production restart during an in-flight mutation and the unaccelerated fifteen-minute lease both pass, with resource samples. See [validation](VALIDATION.md).
 - Both the app and the simulator now follow an editorial visual style inspired by getartcraft.com, with self-hosted OFL fonts and colour reserved for state and diagnostics. The real Docker browser walkthrough passes on the restyled UI.
+- Design developed further: progress tracker, state-driven suggested-next card with cycle meters (`healthy_streak` added to `/api/state`), per-check last results, animated request wire and signal colours. Backend tests, the simulator walkthrough and the real Docker browser walkthrough pass.
 
 ## Next work
 
