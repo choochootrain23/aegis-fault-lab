@@ -3,7 +3,7 @@ const $ = id => document.getElementById(id);
 const refreshOrder = AegisView.latestRequest();
 const citationOrder = AegisView.latestRequest();
 let historySignature='';
-let state, selected = 'gateway-a', busy = false, token = '', chosen = new Set(), evidenceSignature = '', lastSession, connected=false, serverOffset=0, evidencePaused=false, evidenceSnapshot=[], archiveId=null, archiveCursor=null, archiveBusy=false, suggestedCheck=null;
+let state, selected = 'gateway-a', busy = false, token = '', chosen = new Set(), citedLabels = new Map(), evidenceSignature = '', lastSession, connected=false, serverOffset=0, evidencePaused=false, evidenceSnapshot=[], archiveId=null, archiveCursor=null, archiveBusy=false, suggestedCheck=null;
 const esc = text => String(text ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const label = text => String(text || '').replaceAll('_', ' ').replaceAll('-', ' ');
 // Service names never break at their hyphen ("catalog-" then "b"): wrap them, building text nodes rather than HTML.
@@ -45,14 +45,14 @@ function renderControls(){
  renderAI();
 }
 function renderEvidence(force=false){
- if(evidencePaused&&!force){const unseen=state.evidence.filter(e=>!evidenceSnapshot.some(old=>old.id===e.id)).length;$('evidence-status').textContent=`Reading paused · ${unseen} newer observations available`;return;}
+ if(evidencePaused&&!force){const unseen=state.evidence.filter(e=>!evidenceSnapshot.some(old=>old.id===e.id)).length;$('evidence-count').textContent=state.evidence.length;$('evidence-status').textContent=`Reading paused · ${unseen} newer observation${unseen===1?'':'s'} waiting. The list is frozen until you resume.`;return;}
  if(!evidencePaused)evidenceSnapshot=state.evidence;
  const evidence=evidenceSnapshot.filter(e=>$('filter').value==='all'||e.node===$('filter').value);
  const sig=evidence.map(e=>e.id).join(','); if(sig===evidenceSignature)return; evidenceSignature=sig;
  const open=new Set([...document.querySelectorAll('.evidence-row details[open]')].map(e=>e.dataset.id));
  $('evidence-count').textContent=state.evidence.length;
- $('evidence').innerHTML=evidence.length?evidence.map(e=>`<div class="evidence-row"><input type="checkbox" aria-label="Select evidence ${esc(e.id)}" data-evidence="${esc(e.id)}" ${chosen.has(e.id)?'checked':''}><details data-id="${esc(e.id)}" ${open.has(e.id)?'open':''}><summary><i class="dot ${AegisView.evidenceResult(e).tone}"></i><strong>${esc(e.node)}</strong><span class="kind">${esc(label(e.kind))} · ${e.body.origin==='operator'?'your check':'collector'} · ${esc(AegisView.evidenceResult(e).text)}</span><time>${new Date(e.at*1000).toLocaleTimeString()}</time></summary><p class="evidence-id">Evidence ${esc(e.id)}</p>${detailView(e)}<pre tabindex="0" aria-label="Raw observation">${esc(JSON.stringify(e.body,null,2))}</pre></details></div>`).join(''):'<div class="empty">No matching evidence yet.<br><small>Choose a diagnostic check to gather observations.</small></div>';
- document.querySelectorAll('[data-evidence]').forEach(el=>el.addEventListener('change',()=>{setEvidencePaused(true); if(el.checked&&chosen.size>=20){el.checked=false;toast('Select up to 20 evidence records for one diagnosis.',true);return;}el.checked?chosen.add(el.dataset.evidence):chosen.delete(el.dataset.evidence);$('selected-count').textContent=chosen.size+' evidence selected';$('clear-selection').disabled=chosen.size===0;}));
+ $('evidence').innerHTML=evidence.length?evidence.map(e=>`<div class="evidence-row"><input type="checkbox" aria-label="Cite ${esc(e.node)} ${esc(label(e.kind))} evidence ${esc(e.id)} in your diagnosis" title="Cite in your diagnosis" data-evidence="${esc(e.id)}" ${chosen.has(e.id)?'checked':''}><details data-id="${esc(e.id)}" ${open.has(e.id)?'open':''}><summary><i class="dot ${AegisView.evidenceResult(e).tone}"></i><strong>${esc(e.node)}</strong><span class="kind">${esc(label(e.kind))} · ${e.body.origin==='operator'?'your check':'collector'} · ${esc(AegisView.evidenceResult(e).text)}</span><time>${new Date(e.at*1000).toLocaleTimeString()}</time></summary><p class="evidence-id">Evidence ${esc(e.id)}</p>${detailView(e)}<pre tabindex="0" aria-label="Raw observation">${esc(JSON.stringify(e.body,null,2))}</pre></details></div>`).join(''):'<div class="empty">No matching evidence yet.<br><small>Choose a diagnostic check to gather observations.</small></div>';
+ document.querySelectorAll('[data-evidence]').forEach(el=>el.addEventListener('change',()=>{setEvidencePaused(true); if(el.checked&&chosen.size>=20){el.checked=false;toast('Cite up to 20 evidence records in one diagnosis.',true);return;}const id=el.dataset.evidence,record=evidenceSnapshot.find(e=>e.id===id);if(el.checked){chosen.add(id);citedLabels.set(id,record?`${record.node} ${label(record.kind)}`:`evidence ${id}`);if(!renderCited.hinted){renderCited.hinted=true;toast('Cited in your diagnosis below. The notebook paused so the list holds still.');}}else{chosen.delete(id);citedLabels.delete(id);}renderCited();$('clear-selection').disabled=chosen.size===0;}));
 }
 // Readable views of structured results, shown above the raw JSON.
 function detailView(e){
@@ -75,13 +75,13 @@ function detailView(e){
  }
  return '';
 }
-function setEvidencePaused(paused){evidencePaused=paused;$('evidence-live').textContent=paused?'Resume live updates':'Pause updates';$('evidence-live').setAttribute('aria-pressed',String(!paused));$('evidence-status').textContent=paused?'Reading paused · your evidence stays in place':'Following new observations';if(!paused){evidenceSignature='';renderEvidence();}}
+function setEvidencePaused(paused){evidencePaused=paused;$('evidence-section').classList.toggle('paused',paused);$('evidence-tag').textContent=paused?'Paused':'Live';$('evidence-live').textContent=paused?'Resume live updates':'Pause updates';$('evidence-live').setAttribute('aria-pressed',String(!paused));$('evidence-status').textContent=paused?'Reading paused · the list is frozen so your rows stay put':'Following new observations';if(!paused){evidenceSignature='';renderEvidence();}}
 let lastStatus;
 function render(){
  const s=state.session;
  if(s&&lastSession===s.id&&lastStatus&&lastStatus!=='recovered'&&s.status==='recovered')celebrate();
  lastStatus=s?.status;
- if(lastSession!==s?.id){chosen.clear();lastSession=s?.id;evidencePaused=false;evidenceSignature='';setEvidencePaused(false);$('help-result').hidden=true;$('suggested-check').hidden=true;suggestedCheck=null;$('selected-count').textContent='0 evidence selected';}
+ if(lastSession!==s?.id){chosen.clear();lastSession=s?.id;evidencePaused=false;evidenceSignature='';setEvidencePaused(false);$('help-result').hidden=true;$('help-next').hidden=true;suggestedCheck=null;document.querySelectorAll('[data-help]').forEach(x=>x.classList.remove('chosen'));renderCited();}
  const unknown=state.nodes.every(n=>n.health==='unknown');
  const active=s&&s.status!=='ended';
  const baselineFailed=!active&&state.nodes.some(n=>n.health!=='healthy');
@@ -179,12 +179,16 @@ $('expiry-continue').addEventListener('click',()=>action('extend',{},'Continue e
 $('expiry-reset').addEventListener('click',()=>action('reset',{},'Reset requested. History is preserved.'));
 $('reveal').addEventListener('click',()=>action('reveal',{},'Fault revealed. This is no longer a blind attempt.'));
 $('filter').addEventListener('change',()=>{evidenceSignature='';renderEvidence(true);});
+const HELP_KIND={evidence:'01 · What the evidence shows',hint:'02 · Hint · where to look next',action:'03 · Suggested action'};
 document.querySelectorAll('[data-help]').forEach(b=>b.addEventListener('click',async()=>{
  const result=await action('help',{level:b.dataset.help},'Assistance recorded');
  if(!result)return;
- prose($('help-result'),result.message);$('help-result').hidden=false;
- suggestedCheck=result.suggested_check;$('suggested-check').hidden=!suggestedCheck;
- if(suggestedCheck)$('suggested-check').textContent=`Run ${label(suggestedCheck.kind)} · ${suggestedCheck.node} ↗`;
+ document.querySelectorAll('[data-help]').forEach(x=>x.classList.toggle('chosen',x===b));
+ $('help-kind').textContent=HELP_KIND[b.dataset.help];prose($('help-text'),result.message);
+ $('help-result').querySelectorAll('.help-followup').forEach(e=>e.remove());
+ const box=$('help-result');box.hidden=false;box.classList.remove('fresh');void box.offsetWidth;box.classList.add('fresh');box.scrollIntoView({block:'nearest',behavior:'smooth'});
+ suggestedCheck=result.suggested_check;$('help-next').hidden=!suggestedCheck;
+ if(suggestedCheck)$('suggested-check').textContent=`Run ${checkName(suggestedCheck.kind)} · ${suggestedCheck.node} ↗`;
  showCited(result);
 }));
 // Cited service checks may have left the recent polling window. Keep their
@@ -199,7 +203,7 @@ function showCited(result){
 // The optional AI investigator: read-only, and only when a provider key is configured.
 function renderAI(){
  const ai=state.ai||{}, s=state.session, active=s&&s.status!=='ended';
- setText('ai-badge',ai.available?`ON · ${ai.provider}`:'OFF');$('ai-badge').className='badge '+(ai.available?'blue':'neutral');
+ setText('ai-badge',ai.available?`ON · ${ai.provider}`:'OFF');$('ai-badge').className='badge '+(ai.available?'blue':'neutral');$('ai-panel').classList.toggle('ready',!!ai.available);
  setText('ai-status',ai.available?`${ai.model}. ${ai.reason}${active?'':' Start an investigation to ask.'}`:ai.reason||'Not configured.');
  $('ai-ask').disabled=!ai.available||!active||busy||!connected;$('ai-question').disabled=!ai.available;
 }
@@ -213,10 +217,34 @@ $('ai-form').addEventListener('submit',async e=>{
  const meta=document.createElement('small');meta.textContent=`${result.provider} · ${result.model} · ${result.evidence_ids.length} cited observations · check what it cites`;$('ai-answer').append(meta);
  $('ai-question').value='';showCited(result);
 });
-$('suggested-check').addEventListener('click',()=>{if(suggestedCheck)action('check',suggestedCheck,'Suggested check completed. Review the new observation.');});
-$('clear-selection').addEventListener('click',()=>{chosen.clear();$('selected-count').textContent='0 evidence selected';$('clear-selection').disabled=true;evidenceSignature='';renderEvidence(true);});
+const checkName=kind=>document.querySelector(`[data-check="${CSS.escape(kind)}"] strong`)?.textContent||label(kind);
+// Running the suggested check must visibly answer it: select that node, show the new record and say what it found.
+$('suggested-check').addEventListener('click',async()=>{
+ const check=suggestedCheck;if(!check)return;
+ const result=await action('check',check,'Suggested check completed. Its record is highlighted in the evidence notebook.');
+ if(!result)return;
+ suggestedCheck=null;$('help-next').hidden=true;
+ $('node-'+check.node)?.click();
+ const record=state.evidence.find(e=>e.node===check.node&&e.kind===check.kind);
+ if(!record)return;
+ showCited({evidence_ids:[record.id],evidence:[record]});
+ const done=document.createElement('p');done.className='help-followup';
+ prose(done,`Done: ${checkName(check.kind)} on ${check.node} reads “${AegisView.evidenceResult(record).text}”. Ask for help again to include it.`);
+ $('help-text').after(done);
+});
+// What the ticked notebook records will be saved with, so the checkbox's purpose is visible where it matters.
+function renderCited(){
+ for(const id of citedLabels.keys())if(!chosen.has(id))citedLabels.delete(id);
+ $('selected-count').textContent=chosen.size+' cited';$('clear-selection').disabled=chosen.size===0;
+ const list=$('cited-list');list.replaceChildren();
+ if(!chosen.size){list.textContent='No evidence cited yet. Tick the Cite box on records in the evidence notebook to back up your reasoning (optional).';list.classList.add('empty-cite');return;}
+ list.classList.remove('empty-cite');const head=document.createElement('span');head.textContent='Citing:';list.append(head);
+ for(const id of chosen){const chip=document.createElement('span');chip.className='cited-chip';chip.textContent=citedLabels.get(id)||`evidence ${id}`;list.append(chip);}
+}
+renderCited();
+$('clear-selection').addEventListener('click',()=>{chosen.clear();renderCited();evidenceSignature='';renderEvidence(true);});
 
-$('note-form').addEventListener('submit',async e=>{e.preventDefault();const saved=await action('note',{explanation:$('explanation').value,uncertainty:$('uncertainty').value,evidence_ids:[...chosen]},'Diagnosis saved with evidence references');if(saved){$('explanation').value='';$('uncertainty').value='';chosen.clear();$('selected-count').textContent='0 evidence selected';evidenceSignature='';renderEvidence(true);}});
+$('note-form').addEventListener('submit',async e=>{e.preventDefault();const saved=await action('note',{explanation:$('explanation').value,uncertainty:$('uncertainty').value,evidence_ids:[...chosen]},'Diagnosis saved with evidence references');if(saved){$('explanation').value='';$('uncertainty').value='';chosen.clear();renderCited();evidenceSignature='';renderEvidence(true);}});
 $('expiry-dialog').addEventListener('cancel',e=>e.preventDefault());
 $('mode').addEventListener('change',()=>{renderControls();renderScenario();});
 for(const id of ['practice-kind','practice-target'])$(id).addEventListener('change',renderScenario);
