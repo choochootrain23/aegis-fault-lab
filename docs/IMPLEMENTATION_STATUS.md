@@ -77,12 +77,13 @@ Reports are under ignored `state/validation/`. The app is running at http://loca
 - **Fifth fault: network delay.** The broker adds a fixed 600 ms netem delay to one service's network interface through a short-lived helper container that joins only that container's network namespace, with `NET_ADMIN` as its only capability, a read-only root, no new privileges and tight memory and process limits; it refuses to replace a queue it did not create. A new **Network path** check times TCP connects from the controller and lists the service's queue settings. Remedy: **Remove traffic delay**. Guidance points slow requests with normal CPU at the network path.
 - **Optional AI investigator.** A read-only panel asks a model (Gemini by default, or Claude through the Anthropic SDK) about the evidence on screen. It receives only summarised public observations and node health, never the fault record, cannot act, cites observations by id (citations are checked against what was sent) and is limited to 30 questions per investigation; use is recorded as help. Nothing is sent anywhere without `AEGIS_AI_API_KEY` in `.env`.
 - **Hardening.** Storage budget configurable with `AEGIS_STORAGE_LIMIT_MIB` and tested under pressure; `scripts/soak.py` for multi-hour runs (118 passing rounds over about 91 minutes so far, memory flat); an axe-core accessibility audit (contrast, landmark and focus fixes made); simulator walkthrough in Firefox as well as Chromium; a 320 px overflow in the scenario picker fixed.
-- Validation: see [validation](VALIDATION.md). A real Gemini model diagnosed a live network delay correctly in the lab; real answers have not been evaluated systematically.
+- Validation: see [validation](VALIDATION.md). In a 30-round hidden-fault evaluation on real Docker, the AI investigator named the right remedy and service in every round once all inspections had been run, and gave one premature wrong guess in 30 rounds when only business checks had been run.
+- Interface motion: the suggested-next card breathes in its tone colour, with a light running down its bar and a comet circling it when an action is suggested; Start investigation carries a rotating ring of the signature colours; failing services ping on the live map; the AI shows a flowing line while it thinks. Everything stops under reduced motion.
 
 ## Next work
 
 1. Screen-reader review and Safari/WebKit coverage.
-2. A full uninterrupted multi-hour soak, and a systematic evaluation of the AI investigator's answers across every fault.
+2. A full uninterrupted multi-hour soak; AI evaluation with other models and question wording.
 
 ## Boundaries preserved
 

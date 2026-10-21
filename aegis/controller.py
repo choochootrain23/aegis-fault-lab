@@ -305,7 +305,12 @@ class Lab:
     def ai_context(self):
         """What the AI investigator may see: public session facts, node health and recent evidence summaries."""
         public = self.public_session()
-        evidence = self.store.evidence(self.session['id'], 40)
+        # The learner's own checks matter most and the collector adds six records a cycle, so a plain newest-40
+        # window would drop a check within seconds. Keep up to 28 of their checks and the last two collector cycles.
+        recent = self.store.evidence(self.session['id'], 400)
+        own = [e for e in recent if e['body'].get('origin') != 'collector'][:28]
+        background = [e for e in recent if e['body'].get('origin') == 'collector'][:12]
+        evidence = sorted(own + background, key=lambda e: (e['at'], e['id']), reverse=True)
         nodes = [{'id': n['id'], 'role': n['role'], 'health': n['health']} for n in self.state_nodes()]
         context = {'mode': public['mode'], 'status': public['status'], 'started_s_ago': round(time.time() - public['started_at']),
                    'scenario': public.get('scenario'), 'slow_threshold_ms': SLOW_MS, 'nodes': nodes,

@@ -34,7 +34,15 @@ Two further production gates passed on 20 October 2026 via `scripts/validate_gat
 
 The first run stopped after 64 rounds on a validator assertion, not a lab fault. During CPU starvation on catalog-b, the diagnosis was correct (the catalogue's CPU was at its limit), but the catalogue's own probe read slow in only one of five cycles while the gateways calling it read slow in four. The check now judges CPU starvation across every service the fault reaches; a starved gateway is still checked on its own. The second run was stopped on purpose after 42 minutes, because the host had to sleep; its in-progress round was reset and a healthy baseline verified. A full uninterrupted multi-hour run remains to be done.
 
-**AI investigator with a real model (21 October 2026).** Beyond the fake-provider tests, `gemini-3.5-flash-lite` was asked about a real network delay on catalog-b in the Docker lab. Both answers compared the two gateways, ruled out CPU from the resources check, identified the netem queue from the network check and recommended *undelay on catalog-b*, citing 8 and 6 real observations, in about 2 s each. A test on synthetic evidence showed the model sometimes groups citations as `[id1, id2]`, which the parser had dropped; it now reads every id in a bracket. `gemini-2.5-flash-lite`, the original default, is closed to new keys, so the default is now `gemini-3.5-flash-lite`. This is a handful of answers, not an evaluation: answers can still be wrong, which is why every claim is cited.
+**AI investigator with a real model (21 October 2026).** Beyond the fake-provider tests, `gemini-3.5-flash-lite` was asked about a real network delay on catalog-b in the Docker lab. Both answers compared the two gateways, ruled out CPU from the resources check, identified the netem queue from the network check and recommended *undelay on catalog-b*, citing 8 and 6 real observations, in about 2 s each. A test on synthetic evidence showed the model sometimes groups citations as `[id1, id2]`, which the parser had dropped; it now reads every id in a bracket. `gemini-2.5-flash-lite`, the original default, is closed to new keys, so the default is now `gemini-3.5-flash-lite`. Those were a handful of answers, so a systematic evaluation followed.
+
+**AI investigator evaluation (21 October 2026, `scripts/evaluate_ai.py --run --rounds 30`).** Thirty challenge rounds on real Docker with `gemini-3.5-flash-lite`. The fault was hidden from the model, as from a learner, and revealed only after grading. Each round asked the same question twice and graded the answer's final `Action:` line against the revealed fault. The rounds covered 14 of the 15 fault and service combinations; only CPU starvation on catalog-b did not come up.
+
+- **After every inspection on every service: 30 of 30 correct**, with the right remedy on the right service for all five faults (stopped 8/8, CPU 3/3, disk 6/6, config 5/5, network delay 8/8).
+- **After business checks only: 16 correct, 13 "none yet", 1 wrong.** The early correct answers were stopped services and full disks, whose business failures name the cause (connection refused, `ENOSPC`). The model held back on the faults that need inspection. The one wrong answer was config drift on catalog-b: it correctly blamed catalog-b and asked for the disk and config checks, but then guessed *clear* instead of waiting. In the lab that action reports *unchanged* and is never credited.
+- Every answer cited between 2 and 11 real observations. The median answer took 1.6 s and was 73 words; the slowest took 15.6 s.
+
+Building the evaluation exposed two real defects, both fixed with tests. First, the investigator saw only the newest 40 observations, so collector records pushed out a learner's own checks within about 15 seconds; it now keeps up to 28 of the learner's checks plus the last two collector cycles. Second, a Gemini 503 overload was reported as a key or model problem; it is now retried once and otherwise reported as temporary. The evaluation is one model, one question and 60 answers. It shows the investigator is useful, not that it is never wrong, which is why every claim is cited.
 
 ## Reproduce browser reviews
 
@@ -66,6 +74,6 @@ The workflow checks:
 ## Remaining deployment gates
 
 1. Screen-reader review and Safari/WebKit coverage.
-2. A full uninterrupted multi-hour soak (so far 118 rounds over about 91 minutes in two runs), and a systematic evaluation of real AI investigator answers across every fault.
+2. A full uninterrupted multi-hour soak (so far 118 rounds over about 91 minutes in two runs), and evaluating the AI investigator with other models and question wording.
 
 Manual investigation remains fully usable without a model key.

@@ -593,6 +593,21 @@ def test_ai_context_never_contains_the_hidden_fault(lab):
     run(scenario())
 
 
+def test_ai_context_keeps_the_learners_checks_after_many_collector_cycles(lab):
+    async def scenario():
+        controller, _ = lab
+        await baseline(controller)
+        await controller.start(Start(mode='challenge', key='challenge-ai-window'))
+        await investigate(controller)
+        disk = await controller.check('gateway-c', 'disk')
+        for _ in range(12):  # 72 collector records, far more than the context holds
+            await controller.cycle()
+        context, ids = controller.ai_context()
+        assert disk['id'] in ids
+        assert sum(e['origin'] == 'collector' for e in context['evidence']) == 12 and len(context['evidence']) <= 40
+    run(scenario())
+
+
 def test_storage_pressure_pauses_collection_and_retention_recovers_it(tmp_path, monkeypatch):
     """A real SQLite store driven past a lowered budget: collection pauses loudly, cleanup frees it, collection resumes."""
     monkeypatch.setenv('AEGIS_FLEET_TOKEN', 'fleet-token')

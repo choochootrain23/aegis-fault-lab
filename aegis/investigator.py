@@ -3,6 +3,7 @@
 It is given only the current investigation's public evidence summaries and node health, never the fault
 record, and it cannot act. Nothing is sent anywhere unless an API key is configured.
 """
+import asyncio
 import json
 import os
 import re
@@ -35,6 +36,7 @@ class Investigator:
         self.key = os.getenv('AEGIS_AI_API_KEY', '').strip()
         self.model = os.getenv('AEGIS_AI_MODEL', '').strip() or DEFAULT_MODELS.get(self.provider, '')
         self.client = client
+        self.retry_delay = 2.0
         self.anthropic_http = None  # an httpx2 client for tests; the SDK's default otherwise
 
     def status(self):
@@ -62,10 +64,16 @@ class Investigator:
     async def ask_gemini(self, prompt):
         body = {'systemInstruction': {'parts': [{'text': SYSTEM}]}, 'contents': [{'role': 'user', 'parts': [{'text': prompt}]}],
                 'generationConfig': {'maxOutputTokens': 1024, 'temperature': 0.2}}
-        try:
-            response = await self.client.post(GEMINI_URL.format(model=self.model), headers={'x-goog-api-key': self.key}, json=body, timeout=40)
-        except httpx.HTTPError as error:
-            raise InvestigatorError('Could not reach the Gemini API: ' + type(error).__name__) from error
+        for attempt in range(2):  # one retry: Gemini answers 503 when briefly overloaded
+            try:
+                response = await self.client.post(GEMINI_URL.format(model=self.model), headers={'x-goog-api-key': self.key}, json=body, timeout=40)
+            except httpx.HTTPError as error:
+                raise InvestigatorError('Could not reach the Gemini API: ' + type(error).__name__) from error
+            if response.status_code < 500 or attempt:
+                break
+            await asyncio.sleep(self.retry_delay)
+        if response.status_code >= 500:
+            raise InvestigatorError(f'The Gemini API is temporarily unavailable (HTTP {response.status_code}). Ask again in a moment.')
         if response.status_code == 429:
             raise InvestigatorError('The Gemini API rate limit was reached. Wait a minute and ask again.')
         if not response.is_success:
@@ -91,6 +99,8 @@ class Investigator:
             raise InvestigatorError('The Claude API rate limit was reached. Wait a minute and ask again.') from error
         except anthropic.AuthenticationError as error:
             raise InvestigatorError('The Claude API rejected the key. Check AEGIS_AI_API_KEY.') from error
+        except anthropic.InternalServerError as error:
+            raise InvestigatorError(f'The Claude API is temporarily unavailable (HTTP {error.status_code}). Ask again in a moment.') from error
         except anthropic.APIStatusError as error:
             raise InvestigatorError(f'The Claude API rejected the request (HTTP {error.status_code}). Check the model name.') from error
         except anthropic.APIConnectionError as error:

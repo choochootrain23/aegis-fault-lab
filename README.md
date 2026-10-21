@@ -277,6 +277,8 @@ python3 scripts/validate_f1.py --run             # the original stopped-service 
 
 For a long run, `python3 scripts/soak.py --run --hours 2` repeats random practice and challenge investigations for the given time, recording container memory, evidence storage and collector errors after every round.
 
+With an AI key configured, `python3 scripts/evaluate_ai.py --run --rounds 30` grades the AI investigator on hidden faults. It runs challenge rounds, so the model never sees the fault, and asks twice in each: after business checks only, where a wrong action counts as overconfidence, and after every inspection, where it should name the right remedy and service. Every question is a real model call.
+
 Each `--run` script deliberately interrupts the project's services and refuses to start while an investigation is active.
 
 ### Browser tests
@@ -312,7 +314,7 @@ The build copies `web/` unchanged apart from relabelling every real-measurement 
 ## Limitations and next steps
 
 - **Scenarios:** five are implemented (stopped service, CPU starvation, disk full, config drift, network delay) on three services.
-- **AI investigator:** optional and off by default. Request handling is tested against mock providers, and a real Gemini model correctly diagnosed a live network delay in the lab, but a few good answers are not a systematic evaluation. Treat answers as suggestions and check what they cite.
+- **AI investigator:** optional and off by default. In a 30-round hidden-fault evaluation with `gemini-3.5-flash-lite` it named the correct fix every time once all inspections had been run, but once guessed too early from thin evidence. Other models are unevaluated. Treat answers as suggestions and check what they cite.
 - **Not yet validated:** screen-reader use (the automated axe audit passes, but it cannot judge everything) and Safari. The 15-minute expiry and a controller kill during a Docker action do pass on real Docker (see [validation](docs/VALIDATION.md)).
 - **Scope:** containers share a kernel, and the business data is synthetic. Nothing here claims physical hardware repair or telemetry.
 

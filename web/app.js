@@ -145,6 +145,8 @@ function renderJourney(){
  const j=AegisView.journey(state,connected);
  $('journey').dataset.tone=j.tone;
  document.querySelectorAll('#steps li').forEach((li,i)=>{li.classList.toggle('done',i<j.step);li.classList.toggle('current',i===j.step);if(i===j.step)li.setAttribute('aria-current','step');else li.removeAttribute('aria-current');});
+ const title=$('next-title');
+ if(title.textContent!==j.title){title.classList.remove('fresh');void title.offsetWidth;title.classList.add('fresh');}
  setText('next-title',j.title);setText('next-detail',j.detail);
  const meter=$('meter');meter.hidden=!j.meter;
  if(j.meter){const sig=j.meter.done+'/'+j.meter.total;if(meter.dataset.sig!==sig){meter.dataset.sig=sig;meter.innerHTML=Array.from({length:j.meter.total},(_,i)=>`<i class="${i<j.meter.done?'filled':''}"></i>`).join('')+`<span>${sig} healthy cycles</span>`;}}

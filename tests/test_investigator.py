@@ -53,6 +53,20 @@ def test_gemini_errors_are_explained(monkeypatch):
         asyncio.run(investigator(monkeypatch, 'gemini', lambda r: httpx.Response(200, json={'candidates': []})).ask(CONTEXT, '', IDS))
 
 
+def test_gemini_overload_is_retried_once_then_reported_as_temporary(monkeypatch):
+    calls = []
+    def flaky(request):
+        calls.append(1)
+        return httpx.Response(503) if len(calls) == 1 else httpx.Response(200, json={'candidates': [{'content': {'parts': [{'text': 'ok'}]}}]})
+    ai = investigator(monkeypatch, 'gemini', flaky)
+    ai.retry_delay = 0
+    assert asyncio.run(ai.ask(CONTEXT, '', IDS))['answer'] == 'ok' and len(calls) == 2
+    down = investigator(monkeypatch, 'gemini', lambda r: httpx.Response(503))
+    down.retry_delay = 0
+    with pytest.raises(InvestigatorError, match='temporarily unavailable'):
+        asyncio.run(down.ask(CONTEXT, '', IDS))
+
+
 def claude(monkeypatch, reply):
     seen = {}
     def handler(request):

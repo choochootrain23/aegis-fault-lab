@@ -556,3 +556,44 @@ kbd{display:inline-block;min-width:24px;padding:4px 6px;border:1px solid var(--l
 .ai-answer.thinking{animation:step-glow 1.2s ease-in-out infinite}
 /* Very narrow phones: the state badge needs the full card width more than the decorative icon does. */
 @media(max-width:380px){.node .node-icon{display:none}.node-top{justify-content:flex-start}.node-state{letter-spacing:.06em;padding:4px 5px}}
+
+/* Living highlights: motion marks what deserves attention right now. All of it stops under reduced motion. */
+@property --spin{syntax:'<angle>';inherits:false;initial-value:0deg}
+@keyframes spin{to{--spin:360deg}}
+@keyframes breathe{50%{background:color-mix(in srgb,var(--tone) 17%,var(--bg))}}
+@keyframes bar-glow{50%{box-shadow:0 0 16px 1px color-mix(in srgb,var(--tone) 70%,transparent)}}
+@keyframes streak{from{background-position:0 100%}to{background-position:0 0}}
+@keyframes title-in{from{opacity:0;transform:translateY(7px)}}
+@keyframes shine{0%,55%{background-position:130% 0}100%{background-position:-30% 0}}
+@keyframes ping{0%{box-shadow:0 0 0 0 var(--ping)}75%,100%{box-shadow:0 0 0 7px transparent}}
+@keyframes flow{to{background-position:-200% 100%}}
+@keyframes ripple{0%,55%,100%{transform:scaleY(1)}25%{transform:scaleY(2)}}
+/* Ring drawn by a rotating conic gradient, masked to a thin border. */
+.next-step::after,#start:not(:disabled)::after{content:'';position:absolute;pointer-events:none;-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask:linear-gradient(#000 0 0) content-box exclude,linear-gradient(#000 0 0);mask-composite:exclude}
+
+/* Suggested next: breathes in its tone; the bar carries a travelling light. */
+.next-step{animation:breathe 4.8s ease-in-out infinite}
+.journey[data-tone=alert] .next-step{animation-duration:2.4s}
+.next-step::before{background-image:linear-gradient(180deg,transparent 35%,rgba(255,255,255,.75) 50%,transparent 65%);background-size:100% 300%;background-repeat:no-repeat;animation:bar-glow 4.8s ease-in-out infinite,streak 2.8s cubic-bezier(.5,0,.5,1) infinite}
+/* When an action is suggested, a comet circles the card. */
+.next-step::after{inset:0;padding:2px;opacity:0;transition:opacity .4s;background:conic-gradient(from var(--spin),transparent 0 58%,color-mix(in srgb,var(--tone) 35%,transparent) 76%,var(--tone) 93%,transparent);animation:spin 3.6s linear infinite}
+.journey[data-tone=go] .next-step::after,.journey[data-tone=alert] .next-step::after{opacity:1}
+#next-title.fresh{animation:title-in .55s cubic-bezier(.2,.8,.2,1)}
+
+/* Start investigation, once ready: the signature colours run around it and a shine crosses it. */
+#start{position:relative}
+#start:not(:disabled){background-image:linear-gradient(105deg,transparent 40%,rgba(255,255,255,.28) 50%,transparent 60%);background-size:250% 100%;background-repeat:no-repeat;animation:shine 3.4s ease-in-out infinite}
+#start:not(:disabled)::after{inset:-6px;padding:3px;background:conic-gradient(from var(--spin),var(--ok),var(--accent),var(--violet),var(--orange),var(--ok));animation:spin 4s linear infinite}
+
+/* Live map: failing services ping like a radar; slow ones more calmly. */
+.node-state.unavailable::before{--ping:rgba(197,34,31,.5);animation:ping 1.5s ease-out infinite}
+.node-state.degraded::before{--ping:rgba(249,171,0,.6);animation:ping 2.4s ease-out infinite}
+
+/* AI investigator thinking: a flowing line of colour under the answer. */
+.ai-answer.thinking{padding-bottom:8px;background:linear-gradient(90deg,var(--violet),var(--accent),var(--cyan),var(--violet)) 0 100%/200% 3px no-repeat;animation:step-glow 1.2s ease-in-out infinite,flow 1.4s linear infinite}
+
+/* Header signature: the four colour bars ripple in turn. */
+.signature i{animation:ripple 3.6s ease-in-out infinite}
+.signature i:nth-child(2){animation-delay:.18s}.signature i:nth-child(3){animation-delay:.36s}.signature i:nth-child(4){animation-delay:.54s}
+
+@media(prefers-reduced-motion:reduce){.next-step::after{display:none}}
