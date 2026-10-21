@@ -1,19 +1,19 @@
 # AegisRack
 
-A hands-on lab for practising Linux service troubleshooting. Two small web services run in Docker containers. The lab breaks one of them on purpose (stops it, starves it of CPU, fills its disk or drifts its configuration), and you investigate with real checks, choose a fix, and watch the lab verify whether the service actually came back.
+A hands-on lab for practising Linux service troubleshooting. Three small web services run in Docker containers: two gateways that both depend on one shared catalogue. The lab breaks one of them on purpose (stops it, starves it of CPU, fills its disk, drifts its configuration or delays its network traffic), and you investigate with real checks, choose a fix, and watch the lab verify whether the service actually came back.
 
 > **Two ways to look at it**
 > - **[Browser simulator](https://choochootrain23.github.io/aegis-fault-lab/)**: a quick look in any browser. Nothing is installed and **nothing in it is real**: services and measurements are generated in your tab.
 > - **[Full lab](#run-the-full-lab-locally)**: the real thing on your own machine, with real containers, real failures and measured evidence. About 10 minutes to set up.
 
-**Status:** a working milestone. Four fault types are implemented on either service and validated end to end on real Docker. A network-delay scenario and an AI assistant are planned; see [limitations and next steps](#limitations-and-next-steps).
+**Status:** a working milestone. Five fault types are implemented on any of the three services and validated end to end on real Docker, with an optional AI investigator that reads only the evidence on the page. See [limitations and next steps](#limitations-and-next-steps).
 
 ## Contents
 
 1. [Try it in your browser](#try-it-in-your-browser)
-2. [Run the full lab locally](#run-the-full-lab-locally)
+2. [Run the full lab locally](#run-the-full-lab-locally), including [the `.env` file](#what-env-holds)
 3. [Your first investigation](#your-first-investigation)
-4. [The four faults](#the-four-faults)
+4. [The five faults](#the-five-faults) and the [optional AI investigator](#optional-ai-investigator)
 5. [Stop, restart and uninstall](#stop-restart-and-uninstall)
 6. [Troubleshooting](#troubleshooting)
 7. [How it works](#how-it-works)
@@ -64,7 +64,37 @@ python3 scripts/preflight.py
 python3 scripts/init_env.py
 ```
 
-This writes two random credentials to `.env` (readable only by you): one for the broker and one for the services' maintenance endpoints. It never changes existing values, and `.env` is excluded from git.
+This creates `.env` in the project folder and writes two random credentials to it, without printing them. It never changes values that are already there.
+
+#### What `.env` holds
+
+`.env` holds the lab's local settings and secrets. Docker Compose reads it when the containers start, and each value goes only to the containers that need it.
+
+| Variable | Set by | Purpose |
+| --- | --- | --- |
+| `AEGIS_BROKER_TOKEN` | `init_env.py` | Lets the controller talk to the broker, the only component with Docker access |
+| `AEGIS_FLEET_TOKEN` | `init_env.py` | Protects the services' maintenance endpoints used to inject and remove faults |
+| `AEGIS_AI_PROVIDER` | you, optional | `gemini` (default) or `anthropic`; see [Optional AI investigator](#optional-ai-investigator) |
+| `AEGIS_AI_API_KEY` | you, optional | Your own model API key; the AI panel stays off without it |
+| `AEGIS_AI_MODEL` | you, optional | Overrides the model; leave it out to use the default |
+| `AEGIS_STORAGE_LIMIT_MIB` | you, optional | Evidence storage budget in MiB (default 256); see [Troubleshooting](#troubleshooting) |
+
+A complete `.env` with the AI turned on looks like this (values shortened):
+
+```bash
+AEGIS_BROKER_TOKEN=3f9a…   # generated; do not edit
+AEGIS_FLEET_TOKEN=b71c…    # generated; do not edit
+AEGIS_AI_PROVIDER=gemini
+AEGIS_AI_API_KEY=…         # your key, no quotes or spaces
+```
+
+Keeping it safe:
+
+- `.env` is listed in `.gitignore`, so git never commits it. Check with `git check-ignore .env`, which should print `.env`.
+- `init_env.py` makes it readable only by you (mode 600). If you created it yourself, run `chmod 600 .env`.
+- Never paste its contents into an issue, a chat or a screenshot. If a key leaks, revoke it with its provider and create a new one.
+- After editing `.env`, apply it with `docker compose up -d`, which recreates only the containers whose settings changed.
+- The published browser simulator never uses `.env` or any key.
 
 **Upgrading an existing install?** Run `python3 scripts/init_env.py` again (it only adds missing credentials), then `docker compose up -d --build`.
 
@@ -76,7 +106,7 @@ docker compose up -d
 docker compose ps
 ```
 
-The first build downloads a Python base image and takes a few minutes. `docker compose ps` should list four running containers: `controller`, `broker`, `gateway-a` and `catalog-b`.
+The first build downloads a Python base image and takes a few minutes. `docker compose ps` should list five running containers: `controller`, `broker`, `gateway-a`, `catalog-b` and `gateway-c`.
 
 ### 5. Open the lab
 
@@ -84,24 +114,24 @@ Open **http://localhost:8787** in a browser on the same machine.
 
 **Lab inside a VM or on another machine?** Forward the port over SSH from the computer you browse on: `ssh -L 8787:localhost:8787 you@lab-machine`, then open http://localhost:8787 there. In VS Code Remote-SSH, the **Ports** panel can forward 8787 for you. Use `localhost`, not the machine's IP address: the lab deliberately rejects other addresses.
 
-The page shows **Collecting a healthy baseline** with a 0/5 meter. After about ten seconds both nodes turn **healthy** and **Start investigation** turns green.
+The page shows **Collecting a healthy baseline** with a 0/5 meter. After about ten seconds all three services turn **healthy** and **Start investigation** turns green.
 
 ## Your first investigation
 
 New here? Press the yellow **TOUR** button in the top bar for a 60-second guided look at each part of the page; you can retake it any time. The **Suggested next** card always shows a sensible next step, but you can explore in any order.
 
 1. Leave **Mode** on **Practice · known fault**, **Fault** on **Stopped service** and **Target** on **Catalogue (shared)**, then press **Start investigation**. The lab really stops the `catalog-b` container.
-2. Within about six seconds the live map changes: `gateway-a` turns **degraded** (alive, but its requests fail) and `catalog-b` turns **unavailable**.
-3. Click a node and run its checks: **Process liveness**, **Business request**, **Container state**, **Resource use**, **Disk usage**, **Running config**, **Request trace** and **Service logs**. Each result is stored in the **Evidence notebook**; open a record to see the raw measurement.
-4. Stuck? **A little direction?** offers an evidence explanation, a hint or one suggested action. Help is optional and recorded.
-5. Select a node and choose a recovery action: **Start service**, **Stop runaway job**, **Clear temp files** or **Restore config**. Trying the wrong one is allowed; it reports that nothing changed and is recorded. An accepted action is not proof: the lab needs **three healthy, fast cycles in a row** before it shows **Recovery verified**.
-6. Optionally write your diagnosis, ticking the evidence that supports it, then press **End & reset** to restore both services. The **Incident report** shows how long detection, checks and recovery took, and **Replay** animates every request over time. Past investigations, each with its own replay, stay in **Investigation history**.
+2. Within about six seconds the live map changes: both gateways turn **degraded** (alive, but their requests fail) and `catalog-b` turns **unavailable**. Both gateways failing at once is the clue that the problem is something they share.
+3. Click a node and run its checks: **Process liveness**, **Business request**, **Container state**, **Resource use**, **Disk usage**, **Running config**, **Request trace**, **Network path** and **Service logs**. Each result is stored in the **Evidence notebook**; open a record to see the raw measurement.
+4. Stuck? **A little direction?** offers an evidence explanation, a hint or one suggested action. If you have set up the optional [AI investigator](#optional-ai-investigator), you can also ask it a question about the evidence. Help is optional and recorded.
+5. Select a node and choose a recovery action: **Start service**, **Stop runaway job**, **Clear temp files**, **Restore config** or **Remove traffic delay**. Trying the wrong one is allowed; it reports that nothing changed and is recorded. An accepted action is not proof: the lab needs **three healthy, fast cycles in a row** before it shows **Recovery verified**.
+6. Optionally write your diagnosis, ticking the evidence that supports it, then press **End & reset** to restore every service. The **Incident report** shows how long detection, checks and recovery took, and **Replay** animates every request over time. Past investigations, each with its own replay, stay in **Investigation history**.
 
-**Keyboard shortcuts:** **G** and **C** select a node, **1**–**8** run its checks, **E** explains the evidence, **P** pauses the notebook and **?** lists them all. Nothing that changes the services has a shortcut.
+**Keyboard shortcuts:** **A**, **B** and **C** select gateway-a, catalog-b and gateway-c, **1**–**9** run its checks, **E** explains the evidence, **P** pauses the notebook and **?** lists them all. Nothing that changes the services has a shortcut.
 
-## The four faults
+## The five faults
 
-Each fault can target either service. A fault on the shared catalogue spreads to the gateway; a fault on the gateway stays local.
+Each fault can target any of the three services. A fault on the shared catalogue reaches both gateways; a fault on one gateway stays local, and the other gateway stays healthy. Comparing the two gateways is the quickest way to find the boundary of the failure.
 
 | Fault | What you see | Evidence that gives it away | Fix |
 | --- | --- | --- | --- |
@@ -109,10 +139,40 @@ Each fault can target either service. A fault on the shared catalogue spreads to
 | **CPU starvation** | Everything still answers, just slowly (above 300 ms) | **Resource use** shows CPU at the container's limit with throttling; logs record a job starting | **Stop runaway job** |
 | **Disk full** | The process stays live, but requests fail with HTTP 507 | **Disk usage** shows `/tmp` full, with one large filler file | **Clear temp files** |
 | **Config drift** | Liveness, CPU and disk look normal, yet requests fail; on the gateway it looks exactly like a stopped catalogue | **Running config** shows a setting that differs from what was deployed; **Request trace** shows which step fails | **Restore config** |
+| **Network delay** | Everything answers about 600 ms late with idle CPU; a delayed catalogue can make gateway requests time out | **Network path** shows TCP connections taking ~600 ms and a `netem` queue; **Request trace** shows a fast handler with the time spent outside it | **Remove traffic delay** |
 
 **Request trace** times each step of one request (the upstream call, the receipt write, and time spent outside the handler) as a waterfall, so you can see where a request is slow or where it breaks.
 
+**Network path** times three TCP connections from the controller and reads the service's own queue settings (what `tc qdisc show` reports).
+
 **Challenge · hidden fault** picks a random fault and service and hides both until you reveal them or end the attempt. The 15-minute timer can be extended; if it runs out and you don't respond within 60 seconds, the lab resets itself, even with the browser closed.
+
+### Optional AI investigator
+
+The **AI investigator** panel can answer questions about the evidence, citing the observations it relies on. It is off by default and nothing is sent anywhere until you add a key. It receives only what the page already shows (evidence summaries and node health), never the hidden fault, and it cannot run checks or change anything. Its answers count as help in the incident report.
+
+To turn it on, choose a provider, add its lines to [`.env`](#what-env-holds), then run `docker compose up -d`.
+
+**Gemini (free tier).** Create a key in [Google AI Studio](https://aistudio.google.com/apikey):
+
+```bash
+AEGIS_AI_PROVIDER=gemini
+AEGIS_AI_API_KEY=your-gemini-key
+```
+
+The default model is `gemini-3.5-flash-lite`. Google has closed `gemini-2.5-flash-lite` to new keys, so remove any `AEGIS_AI_MODEL` line that still names it.
+
+**Claude (paid, low cost).** Create a key in the [Claude Console](https://console.anthropic.com/) and choose the fastest, cheapest model:
+
+```bash
+AEGIS_AI_PROVIDER=anthropic
+AEGIS_AI_API_KEY=your-claude-key
+AEGIS_AI_MODEL=claude-haiku-5-5
+```
+
+Without `AEGIS_AI_MODEL`, Claude defaults to `claude-opus-5-5`, which is more capable but costs more. With Haiku 5.5, one answer costs well under a tenth of a cent.
+
+Once it is set up, the panel's badge reads **ON · gemini** (or **ON · anthropic**). Each investigation allows 30 questions. Answers usually take 5–10 seconds and are capped at about 180 words. Check the observations an answer cites before acting on it.
 
 ## Stop, restart and uninstall
 
@@ -128,7 +188,7 @@ Only this project's containers, networks and volume are touched; nothing else on
 If the web page stops responding mid-investigation, bring the services back with:
 
 ```bash
-docker compose start catalog-b gateway-a
+docker compose start catalog-b gateway-a gateway-c
 docker compose up -d controller broker
 ```
 
@@ -142,7 +202,12 @@ Then reopen the page and press **End & reset** so the lab re-verifies a healthy 
 | `Run scripts/init_env.py first` | Step 3 was skipped, or an older `.env` lacks a newer credential. Run `python3 scripts/init_env.py`, then `docker compose up -d`. |
 | `port is already allocated` on 8787 | Something else uses port 8787. Stop it, then `docker compose up -d` again. |
 | Page says **Untrusted host** | Browse to `http://localhost:8787` (or forward the port as in step 5) rather than an IP address. |
-| Nodes stay **Unknown** | Run `docker compose ps`; all four containers should be running. `docker compose logs controller` shows errors. |
+| Nodes stay **Unknown** | Run `docker compose ps`; all five containers should be running. `docker compose logs controller` shows errors. |
+| AI panel: *still the placeholder* | `AEGIS_AI_API_KEY` in `.env` still holds the example value. Paste your real key, then `docker compose up -d`. |
+| AI panel: *HTTP 404* | The model name is unknown or retired for your key, for example `gemini-2.5-flash-lite`. Delete the `AEGIS_AI_MODEL` line to use the default. |
+| AI panel: *HTTP 400/401/403* or *rejected the key* | The key is wrong, revoked or for the other provider. Check `AEGIS_AI_PROVIDER` matches the key. |
+| AI panel: *rate limit* | The provider's free-tier limit was reached. Wait a minute and ask again. |
+| *Evidence storage limit reached* (HTTP 507) | Export any evidence you want, then press **Run retention cleanup**. To allow more, set `AEGIS_STORAGE_LIMIT_MIB` in `.env` and run `docker compose up -d`. |
 | Preflight reports low memory | Close other programs and retry. The lab needs about 2 GiB free to run with its resource limits. |
 
 ## How it works
@@ -153,16 +218,20 @@ flowchart LR
   subgraph docker [Docker on your machine]
     controller[Controller<br/>web UI, checks, SQLite evidence] -->|checks and maintenance<br/>private network| gateway[gateway-a]
     controller -->|checks and maintenance<br/>private network| catalog[catalog-b]
+    controller -->|checks and maintenance<br/>private network| gatewayc[gateway-c]
     gateway -->|business requests| catalog
-    controller -->|inspect / resources / start / stop only| broker[Broker]
+    gatewayc -->|business requests| catalog
+    controller -->|fixed operations only| broker[Broker]
     broker -->|Docker socket| gateway
     broker -->|Docker socket| catalog
+    broker -->|Docker socket| gatewayc
   end
 ```
 
-- **gateway-a** and **catalog-b** are two small Python web services. The gateway depends on the catalogue, so a fault in the catalogue breaks or slows the gateway's requests even though the gateway itself is still running. Every business request also writes a small receipt to the service's 8 MiB `/tmp`, so a full disk causes real write errors.
+- **gateway-a**, **gateway-c** and **catalog-b** are three small Python web services. Both gateways depend on the catalogue, so a fault in the catalogue breaks or slows both gateways' requests even though the gateways themselves are still running. Every business request also writes a small receipt to the service's 8 MiB `/tmp`, so a full disk causes real write errors.
 - The **controller** serves the web page, runs health checks every two seconds, stores every observation as evidence in SQLite, and runs the investigation rules: a fault can only start from a healthy baseline, and recovery only counts after three healthy cycles in a row.
-- The **broker** is the only part that can touch Docker. It accepts just four fixed operations on these two containers (inspect, read resource use, start, stop) and checks their identity and security settings first. The web page never gets Docker access.
+- The **broker** is the only part that can touch Docker. It accepts just six fixed operations on these three containers (inspect, read resource use, start, stop, and add or remove the fixed traffic delay) and checks their identity and security settings first. The web page never gets Docker access.
+- The network delay is applied by a short-lived helper container that the broker starts inside the target's own network namespace. The helper has only the `NET_ADMIN` capability, no mounts and a read-only filesystem, runs one fixed `tc` command and is removed straight away. Removal deletes only a queue with exactly the fault's settings and refuses to touch anything else.
 - The CPU, disk and configuration faults are injected and cleared through small maintenance endpoints inside each service, protected by a separate token. Filling refuses to run unless `/tmp` really is a small bounded tmpfs, and never writes more than 16 MiB.
 - The service containers run read-only, as a non-root user, with no Linux capabilities, capped memory and CPU, and no ports open to your network. The UI listens on `localhost` only.
 
@@ -193,7 +262,7 @@ Run one controller per state database; a file lock rejects a second one. A resta
 
 ### Validation on real Docker
 
-With the lab running and no active investigation, the scenario matrix runs every fault on both services, then challenge rounds until every fault and target has appeared:
+With the lab running and no active investigation, the scenario matrix runs every fault on all three services, then challenge rounds until every fault and target has appeared:
 
 ```bash
 python3 scripts/validate_scenarios.py --run
@@ -205,6 +274,8 @@ Each round identifies the fault from evidence alone, checks the guidance, confir
 python3 scripts/validate_f1.py --run             # the original stopped-service walkthrough, three rounds
 .venv/bin/python scripts/verify_runtime.py       # actual container limits and broker contract (no investigation active)
 ```
+
+For a long run, `python3 scripts/soak.py --run --hours 2` repeats random practice and challenge investigations for the given time, recording container memory, evidence storage and collector errors after every round.
 
 Each `--run` script deliberately interrupts the project's services and refuses to start while an investigation is active.
 
@@ -222,7 +293,8 @@ These need Playwright (validated with 1.64.0) and Chromium, installed separately
 | `.venv/bin/python scripts/validate_browser.py --run` | Challenge secrecy, controller restart mid-investigation, diagnosis and recovery through the UI, against the real Docker lab |
 | `.venv/bin/python tests/browser_review.py` | Desktop and phone layouts, archive, citations and keyboard use, with its own controller and labelled test records (needs port 8787 free) |
 | `.venv/bin/python tests/browser_workflow.py` | The active workflow against two real service processes, with accelerated timing (needs port 8787 free) |
-| `.venv/bin/python tests/preview_walkthrough.py` | The browser simulator: practice, challenge, every fault, report replay, tour and live map |
+| `.venv/bin/python tests/preview_walkthrough.py` | The browser simulator: practice, challenge, every fault, report replay, tour and live map. Set `AEGIS_BROWSER=firefox` to run it in Firefox (after `playwright install firefox`) |
+| `.venv/bin/python tests/accessibility_audit.py` | An axe-core audit of the page in six states (welcome, ready, active investigation, shortcuts, report, phone); fails on serious or critical violations. Needs `axe.min.js` (axe-core 4.10.2) saved to `state/ui-tools/axe/` |
 
 `node tests/view-model.mjs` runs the pure UI-logic checks if Node.js is installed. See [validation boundaries](docs/VALIDATION.md) for what each layer does and does not establish.
 
@@ -239,9 +311,9 @@ The build copies `web/` unchanged apart from relabelling every real-measurement 
 
 ## Limitations and next steps
 
-- **Scenarios:** four are implemented (stopped service, CPU starvation, disk full, config drift). Network delay and a third node are planned.
-- **AI assistant:** not implemented. All guidance is deterministic, and no model requests are sent.
-- **Not yet validated:** storage-pressure exhaustion, multi-hour runs, broader accessibility auditing and browsers other than Chromium. The 15-minute expiry and a controller kill during a Docker action do pass on real Docker (see [validation](docs/VALIDATION.md)).
+- **Scenarios:** five are implemented (stopped service, CPU starvation, disk full, config drift, network delay) on three services.
+- **AI investigator:** optional and off by default. Request handling is tested against mock providers, and a real Gemini model correctly diagnosed a live network delay in the lab, but a few good answers are not a systematic evaluation. Treat answers as suggestions and check what they cite.
+- **Not yet validated:** screen-reader use (the automated axe audit passes, but it cannot judge everything) and Safari. The 15-minute expiry and a controller kill during a Docker action do pass on real Docker (see [validation](docs/VALIDATION.md)).
 - **Scope:** containers share a kernel, and the business data is synthetic. Nothing here claims physical hardware repair or telemetry.
 
 More detail: [implementation checkpoint](docs/IMPLEMENTATION_STATUS.md), [vision](docs/vision.md), [architecture](docs/architecture.md) and [roadmap](docs/roadmap.md).

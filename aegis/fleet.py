@@ -3,6 +3,8 @@ import errno
 import hmac
 import os
 import json
+import re
+import subprocess
 import threading
 import time
 import uuid
@@ -166,6 +168,30 @@ async def disk():
 async def running_config():
     settings = [{'key': key, 'value': config[key], 'deployed': value, 'drifted': config[key] != value} for key, value in DEPLOYED.items()]
     return {'role': ROLE, 'settings': settings, 'drifted': [s['key'] for s in settings if s['drifted']], 'generation': BOOT}
+
+
+def read_qdiscs():
+    """Queue disciplines on this service's own interfaces, as `tc qdisc show` reports them (read-only)."""
+    try:
+        shown = subprocess.run(['tc', 'qdisc', 'show'], capture_output=True, text=True, timeout=3)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return {'available': False, 'detail': type(error).__name__}
+    if shown.returncode:
+        return {'available': False, 'detail': shown.stderr.strip()[:200]}
+    entries = []
+    for line in shown.stdout.splitlines():
+        match = re.match(r'qdisc (\S+) \S+ dev (\S+) (root|parent \S+)', line)
+        if not match or match[2] == 'lo':
+            continue
+        delay = re.search(r'delay (\d+(?:\.\d+)?)(us|ms|s)\b', line)
+        delay_ms = None if not delay else float(delay[1]) * {'us': 0.001, 'ms': 1, 's': 1000}[delay[2]]
+        entries.append({'kind': match[1], 'dev': match[2], 'root': match[3] == 'root', 'delay_ms': delay_ms, 'line': line.strip()})
+    return {'available': True, 'qdiscs': entries}
+
+
+@app.get('/diagnostics/network')
+async def network():
+    return {**read_qdiscs(), 'generation': BOOT}
 
 
 @app.get('/diagnostics/trace')

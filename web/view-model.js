@@ -22,6 +22,11 @@ globalThis.AegisView = Object.freeze({
       if(!Array.isArray(config.settings))return {text:'Config read · detail unavailable',tone:'amber'};
       return drifted.length?{text:`Config drifted · ${drifted.join(', ')} differs from deployed`,tone:'red'}:{text:`Config matches deployed · ${config.settings.length} settings`,tone:'green'};
     }
+    if(record.kind==='network'){
+      const queues=body.result?.qdiscs||[], netem=queues.find(q=>q.kind==='netem');
+      const shaped=netem?` · netem queue${netem.delay_ms?` +${netem.delay_ms} ms`:''}`:'';
+      return {text:`Network · connect ${body.median_connect_ms} ms${shaped}`,tone:netem||body.median_connect_ms>100?'red':body.median_connect_ms>20?'amber':'green'};
+    }
     if(record.kind==='trace'){
       const trace=body.result||{}, slowest=this.slowestSpan(trace);
       if(trace.request_ok===false)return {text:`Trace · failed at ${trace.failed_at||'unknown step'}`,tone:'red'};
@@ -49,23 +54,24 @@ globalThis.AegisView = Object.freeze({
     return value>=1048576?`${(value/1048576).toFixed(1)} MiB`:value>=1024?`${Math.round(value/1024)} KiB`:`${value} B`;
   },
   remedyLabel(verb) {
-    return ({start:'Start service',calm:'Stop runaway job',clear:'Clear temp files',restore:'Restore config'})[verb]||verb;
+    return ({start:'Start service',calm:'Stop runaway job',clear:'Clear temp files',restore:'Restore config',undelay:'Remove traffic delay'})[verb]||verb;
   },
   faultLabel(kind) {
-    return ({'service-unavailable':'Stopped service','cpu-starvation':'CPU starvation','disk-full':'Disk full','config-drift':'Config drift'})[kind]||kind;
+    return ({'service-unavailable':'Stopped service','cpu-starvation':'CPU starvation','disk-full':'Disk full','config-drift':'Config drift','network-delay':'Network delay'})[kind]||kind;
   },
   // Scenario heading: the selected fault and target, the running practice scenario, or a hidden challenge.
   scenarioCopy(kind, target, mode) {
     if (mode==='challenge') return {number:'??', eyebrow:'Challenge · hidden fault', title:['A ','hidden',' fault'],
-      text:'One of four faults on one of the two services, picked at random and kept secret. Find it from the evidence, fix it, then reveal it to check.'};
-    const kinds=['service-unavailable','cpu-starvation','disk-full','config-drift'];
+      text:'One of five faults on one of the three services, picked at random and kept secret. Find it from the evidence, fix it, then reveal it to check.'};
+    const kinds=['service-unavailable','cpu-starvation','disk-full','config-drift','network-delay'];
     const copy={
       'service-unavailable':{title:['When a service ','stops',''], text:'Its container is stopped, so its own checks fail.'},
       'cpu-starvation':{title:['When a service is ','starved',' of CPU'], text:'A runaway job uses its whole CPU limit. It still answers, just slowly.'},
       'disk-full':{title:['When the disk ','fills up',''], text:'Its 8 MiB /tmp is full. The process stays live, but every write fails with HTTP 507.'},
       'config-drift':{title:['When config ','drifts',''], text:'A bad reload changes one setting. Liveness, CPU and disk look normal, yet requests fail.'},
+      'network-delay':{title:['When the network ','lags',''], text:'Every packet leaving it waits 600 ms. It stays up with idle CPU, yet everything it sends arrives late.'},
     }[kind]||{title:['A ','fault',''], text:''};
-    const scope=target==='gateway-a'?'On the gateway, a local failure: see whether the catalogue stays healthy.':'On the shared catalogue: see whether the gateway fails with it.';
+    const scope=target==='catalog-b'?'On the shared catalogue: see whether both gateways fail with it.':`On ${target}, a local failure: see whether the catalogue and the other gateway stay healthy.`;
     return {number:String(kinds.indexOf(kind)+1).padStart(2,'0'), eyebrow:`Scenario ${String(kinds.indexOf(kind)+1).padStart(2,'0')} · ${this.faultLabel(kind)} · ${target}`,
       title:copy.title, text:`${copy.text} ${scope}`};
   },
@@ -114,11 +120,12 @@ globalThis.AegisView = Object.freeze({
     else if(body.ok&&record.kind==='resources')outcome=body.cpu_pct_of_limit==null?'no sample':`CPU ${body.cpu_pct_of_limit}%`;
     else if(body.ok&&record.kind==='disk')outcome=`${body.result?.used_pct}% used`;
     else if(body.ok&&record.kind==='config')outcome=body.result?.drifted?.length?'drifted':'matches';
+    else if(body.ok&&record.kind==='network')outcome=`connect ${body.median_connect_ms} ms`;
     else if(body.ok&&record.kind==='trace')outcome=body.result?.request_ok===false?'failed':'traced';
     else if(body.slow)outcome='slow';
     return {text:`${result.tone==='green'?'✓':result.tone==='red'?'✕':'•'} ${outcome}${body.duration_ms!=null?' · '+body.duration_ms+' ms':''}`, tone:result.tone};
   },
   helpLabel(level) {
-    return ({evidence:'Evidence explanation',hint:'Diagnostic hint',action:'Suggested action'})[level]||'Assistance';
+    return ({evidence:'Evidence explanation',hint:'Diagnostic hint',action:'Suggested action',ai:'AI investigator'})[level]||'Assistance';
   }
 });

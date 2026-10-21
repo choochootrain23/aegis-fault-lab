@@ -4,13 +4,19 @@
 globalThis.AegisTopology = (() => {
 const EDGES = [
   {id:'edge', from:'gateway-a', to:'catalog-b', kind:'dependency'},
+  {id:'edge-c', from:'gateway-c', to:'catalog-b', kind:'dependency'},
   {id:'edge-check-gateway-a', from:'controller', to:'gateway-a', kind:'check', node:'gateway-a'},
   {id:'edge-check-catalog-b', from:'controller', to:'catalog-b', kind:'check', node:'catalog-b'},
   {id:'edge-control-gateway-a', from:'broker', to:'gateway-a', kind:'control', node:'gateway-a'},
   {id:'edge-control-catalog-b', from:'broker', to:'catalog-b', kind:'control', node:'catalog-b'},
+  {id:'edge-check-gateway-c', from:'controller', to:'gateway-c', kind:'check', node:'gateway-c'},
+  {id:'edge-control-gateway-c', from:'broker', to:'gateway-c', kind:'control', node:'gateway-c'},
 ];
-const DEFAULT = {'gateway-a':[.25,.5], 'catalog-b':[.75,.5], controller:[.5,.12], broker:[.5,.88]};
-const STORE = 'aegis-topology';
+// Wide maps put the gateways in a column beside the catalogue; narrow ones draw a tree with both gateways above it.
+const WIDE = {'gateway-a':[.2,.29], 'gateway-c':[.2,.73], 'catalog-b':[.77,.51], controller:[.62,.08], broker:[.62,.93]};
+const NARROW = {'gateway-a':[.26,.3], 'gateway-c':[.74,.3], 'catalog-b':[.5,.67], controller:[.5,.09], broker:[.5,.88]};
+const DEFAULT = () => (map.clientWidth && map.clientWidth < 560 ? NARROW : WIDE);
+const STORE = 'aegis-topology-3';  // layouts saved for the two-service map no longer fit
 const SVG = 'http://www.w3.org/2000/svg';
 const map = document.getElementById('topology');
 const svg = document.getElementById('graph-edges');
@@ -19,12 +25,12 @@ const nodes = Object.fromEntries([...map.querySelectorAll('[data-graph-node]')].
 const read = () => { try { return JSON.parse(localStorage.getItem(STORE)) || {}; } catch { return {}; } };
 const write = value => { try { localStorage.setItem(STORE, JSON.stringify(value)); } catch { /* storage unavailable: layout lasts for this visit */ } };
 const saved = read();
-const positions = {...DEFAULT, ...(saved.positions || {})};
+const positions = {...DEFAULT(), ...(saved.positions || {})};
 let plane = saved.plane !== false;
 
 const marker = (id, colour) => `<marker id="${id}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="${colour}"/></marker>`;
-svg.innerHTML = '<defs>' + marker('arrow-neutral', '#77777d') + marker('arrow-ok', '#1e8e3e') + marker('arrow-warn', '#f9ab00') +
-  marker('arrow-bad', '#d93025') + marker('arrow-accent', '#1a73e8') + '</defs>';
+svg.innerHTML = '<defs>' + marker('arrow-neutral', '#77777d') + marker('arrow-ok', '#137333') + marker('arrow-warn', '#f9ab00') +
+  marker('arrow-bad', '#c5221f') + marker('arrow-accent', '#1967d2') + '</defs>';
 for (const edge of EDGES) {
   const path = document.createElementNS(SVG, 'path');
   path.id = edge.id;
@@ -113,8 +119,10 @@ function draw() {
     const a = boxes[edge.from], b = boxes[edge.to];
     const [x1, y1] = exit(a, b.cx - a.cx, b.cy - a.cy), [x2, y2] = exit(b, a.cx - b.cx, a.cy - b.cy);
     edge.path.setAttribute('d', `M${x1.toFixed(1)} ${y1.toFixed(1)}L${x2.toFixed(1)} ${y2.toFixed(1)}`);
-    edge.tag.style.left = (x1 + x2) / 2 + 'px';
-    edge.tag.style.top = (y1 + y2) / 2 + 'px';
+    // Dependency edges converge on the catalogue, so their labels sit nearer the gateway end.
+    const t = edge.kind === 'dependency' ? 0.4 : 0.5;
+    edge.tag.style.left = x1 + (x2 - x1) * t + 'px';
+    edge.tag.style.top = y1 + (y2 - y1) * t + 'px';
   }
 }
 function setPlane(on) {
@@ -176,7 +184,7 @@ for (const [id, el] of Object.entries(nodes)) {
   el.addEventListener('blur', () => light(false));
 }
 document.getElementById('topology-reset').addEventListener('click', () => {
-  Object.assign(positions, DEFAULT);
+  Object.assign(positions, DEFAULT());
   saved.positions = undefined;
   write({plane});
   place();
@@ -194,28 +202,31 @@ function tone(edge, value) {
 }
 function update(state) {
   const byId = Object.fromEntries(state.nodes.map(n => [n.id, n]));
-  const gateway = byId['gateway-a'], measured = gateway?.business, stale = !measured || gateway.health === 'unknown';
-  const dependency = EDGES[0];
-  const slow = !stale && measured.body.ok && measured.body.slow;
-  tone(dependency, stale ? '' : slow ? 'flowing warn' : measured.body.ok ? 'flowing ok' : 'failed bad');
-  dependency.tag.textContent = stale ? 'requests · no fresh data' : measured.body.ok ? `requests · ${measured.body.duration_ms} ms${slow ? ' · slow' : ''}` : 'requests failing';
-  setFlow(dependency, stale || gateway.health === 'unavailable' ? 'off' : slow ? 'slow' : measured.body.ok ? 'flow' : 'blocked', slow ? 'warn' : measured?.body.ok ? 'ok' : 'bad');
+  // Each gateway's dependency edge shows its own measured business requests.
+  for (const dependency of EDGES.filter(e => e.kind === 'dependency')) {
+    const gateway = byId[dependency.from], measured = gateway?.business, stale = !measured || gateway.health === 'unknown';
+    const slow = !stale && measured.body.ok && measured.body.slow;
+    tone(dependency, stale ? '' : slow ? 'flowing warn' : measured.body.ok ? 'flowing ok' : 'failed bad');
+    const label = stale ? 'no fresh data' : measured.body.ok ? `${measured.body.duration_ms} ms${slow ? ' · slow' : ''}` : 'failing';
+    dependency.tag.textContent = map.clientWidth < 560 ? label : stale || measured.body.ok ? 'requests · ' + label : 'requests failing';
+    setFlow(dependency, stale || gateway.health === 'unavailable' ? 'off' : slow ? 'slow' : measured.body.ok ? 'flow' : 'blocked', slow ? 'warn' : measured?.body.ok ? 'ok' : 'bad');
+  }
   // Operator recovery and reset are the operator's own actions; the hidden fault injection is never drawn.
   const s = state.session, recent = {};
   for (const attempt of s?.recovery_attempts || []) if (state.now - attempt.at < 4) recent[attempt.node] = attempt.verb || 'start';
-  if (s?.reset && state.now - s.reset.at < 4) Object.assign(recent, {'gateway-a': 'reset', 'catalog-b': 'reset'});
-  for (const edge of EDGES.slice(1)) {
+  if (s?.reset && state.now - s.reset.at < 4) for (const node of state.nodes) recent[node.id] = 'reset';
+  for (const edge of EDGES.filter(e => e.kind !== 'dependency')) {
     if (edge.kind === 'check') {
       const health = byId[edge.node]?.health;
       // Job, disk and config remedies travel from the controller to the service's maintenance endpoint.
-      const verb = !['start', 'reset'].includes(recent[edge.node]) && recent[edge.node];
+      const verb = !['start', 'reset', 'undelay'].includes(recent[edge.node]) && recent[edge.node];
       tone(edge, verb ? 'active' : TONE[health] || '');
       edge.tag.textContent = verb ? `${verb} sent` : health && health !== 'unknown' ? `checks · ${health}` : 'checks · unknown';
       setFlow(edge, health && health !== 'unknown' ? 'flow' : 'off', TONE[health]);
     } else {
-      const verb = ['start', 'reset'].includes(recent[edge.node]) && recent[edge.node];
+      const verb = ['start', 'reset', 'undelay'].includes(recent[edge.node]) && recent[edge.node];
       tone(edge, verb ? 'active' : '');
-      edge.tag.textContent = verb ? `${verb} sent` : 'inspect · start · stop';
+      edge.tag.textContent = verb ? `${verb} sent` : 'inspect · start · stop · delay';
     }
   }
 }

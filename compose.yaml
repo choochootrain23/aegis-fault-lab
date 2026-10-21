@@ -26,6 +26,11 @@ services:
     command: [uvicorn, aegis.fleet:app, --host, 0.0.0.0, --port, '8000', --no-access-log]
     environment: {AEGIS_ROLE: gateway, AEGIS_UPSTREAM: 'http://catalog-b:8000', AEGIS_FLEET_TOKEN: '${AEGIS_FLEET_TOKEN:?Run scripts/init_env.py first}'}
     networks: [fleet]
+  gateway-c:
+    <<: *common
+    command: [uvicorn, aegis.fleet:app, --host, 0.0.0.0, --port, '8000', --no-access-log]
+    environment: {AEGIS_ROLE: gateway, AEGIS_UPSTREAM: 'http://catalog-b:8000', AEGIS_FLEET_TOKEN: '${AEGIS_FLEET_TOKEN:?Run scripts/init_env.py first}'}
+    networks: [fleet]
   broker:
     <<: *common
     user: '0:0'
@@ -47,6 +52,11 @@ services:
     environment:
       AEGIS_BROKER_TOKEN: ${AEGIS_BROKER_TOKEN:?Run scripts/init_env.py first}
       AEGIS_STATE: /state/lab.sqlite
+      AEGIS_STORAGE_LIMIT_MIB: ${AEGIS_STORAGE_LIMIT_MIB:-256}
+      # Optional AI investigator; off unless a key is set in .env.
+      AEGIS_AI_PROVIDER: ${AEGIS_AI_PROVIDER:-gemini}
+      AEGIS_AI_API_KEY: ${AEGIS_AI_API_KEY:-}
+      AEGIS_AI_MODEL: ${AEGIS_AI_MODEL:-}
       AEGIS_FLEET_TOKEN: ${AEGIS_FLEET_TOKEN:?Run scripts/init_env.py first}
     volumes: [state:/state]
     networks: [fleet, control, operator]

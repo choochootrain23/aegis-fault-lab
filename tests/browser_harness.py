@@ -24,11 +24,11 @@ from aegis.store import Store
 
 class ProcessFleet:
     def __init__(self):
-        sockets = [socket.socket(), socket.socket()]
+        sockets = [socket.socket() for _ in controller.NODES]
         try:
             for sock in sockets:
                 sock.bind(('127.0.0.1', 0))
-            self.ports = dict(zip(('catalog-b', 'gateway-a'), (s.getsockname()[1] for s in sockets)))
+            self.ports = dict(zip(('catalog-b', *(n for n in controller.NODES if n != 'catalog-b')), (s.getsockname()[1] for s in sockets)))
         finally:
             for sock in sockets:
                 sock.close()
@@ -109,6 +109,12 @@ async def lifespan(app):
             mounts = {'http://broker:8000': httpx.MockTransport(fleet.operation)}
             async with httpx.AsyncClient(mounts=mounts, trust_env=False) as client:
                 lab = controller.Lab(store, client, nodes=fleet.nodes, resource_check=False)
+                # Test-only stand-in for the AI provider: answers from the context it was given, citing its newest record.
+                async def fake_ask(context, question, ids):
+                    newest = context['evidence'][0]
+                    return {'answer': f"HARNESS FAKE, NOT A MODEL. Newest observation [{newest['id']}] is {newest['kind']} on {newest['node']}.",
+                            'evidence_ids': ids[:1], 'provider': 'test', 'model': 'harness-fake'}
+                lab.investigator.key, lab.investigator.ask = 'harness-only', fake_ask
                 app.state.lab = lab
                 app.state.csrf = secrets.token_urlsafe(32)
                 async def collect():

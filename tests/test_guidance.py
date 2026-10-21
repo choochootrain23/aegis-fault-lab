@@ -125,3 +125,44 @@ def test_drifted_config_supports_restore():
 def test_matching_config_supports_no_action():
     config=observation('gateway-a','config',result={'drifted':[],'settings':[]})
     assert 'No fresh inspection' in explain({('gateway-a','config'):config},'action',now=101)['message']
+
+
+def test_other_gateway_failing_too_points_at_the_shared_catalogue():
+    latest={('gateway-a','liveness'):observation('gateway-a','liveness'),
+            ('gateway-a','business'):observation('gateway-a','business',False),
+            ('gateway-c','liveness'):observation('gateway-c','liveness'),
+            ('gateway-c','business'):observation('gateway-c','business',False)}
+    result=explain(latest,'evidence',now=101)
+    assert 'gateway-c is affected too' in result['message'] and 'gateway-c-business' in result['evidence_ids']
+
+
+def test_healthy_other_gateway_marks_the_fault_as_local():
+    latest={('gateway-a','liveness'):observation('gateway-a','liveness'),
+            ('gateway-a','business'):observation('gateway-a','business'),
+            ('gateway-c','liveness'):observation('gateway-c','liveness',False),
+            ('gateway-c','business'):observation('gateway-c','business',False)}
+    result=explain(latest,'evidence',now=101)
+    assert result['suggested_check']=={'node':'gateway-c','kind':'service'}
+    assert 'gateway-a is healthy at the same time' in result['message'] and 'local to gateway-c' in result['message']
+
+
+def test_slow_with_normal_cpu_points_at_the_network_path():
+    latest={('gateway-a','liveness'):observation('gateway-a','liveness',duration_ms=4),
+            ('gateway-a','business'):observation('gateway-a','business',duration_ms=700,slow=True),
+            ('catalog-b','resources'):observation('catalog-b','resources',cpu_pct_of_limit=6.0,cpu_limit=0.25)}
+    result=explain(latest,'evidence',now=101)
+    assert result['suggested_check']=={'node':'catalog-b','kind':'network'} and 'network path' in result['message']
+
+
+def test_gateway_timeouts_behind_a_slow_catalogue_point_at_the_catalogue():
+    latest={('gateway-a','liveness'):observation('gateway-a','liveness'),
+            ('gateway-a','business'):observation('gateway-a','business',False,result={'error':'ReadTimeout'}),
+            ('catalog-b','business'):observation('catalog-b','business',duration_ms=640,slow=True)}
+    result=explain(latest,'evidence',now=101)
+    assert result['suggested_check']=={'node':'catalog-b','kind':'resources'} and 'answers slowly (640 ms)' in result['message']
+
+
+def test_netem_queue_supports_removing_the_delay():
+    network=observation('catalog-b','network',median_connect_ms=601.2,result={'qdiscs':[{'kind':'netem','dev':'eth0','delay_ms':600.0}]})
+    result=explain({('catalog-b','network'):network},'action',now=101)
+    assert result['evidence_ids']==[network['id']] and 'removing the traffic delay' in result['message'] and '600 ms' in result['message']

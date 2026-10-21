@@ -8,6 +8,7 @@ Run from the project root with: python tests/preview_walkthrough.py
 import functools
 import http.server
 import json
+import os
 import re
 from pathlib import Path
 import subprocess
@@ -30,7 +31,7 @@ def main():
     errors = []
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch()
+            browser = getattr(p, os.getenv('AEGIS_BROWSER', 'chromium')).launch()
             page = browser.new_page(viewport={'width': 1440, 'height': 1000}, accept_downloads=True)
             page.on('pageerror', lambda error: errors.append(str(error)))
             page.goto(url)
@@ -66,7 +67,10 @@ def main():
             page.evaluate('scrollTo(0, 0)')
             expect(page.locator('.nav-links a.nav-active')).to_have_text('Fleet')
             expect(page.locator('footer')).not_to_contain_text('Real processes')
-            expect(page.locator('#next-title')).to_have_text('Collecting a healthy baseline')
+            expect(page.locator('#ai-badge')).to_have_text('OFF')
+            expect(page.locator('#ai-status')).to_contain_text('Not available in the browser simulator')
+            # Slower browsers may already have finished the ten-second baseline by now.
+            expect(page.locator('#next-title')).to_have_text(re.compile('Collecting a healthy baseline|Ready when you are'))
             expect(page.locator('#start')).to_be_enabled(timeout=20000)
             expect(page.locator('#next-title')).to_have_text('Ready when you are')
 
@@ -108,14 +112,16 @@ def main():
             page.click('#node-gateway-a')
             expect(page.locator('#start')).to_be_enabled(timeout=20000)
             page.screenshot(path=str(output / 'map.png'))
-            expect(page.locator('.packets.dependency')).to_have_class(re.compile(r'\bflow\b'))
+            expect(page.locator('.packets.dependency').first).to_have_class(re.compile(r'\bflow\b'))
             page.keyboard.press('?')
             expect(page.locator('#keys-dialog')).to_be_visible()
             page.keyboard.press('Escape')
             expect(page.locator('#keys-dialog')).to_be_hidden()
-            page.keyboard.press('c')
+            page.keyboard.press('b')
             expect(page.locator('#inspector-title')).to_have_text('catalog-b')
-            page.keyboard.press('g')
+            page.keyboard.press('c')
+            expect(page.locator('#inspector-title')).to_have_text('gateway-c')
+            page.keyboard.press('a')
             expect(page.locator('#inspector-title')).to_have_text('gateway-a')
             expect(page.locator('#steps li.current')).to_have_text('02Start')
             expect(page.locator('#node-gateway-a .node-state')).to_have_text('healthy')
@@ -126,6 +132,8 @@ def main():
             expect(page.locator('#session-status')).to_have_text('investigating', timeout=15000)
             expect(page.locator('#node-gateway-a .node-state')).to_have_text('degraded')
             expect(page.locator('#node-catalog-b .node-state')).to_have_text('unavailable')
+            expect(page.locator('#node-gateway-c .node-state')).to_have_text('degraded')
+            expect(page.locator('.packets.dependency.blocked')).to_have_count(2)
             page.click('[data-check="liveness"]')
             expect(page.locator('#toast')).to_contain_text('Fresh observation')
             page.click('[data-check="business"]')
@@ -136,7 +144,7 @@ def main():
             expect(page.locator('[data-check="service"] .check-result')).to_contain_text('stopped')
             expect(page.locator('#next-title')).to_have_text('Find the boundary of the failure')
             expect(page.locator('#edge')).to_have_class(re.compile(r'\bfailed\b'))
-            expect(page.locator('.packets.dependency')).to_have_class(re.compile(r'\bblocked\b'))
+            expect(page.locator('.packets.dependency').first).to_have_class(re.compile(r'\bblocked\b'))
             page.screenshot(path=str(output / 'investigating.png'))
             page.click('[data-help="action"]')
             expect(page.locator('#help-result')).to_contain_text('catalog-b stopped')
@@ -167,7 +175,7 @@ def main():
             expect(page.locator('#session-status')).to_have_text('ended', timeout=15000)
             # Incident report: separate measures, two latency series and a working replay.
             expect(page.locator('#report .report-tile')).to_have_count(6)
-            expect(page.locator('#report .report-chart path.series')).to_have_count(2)
+            expect(page.locator('#report .report-chart path.series')).to_have_count(3)
             expect(page.locator('#report .report-chart path.failure').first).to_be_attached()
             page.locator('#report-section').scroll_into_view_if_needed()
             page.click('#report .replay-play')
@@ -245,6 +253,43 @@ def main():
             page.click('#reset')
             expect(page.locator('#session-status')).to_have_text('ended', timeout=15000)
 
+            # Network delay on the catalogue: slow, CPU idle; the network path shows the netem queue.
+            page.select_option('#practice-kind', 'network-delay')
+            page.select_option('#practice-target', 'catalog-b')
+            expect(page.locator('#scenario-title')).to_have_text('When the network lags')
+            expect(page.locator('#start')).to_be_enabled(timeout=20000)
+            page.click('#start')
+            expect(page.locator('#session-status')).to_have_text('investigating', timeout=20000)
+            page.keyboard.press('b')
+            page.keyboard.press('8')
+            expect(page.locator('[data-check="network"] .check-result')).to_contain_text('connect 6')
+            row = page.locator('.evidence-row').filter(has_text='netem queue').first
+            row.locator('summary').click()
+            expect(row.locator('.config-table tr.drifted')).to_contain_text('600 ms')
+            page.click('[data-help="action"]')
+            expect(page.locator('#help-result')).to_contain_text('removing the traffic delay')
+            page.click('[data-remedy="undelay"]')
+            expect(page.locator('#session-status')).to_have_text('recovered', timeout=25000)
+            page.click('#reset')
+            expect(page.locator('#session-status')).to_have_text('ended', timeout=15000)
+
+            # A stopped gateway-c is local: gateway-a and the catalogue stay healthy, and guidance says so.
+            page.select_option('#practice-kind', 'service-unavailable')
+            page.select_option('#practice-target', 'gateway-c')
+            expect(page.locator('#scenario-eyebrow')).to_contain_text('gateway-c')
+            expect(page.locator('#start')).to_be_enabled(timeout=20000)
+            page.click('#start')
+            expect(page.locator('#session-status')).to_have_text('investigating', timeout=20000)
+            expect(page.locator('#node-gateway-c .node-state')).to_have_text('unavailable')
+            expect(page.locator('#node-gateway-a .node-state')).to_have_text('healthy')
+            page.click('[data-help="evidence"]')
+            expect(page.locator('#help-result')).to_contain_text('local to gateway-c')
+            page.click('#node-gateway-c')
+            page.click('#recover')
+            expect(page.locator('#session-status')).to_have_text('recovered', timeout=20000)
+            page.click('#reset')
+            expect(page.locator('#session-status')).to_have_text('ended', timeout=15000)
+
             # Challenge: hidden target, timer skip and expiry continuation.
             page.select_option('#mode', 'challenge')
             expect(page.locator('#scenario-number')).to_have_text('??')
@@ -268,7 +313,7 @@ def main():
             expect(page.locator('#scenario-reveal')).to_contain_text('Known scenario:')
             page.click('#reset')
             expect(page.locator('#session-status')).to_have_text('ended', timeout=15000)
-            expect(page.locator('#history .history-item')).to_have_count(5)
+            expect(page.locator('#history .history-item')).to_have_count(7)
 
             mobile = browser.new_page(viewport={'width': 390, 'height': 844})
             mobile.on('pageerror', lambda error: errors.append(str(error)))

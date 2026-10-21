@@ -11,15 +11,19 @@ from fastapi import FastAPI, Header, HTTPException, Depends
 from pydantic import BaseModel, ConfigDict, Field
 
 PROJECT = 'aegis-rack-diagnostics'
-TARGETS = ('gateway-a', 'catalog-b')
+TARGETS = ('gateway-a', 'catalog-b', 'gateway-c')
 TOKEN = os.getenv('AEGIS_BROKER_TOKEN', '')
 READ_VERBS = ('inspect', 'resources')
+NET_VERBS = ('delay', 'undelay')
+DELAY_MS = 600          # fixed egress delay of the network-delay fault
+HELPER_IMAGE = PROJECT + ':local'
+HELPER_LABEL = PROJECT + '.role'
 
 
 class Operation(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    target: Literal['gateway-a', 'catalog-b']
-    verb: Literal['inspect', 'resources', 'start', 'stop']
+    target: Literal['gateway-a', 'catalog-b', 'gateway-c']
+    verb: Literal['inspect', 'resources', 'start', 'stop', 'delay', 'undelay']
     generation: str | None = Field(default=None, max_length=80)
 
 
@@ -84,7 +88,7 @@ class Docker:
         if op.verb not in READ_VERBS:
             if not op.generation:
                 raise ValueError('Mutation requires inspected container identity')
-            changed = await self.mutate(data, op.verb)
+            changed = await (self.network(data, op.verb) if op.verb in NET_VERBS else self.mutate(data, op.verb))
             data = await self.resolve(op.target)
             if data['Id'] != op.generation:
                 raise ValueError('Container replaced during action; result uncertain')
@@ -103,6 +107,57 @@ class Docker:
         response = await self.client.post('/containers/' + data['Id'] + '/' + verb, params={'t': 3})
         response.raise_for_status()
         return True
+
+    async def network(self, data, verb):
+        """Add or remove the fault's netem delay on the target's interface; False when nothing needs changing.
+
+        Refuses to touch any queue discipline it did not create.
+        """
+        if not data['State']['Running']:
+            raise ValueError('Target must be running to change its network')
+        status, shown = await self.helper(data, ['qdisc', 'show', 'dev', 'eth0'])
+        if status:
+            raise ValueError('Could not read the target network queue')
+        root = next((line for line in shown.splitlines() if ' root ' in line), '')
+        ours = root.startswith('qdisc netem ') and f'delay {DELAY_MS}ms' in root
+        if verb == 'delay':
+            if ours:
+                return False
+            if root and not root.startswith('qdisc noqueue'):
+                raise ValueError('Unexpected queue discipline present; refusing to replace it')
+            argv = ['qdisc', 'add', 'dev', 'eth0', 'root', 'netem', 'delay', f'{DELAY_MS}ms']
+        else:
+            if not ours:
+                if root.startswith('qdisc netem '):
+                    raise ValueError('Unexpected netem settings present; refusing to remove them')
+                return False
+            argv = ['qdisc', 'del', 'dev', 'eth0', 'root']
+        status, output = await self.helper(data, argv)
+        if status:
+            raise ValueError('Network change failed: ' + output[:200])
+        return True
+
+    async def helper(self, data, argv):
+        """Run one fixed tc command inside the target's network namespace, then remove the helper.
+
+        The helper has only NET_ADMIN, no mounts, a read-only filesystem and tight limits; it never sees the Docker socket.
+        """
+        config = {'Image': HELPER_IMAGE, 'Cmd': ['tc', *argv], 'User': '0:0', 'Labels': {HELPER_LABEL: 'network-helper'},
+                  'HostConfig': {'NetworkMode': 'container:' + data['Id'], 'CapDrop': ['ALL'], 'CapAdd': ['NET_ADMIN'],
+                                 'ReadonlyRootfs': True, 'SecurityOpt': ['no-new-privileges:true'], 'Memory': 32 * 2**20,
+                                 'MemorySwap': 32 * 2**20, 'PidsLimit': 16, 'NanoCpus': 100_000_000}}
+        response = await self.client.post('/containers/create', json=config)
+        response.raise_for_status()
+        helper = response.json()['Id']
+        try:
+            (await self.client.post(f'/containers/{helper}/start')).raise_for_status()
+            waited = await self.client.post(f'/containers/{helper}/wait', timeout=15)
+            waited.raise_for_status()
+            logs = await self.client.get(f'/containers/{helper}/logs', params={'stdout': 'true', 'stderr': 'true'})
+            logs.raise_for_status()
+            return waited.json().get('StatusCode', 1), demultiplex(logs.content)
+        finally:
+            await self.client.delete(f'/containers/{helper}', params={'force': 'true'})
 
     async def resources(self, data):
         """CPU use against the container limit, kernel throttling counters and memory, from Docker stats.
@@ -128,6 +183,16 @@ class Docker:
                       throttled_ms=round(throttling.get('throttled_time', 0) / 1e6, 1),
                       memory_mib=round(memory.get('usage', 0) / 2**20, 1), memory_limit_mib=round(memory.get('limit', 0) / 2**20, 1))
         return report
+
+
+def demultiplex(raw):
+    """Text from Docker's multiplexed log stream (8-byte frame headers, as used without a TTY)."""
+    text, index = [], 0
+    while index + 8 <= len(raw):
+        size = int.from_bytes(raw[index + 4:index + 8], 'big')
+        text.append(raw[index + 8:index + 8 + size].decode(errors='replace'))
+        index += 8 + size
+    return ''.join(text)
 
 
 @asynccontextmanager

@@ -4,7 +4,9 @@
 // unmodified web UI can run on a static host. Every measurement it returns is
 // generated in this tab; nothing here touches a container or a network service.
 (() => {
-const NODES = ['gateway-a', 'catalog-b'];
+const NODES = ['gateway-a', 'catalog-b', 'gateway-c'];
+const GATEWAYS = ['gateway-a', 'gateway-c'];
+const isGateway = node => node.startsWith('gateway');
 const START_DELAY = 1.2;   // seconds a started service takes to answer, roughly the real lab
 const MAX_EVIDENCE = 6000; // keeps a long-open tab bounded
 let skew = 0;
@@ -18,22 +20,25 @@ class HttpError extends Error {
   constructor(status, detail) { super(detail); this.status = status; }
 }
 
-// ---- Simulated fleet: two services, their scratch disks, runaway jobs and logs ----
+// ---- Simulated fleet: three services, their scratch disks, runaway jobs and logs ----
 // Latencies under a runaway job follow the real lab's measurements (catalogue median ~400-600 ms).
 const SLOW_MS = 300;
 const DISK = 8 * 1024 * 1024;
 const fleet = Object.fromEntries(NODES.map(id => [id, {container: hex(64), process: 'sim-' + crypto.randomUUID(), running: true, readyAt: 0,
-  busy: false, full: false, drifted: false, periods: 4000, throttled: 0, logs: []}]));
+  busy: false, full: false, drifted: false, delayed: false, periods: 4000, throttled: 0, logs: []}]));
 const answering = id => fleet[id].running && now() >= fleet[id].readyAt;
 const catalogue = () => ({items: [{sku: 'LAB-001', name: 'Synthetic component', quantity: 12}], generation: fleet['catalog-b'].process});
 const reply = (result, duration) => ({ok: true, http_status: 200, result, duration_ms: duration});
 const log = (node, entry) => { const logs = fleet[node].logs; logs.push({at: now(), generation: fleet[node].process, ...entry}); if (logs.length > 200) logs.shift(); };
+// Network delay: every packet leaving a delayed node waits; a request on a fresh connection pays it twice.
+const DELAY = 600;
+const lag = node => (fleet[node].delayed ? DELAY + (Math.random() < 0.3 ? DELAY : 0) + between(0.2, 2) : 0);
 const busyMs = () => Math.round(Math.min(1600, 110 + Math.random() ** 1.6 * 1100) * 10) / 10;
 const diskFull = node => ({ok: false, error: 'OSError', errno: 'ENOSPC', detail: 'No space left on device', path: 'receipt write', generation: fleet[node].process});
 // Runtime settings as aegis/fleet.py reports them; drift overrides one, as a bad hot reload would.
 const UPSTREAM = 'http://catalog-b:8000';
-const DEPLOYED = {'gateway-a': {upstream: UPSTREAM, upstream_timeout_s: 1.0}, 'catalog-b': {catalogue_source: 'builtin:lab-v1', receipt_ring: 40}};
-const DRIFT = {'gateway-a': ['upstream', 'http://catalog-b:8080'], 'catalog-b': ['catalogue_source', 'file:/tmp/catalogue-v2.json']};
+const DEPLOYED = {'gateway-a': {upstream: UPSTREAM, upstream_timeout_s: 1.0}, 'gateway-c': {upstream: UPSTREAM, upstream_timeout_s: 1.0}, 'catalog-b': {catalogue_source: 'builtin:lab-v1', receipt_ring: 40}};
+const DRIFT = {'gateway-a': ['upstream', 'http://catalog-b:8080'], 'gateway-c': ['upstream', 'http://catalog-b:8080'], 'catalog-b': ['catalogue_source', 'file:/tmp/catalogue-v2.json']};
 const settings = node => Object.entries(DEPLOYED[node]).map(([key, deployed]) => {
   const value = fleet[node].drifted && DRIFT[node][0] === key ? DRIFT[node][1] : deployed;
   return {key, value, deployed, drifted: value !== deployed};
@@ -47,13 +52,13 @@ function trace(node) {
   const span = (name, ms, ok, detail = {}) => { spans.push({name, start_ms: Math.round(clock * 10) / 10, ms, ok, ...detail}); clock += ms; return ok; };
   const own = (low, high) => n.busy ? Math.round(busyMs() * 0.4 * 10) / 10 : between(low, high);
   let ok;
-  if (node === 'gateway-a') {
+  if (isGateway(node)) {
     const [address] = (n.drifted ? DRIFT[node][1] : UPSTREAM).split('//').slice(-1), name = `upstream ${address}/catalog`, cat = fleet['catalog-b'];
     if (n.drifted || !answering('catalog-b')) ok = span(name, between(0.8, 3), false, {error: 'ConnectError'});
     else if (cat.drifted) ok = span(name, between(2, 6), false, {status: 500});
     else if (cat.full) ok = span(name, between(2, 6), false, {status: 507});
     else {
-      const ms = cat.busy ? busyMs() : between(1.5, 6);
+      const ms = (cat.busy ? busyMs() : between(1.5, 6)) + lag('catalog-b') + lag(node);
       ok = ms > 1000 ? span(name, 1000, false, {error: 'ReadTimeout'}) : span(name, ms, true, {status: 200});
     }
   } else {
@@ -80,8 +85,23 @@ function probe(node, kind) {
     return {...base, cpu_cores: cores, cpu_pct_of_limit: Math.round(cores / 0.25 * 1000) / 10, periods: n.periods, throttled_periods: n.throttled,
             throttled_ms: Math.round(n.throttled * 75 * 10) / 10, memory_mib: between(38, 46), memory_limit_mib: 192, duration_ms: between(1000, 1250)};
   }
-  if (!answering(node)) return {ok: false, error: 'ConnectError', detail: 'Check unavailable or failed', duration_ms: between(0.8, 4)};
-  const role = node === 'gateway-a' ? 'gateway' : 'catalog';
+  if (!answering(node)) return {ok: false, error: kind === 'network' ? 'ConnectionRefusedError' : 'ConnectError', detail: 'Check unavailable or failed', duration_ms: between(0.8, 4)};
+  if (kind === 'network') {
+    const connect = [0, 1, 2].map(() => (n.delayed ? DELAY + between(0.3, 1.5) : between(0.2, 0.9)));
+    return {ok: true, http_status: 200, connect_ms: connect, median_connect_ms: [...connect].sort((a, b) => a - b)[1],
+      result: {available: true, qdiscs: [n.delayed ? {kind: 'netem', dev: 'eth0', root: true, delay_ms: DELAY, line: `qdisc netem 8001: dev eth0 root refcnt 2 limit 1000 delay ${DELAY}ms`}
+        : {kind: 'noqueue', dev: 'eth0', root: true, delay_ms: null, line: 'qdisc noqueue 0: dev eth0 root refcnt 2'}], generation: n.process},
+      duration_ms: Math.round(connect.reduce((a, b) => a + b, 0) * 10) / 10 + between(3, 9)};
+  }
+  const answer = answered(node, kind);
+  // Everything the node sends back waits in its delay queue too.
+  if (n.delayed) answer.duration_ms = Math.round((answer.duration_ms + lag(node)) * 10) / 10;
+  return answer;
+}
+
+function answered(node, kind) {
+  const n = fleet[node];
+  const role = isGateway(node) ? 'gateway' : 'catalog';
   const quick = (low, high) => n.busy ? busyMs() : between(low, high);
   if (kind === 'liveness') return reply({live: true, role, generation: n.process}, quick(3, 13));
   if (kind === 'logs') return reply({entries: n.logs.slice(-200), bounded_to: 200, generation: n.process, truncated: false, omitted_retained_entries: 0}, quick(3, 9));
@@ -101,7 +121,7 @@ function probe(node, kind) {
   // Gateway readiness and business requests call the catalogue dependency.
   const correlation = crypto.randomUUID(), cat = fleet['catalog-b'];
   let result, status = 503;
-  const upstream = answering('catalog-b') ? (cat.busy ? busyMs() : between(1.5, 6)) : between(1, 5);
+  const upstream = answering('catalog-b') ? (cat.busy ? busyMs() : between(1.5, 6)) + lag('catalog-b') + lag(node) : between(1, 5);
   if (n.drifted || !answering('catalog-b')) result = {ok: false, dependency: 'catalog-b', correlation, error: 'ConnectError'};
   else if (cat.drifted) { result = {ok: false, dependency: 'catalog-b', correlation, error: 'HTTPStatusError', upstream_status: 500}; log('catalog-b', sourceMissing('catalog-b')); }
   else if (cat.full) { result = {ok: false, dependency: 'catalog-b', correlation, error: 'HTTPStatusError', upstream_status: 507}; log('catalog-b', diskFull('catalog-b')); }
@@ -206,7 +226,7 @@ function state() {
     const fresh = live && business && [live, business].every(e => t - e.at >= 0 && t - e.at < 6);
     const fast = fresh && !live.body.slow && !business.body.slow;
     const health = !fresh ? 'unknown' : !live.body.ok ? 'unavailable' : business.body.ok && fast ? 'healthy' : 'degraded';
-    return {id, role: id === 'gateway-a' ? 'gateway' : 'catalogue', health, live: live || null, business: business || null};
+    return {id, role: isGateway(id) ? 'gateway' : 'catalogue', health, live: live || null, business: business || null};
   });
   const history = [...sessions.values()].sort((a, b) => b.started_at - a.started_at).slice(0, 20).map(s => {
     const p = publicSession(s);
@@ -216,22 +236,24 @@ function state() {
   });
   return {nodes, session: publicSession(), baseline_cycles: lab.baseline, healthy_streak: lab.successes, collector_error: null, last_cycle: lab.lastCycle,
     evidence: lab.session ? sessionEvidence(lab.session.id, 60) : newestFirst(evidence.filter(e => !e.session_id)).slice(0, 60),
-    ai: {available: false, reason: 'AI integration is a later milestone; manual investigation is fully available.'},
+    ai: {available: false, reason: 'Not available in the browser simulator. In the full lab it is optional: add your own Gemini or Claude API key and it reads only the evidence on this page.'},
     now: t, history, storage: storage(), token: 'simulator',
     retention: {raw_hours: 24, summary_days: 30, warning: 'Export supporting evidence before 24 hours. Older references may become unavailable.'}};
 }
 
 // Docker-equivalent effects. Starting a running service or clearing a disk that is not full
 // changes nothing and says so, as the real broker and services do; a stopped service cannot confirm maintenance.
-const FAULTS = {'service-unavailable': ['stop', 'start'], 'cpu-starvation': ['burn', 'calm'], 'disk-full': ['fill', 'clear'], 'config-drift': ['drift', 'restore']};
+const FAULTS = {'service-unavailable': ['stop', 'start'], 'cpu-starvation': ['burn', 'calm'], 'disk-full': ['fill', 'clear'], 'config-drift': ['drift', 'restore'], 'network-delay': ['delay', 'undelay']};
 const UNCHANGED = {start: 'Already running; nothing changed', stop: 'Already stopped; nothing changed', calm: 'No background job running; nothing changed',
   burn: 'A background job was already running; nothing changed', clear: 'No filler file present; nothing changed', fill: 'Nothing changed',
-  restore: 'Running config already matches the deployed settings; nothing changed', drift: 'Setting already overridden; nothing changed'};
+  restore: 'Running config already matches the deployed settings; nothing changed', drift: 'Setting already overridden; nothing changed',
+  undelay: 'No network delay present; nothing changed', delay: 'Network delay already present; nothing changed'};
 const DEBRIEFS = {
-  'service-unavailable': 'The scenario requested stopping {target}. When that succeeds, its container state reads stopped and its own probes fail. When the catalogue stops, the gateway stays live but its business requests fail, so the failure spreads; when the gateway stops, the catalogue stays healthy, so it does not. Starting the stopped service restores the request path.',
-  'cpu-starvation': "The scenario requested a runaway background job inside {target}. When that succeeds, the service keeps running and answering, but slowly: the job uses the container's whole 0.25-CPU limit, the kernel throttles it, and requests queue behind it, crossing the 300 ms threshold. Its log records the job starting. A slow catalogue makes the gateway slow, and sometimes time out, too. Stopping the job returns normal latency.",
-  'disk-full': "The scenario requested filling {target}'s 8 MiB /tmp with one large file. When that succeeds, the process stays live, but every business request must write a small receipt, so writes fail with ENOSPC (HTTP 507). A full catalogue fails the gateway's requests too; a full gateway fails only its own. Disk usage shows 100% and the filler as the largest file. Clearing it restores writes.",
-  'config-drift': "The scenario requested a bad runtime configuration reload on {target}. When that succeeds, the process stays live and its container keeps running, so liveness, container state, CPU and disk all look normal. On the gateway, the upstream address points at a port nothing listens on, so every business request fails to connect, which looks like a stopped catalogue until the catalogue is checked directly. On the catalogue, the data source points at a dataset that was never deployed, so its business requests fail with HTTP 500 and the gateway's fail with them. The running config shows the drifted setting next to its deployed value, and the log records the reload. Restoring the deployed config fixes it.",
+  "service-unavailable": "The scenario requested stopping {target}. When that succeeds, its container state reads stopped and its own probes fail. When the catalogue stops, both gateways stay live but their business requests fail, so the failure spreads; when one gateway stops, the catalogue and the other gateway stay healthy, so it does not. Starting the stopped service restores the request path.",
+  "cpu-starvation": "The scenario requested a runaway background job inside {target}. When that succeeds, the service keeps running and answering, but slowly: the job uses the container's whole 0.25-CPU limit, the kernel throttles it, and requests queue behind it, crossing the 300 ms threshold. Its log records the job starting. A slow catalogue makes both gateways slow, and sometimes time out, too. Stopping the job returns normal latency.",
+  "disk-full": "The scenario requested filling {target}'s 8 MiB /tmp with one large file. When that succeeds, the process stays live, but every business request must write a small receipt, so writes fail with ENOSPC (HTTP 507). A full catalogue fails both gateways' requests too; a full gateway fails only its own. Disk usage shows 100% and the filler as the largest file. Clearing it restores writes.",
+  "config-drift": "The scenario requested a bad runtime configuration reload on {target}. When that succeeds, the process stays live and its container keeps running, so liveness, container state, CPU and disk all look normal. On a gateway, the upstream address points at a port nothing listens on, so every business request fails to connect, which looks like a stopped catalogue until the catalogue is checked directly. On the catalogue, the data source points at a dataset that was never deployed, so its business requests fail with HTTP 500 and both gateways' fail with them. The running config shows the drifted setting next to its deployed value, and the log records the reload. Restoring the deployed config fixes it.",
+  "network-delay": "The scenario requested a 600 ms delay on all traffic leaving {target}, applied with a Linux netem queue inside its own network namespace. When that succeeds, the process stays live and its CPU and disk stay normal, but every reply and every new connection waits: its own checks turn slow, and requests that need a fresh connection can exceed the gateways' 1-second upstream timeout. A delayed catalogue slows or fails both gateways; a delayed gateway affects only its own requests. The network path check shows TCP connections taking about 600 ms and the netem queue itself, and a request trace shows a fast handler with the time spent outside it. Removing the delay, or restarting the container, restores normal latency.",
 };
 const debrief = s => DEBRIEFS[s.fault_kind].replace('{target}', s.fault_target) + ' Injection outcome: ' + (s.fault_action?.status || 'not recorded') + '. The action record explains the exercise but was not evidence available during the investigation. Other evidence-supported investigation orders are valid.';
 
@@ -240,12 +262,12 @@ function apply(node, verb) {
   if (verb === 'start' || verb === 'stop') {
     if ((verb === 'start') === target.running) return false;
     target.running = verb === 'start';
-    if (target.running) Object.assign(target, {readyAt: now() + START_DELAY, process: 'sim-' + crypto.randomUUID(), busy: false, full: false, drifted: false, logs: []});
+    if (target.running) Object.assign(target, {readyAt: now() + START_DELAY, process: 'sim-' + crypto.randomUUID(), busy: false, full: false, drifted: false, delayed: false, logs: []});
     return true;
   }
   if (!target.running) return null;  // maintenance endpoint unreachable
-  const field = {burn: 'busy', calm: 'busy', fill: 'full', clear: 'full', drift: 'drifted', restore: 'drifted'}[verb];
-  const on = ['burn', 'fill', 'drift'].includes(verb);
+  const field = {burn: 'busy', calm: 'busy', fill: 'full', clear: 'full', drift: 'drifted', restore: 'drifted', delay: 'delayed', undelay: 'delayed'}[verb];
+  const on = ['burn', 'fill', 'drift', 'delay'].includes(verb);
   if (target[field] === on) return false;
   target[field] = on;
   if (field === 'drifted') log(node, on ? {ok: true, event: 'configuration reloaded', changed: {[DRIFT[node][0]]: DRIFT[node][1]}} : {ok: true, event: 'configuration restored', keys: [DRIFT[node][0]]});
@@ -316,42 +338,66 @@ function active(sessionId) {
 
 // Port of aegis/guidance.py: fresh observations only, never the fault record.
 function explain(level) {
-  const t = now(), sid = lab.session.id, inspections = ['service', 'resources', 'disk', 'config', 'trace'];
+  const t = now(), sid = lab.session.id, inspections = ['service', 'resources', 'disk', 'config', 'trace', 'network'];
   const fresh = new Map([...lab.latest].filter(([key, e]) => e.session_id === sid && t - e.at >= 0 && t - e.at <= (inspections.includes(key.split('|')[1]) ? 30 : 6)));
   let ids = [], message = 'There is not enough fresh evidence yet. Start with a liveness check, then compare it with a business request.';
   let suggested = {node: 'gateway-a', kind: 'liveness'};
-  const live = fresh.get('gateway-a|liveness'), business = fresh.get('gateway-a|business');
-  if (live && business) {
+  const healthy = (l, b) => [l, b].every(e => e.body.ok && !e.body.slow);
+  const observed = GATEWAYS.filter(g => fresh.has(g + '|liveness') && fresh.has(g + '|business')).map(g => [g, fresh.get(g + '|liveness'), fresh.get(g + '|business')]);
+  if (observed.length) {
+    // Focus on a gateway that shows a problem; the others show how far it reaches.
+    const [g, live, business] = observed.find(([, l, b]) => !healthy(l, b)) || observed[0];
     ids = [live.id, business.id];
     const result = business.body.result || {};
+    const catalogue = fresh.get('catalog-b|business');
+    let slowCatalogue = ['business', 'liveness'].map(k => fresh.get('catalog-b|' + k)).find(e => e) || null;
+    if (slowCatalogue && !(slowCatalogue.body.ok && slowCatalogue.body.slow)) slowCatalogue = null;
     if (live.body.ok && !business.body.ok && (business.body.http_status === 507 || result.errno === 'ENOSPC')) {
-      message = "The gateway is live, but its business request failed with HTTP 507 (insufficient storage) from its own receipt write. Check the gateway's disk usage.";
-      suggested = {node: 'gateway-a', kind: 'disk'};
+      message = `${g} is live, but its business request failed with HTTP 507 (insufficient storage) from its own receipt write. Check its disk usage.`;
+      suggested = {node: g, kind: 'disk'};
     } else if (live.body.ok && !business.body.ok && result.upstream_status === 507) {
-      message = 'The gateway is live, but the catalogue answered its request with HTTP 507 (insufficient storage). The catalogue is reachable yet cannot write; check its disk usage.';
+      message = `${g} is live, but the catalogue answered its request with HTTP 507 (insufficient storage). The catalogue is reachable yet cannot write; check its disk usage.`;
       suggested = {node: 'catalog-b', kind: 'disk'};
     } else if (live.body.ok && !business.body.ok && result.upstream_status === 500) {
-      message = 'The gateway is live, but the catalogue answered its request with HTTP 500. The catalogue is reachable yet failing internally; compare its logs and running config with what was deployed.';
+      message = `${g} is live, but the catalogue answered its request with HTTP 500. The catalogue is reachable yet failing internally; compare its logs and running config with what was deployed.`;
       suggested = {node: 'catalog-b', kind: 'config'};
-    } else if (live.body.ok && !live.body.slow && !business.body.ok && fresh.get('catalog-b|business')?.body.ok && !fresh.get('catalog-b|business').body.slow) {
-      ids.push(fresh.get('catalog-b|business').id);
-      message = "The gateway is live but its business request fails, while the catalogue answers its own business requests quickly. The catalogue works, so the break is on the gateway's path to it: trace a gateway request and compare the gateway's running config with its deployed settings.";
-      suggested = {node: 'gateway-a', kind: 'config'};
+    } else if (live.body.ok && !live.body.slow && !business.body.ok && catalogue?.body.ok && !catalogue.body.slow) {
+      ids.push(catalogue.id);
+      message = `${g} is live but its business request fails, while the catalogue answers its own business requests quickly. The catalogue works, so the break is on ${g}'s path to it: trace one of its requests and compare its running config with its deployed settings.`;
+      suggested = {node: g, kind: 'config'};
+    } else if (live.body.ok && !business.body.ok && slowCatalogue) {
+      ids.push(slowCatalogue.id);
+      message = `${g} is live but its business request fails, and the catalogue it depends on answers slowly (${slowCatalogue.body.duration_ms} ms). Slow upstream replies make the gateway's requests time out; compare the catalogue's resource use and network path.`;
+      suggested = {node: 'catalog-b', kind: 'resources'};
     } else if (live.body.ok && !business.body.ok) {
-      message = 'The gateway responds to liveness checks but its business request fails. Its own process is reachable; inspect the catalogue dependency before concluding the gateway is down.';
+      message = `${g} responds to liveness checks but its business request fails. Its own process is reachable; inspect the catalogue dependency before concluding the gateway is down.`;
       suggested = {node: 'catalog-b', kind: 'service'};
     } else if (!live.body.ok) {
-      message = 'The gateway liveness check failed. This does not by itself distinguish a stopped process from a connectivity problem. Inspect its container state and compare the catalogue independently.';
-      suggested = {node: 'gateway-a', kind: 'service'};
+      message = `The ${g} liveness check failed. This does not by itself distinguish a stopped process from a connectivity problem. Inspect its container state and compare the catalogue independently.`;
+      suggested = {node: g, kind: 'service'};
     } else if (live.body.slow || business.body.slow) {
-      const slowNode = live.body.slow ? 'gateway-a' : 'catalog-b';
-      message = `Gateway requests succeed but slowly (${business.body.duration_ms} ms, above ${SLOW_MS} ms). ` + (slowNode === 'gateway-a'
-        ? 'The gateway is slow even to liveness checks, so look at its own resources.'
+      const slowNode = live.body.slow ? g : 'catalog-b';
+      message = `${g}'s requests succeed but slowly (${business.body.duration_ms} ms, above ${SLOW_MS} ms). ` + (slowNode === g
+        ? 'It is slow even to liveness checks, so look at its own resources.'
         : "Its liveness is quick, so the delay is probably in the catalogue it depends on; compare the catalogue's latency and resource usage.");
       suggested = {node: slowNode, kind: 'resources'};
-    } else if (business.body.ok) {
+      const cpu = fresh.get(slowNode + '|resources');
+      if (cpu?.body.ok && (cpu.body.cpu_pct_of_limit || 0) < 50) {
+        ids.push(cpu.id);
+        message += ` Its recent CPU use is normal (${cpu.body.cpu_pct_of_limit}% of its limit), so the time is probably spent elsewhere: check its network path.`;
+        suggested = {node: slowNode, kind: 'network'};
+      }
+    } else {
       message = 'Recent gateway liveness and business checks succeeded. These observations do not establish an active failure; compare the incident timeline before changing anything.';
       suggested = {node: 'catalog-b', kind: 'liveness'};
+    }
+    // The other gateway shows the boundary: a shared fault reaches both, a local one does not.
+    for (const [other, otherLive, otherBusiness] of observed) {
+      if (other === g || healthy(live, business)) continue;
+      ids.push(otherBusiness.id);
+      message += healthy(otherLive, otherBusiness)
+        ? ` ${other} is healthy at the same time, so whatever is wrong is probably local to ${g} rather than the catalogue they share.`
+        : ` ${other} is affected too, which points at what both gateways share: the catalogue.`;
     }
   }
   if (level === 'action') {
@@ -376,6 +422,9 @@ function remedyFor(fresh) {
     else if (kind === 'config' && body.result?.drifted?.length) {
       const setting = body.result.settings.find(s => s.drifted);
       action = `The running config on ${node} differs from its deployed settings: ${setting.key} is ${setting.value} but ${setting.deployed} was deployed. You can try restoring the deployed config, then verify business requests succeed again.`;
+    } else if (kind === 'network' && body.result?.qdiscs?.some(q => q.kind === 'netem' && q.delay_ms)) {
+      const queue = body.result.qdiscs.find(q => q.kind === 'netem');
+      action = `Traffic leaving ${node} passes a netem queue that adds ${queue.delay_ms} ms, and new connections take about ${body.median_connect_ms} ms. You can try removing the traffic delay, then verify its latency returns below ${SLOW_MS} ms.`;
     } else continue;
     const newer = kind === 'service' ? [...fresh].filter(([k, e]) => e.node === node && /\|(liveness|business)$/.test(k) && e.at > record.at && e.body.ok && !e.body.slow).map(([, e]) => e) : [];
     if (newer.length) contradicted.push([record, newer.reduce((a, b) => (b.at > a.at ? b : a))]);
@@ -432,7 +481,7 @@ function timeline(id) {
 
 // ---- Routing, shaped like the FastAPI handlers ----
 const nodeOk = value => NODES.includes(value);
-const kindOk = value => ['liveness', 'readiness', 'business', 'logs', 'service', 'resources', 'disk', 'config', 'trace'].includes(value);
+const kindOk = value => ['liveness', 'readiness', 'business', 'logs', 'service', 'resources', 'disk', 'config', 'trace', 'network'].includes(value);
 const invalid = () => { throw new HttpError(422, [{msg: 'Invalid request'}]); };
 
 const routes = {
@@ -446,7 +495,7 @@ const routes = {
     const s = active(d.session_id);
     if (s.status === 'resetting') throw new HttpError(409, 'Reset is in progress. Wait for verification or retry reset.');
     const verb = d.verb || 'start';
-    if (!['start', 'calm', 'clear', 'restore'].includes(verb)) invalid();
+    if (!['start', 'calm', 'clear', 'restore', 'undelay'].includes(verb)) invalid();
     const result = mutate(d.key, d.node || 'catalog-b', verb);
     if (!s.recovery_attempts.some(a => a.key === d.key)) {
       s.recovery_attempts.push({key: d.key, at: now(), ...result});
@@ -480,6 +529,7 @@ const routes = {
     s.help.push({at: now(), level: d.level, evidence_ids: guidance.evidence_ids, message: guidance.message});
     return {...guidance, evidence: evidenceByIds(s.id, guidance.evidence_ids)};
   },
+  'POST ai': () => { throw new HttpError(409, 'The AI investigator is not available in the browser simulator.'); },
   'POST maintenance': () => ({evidence_removed: 0, summaries_removed: 0, batch_full: false, checkpoint_busy: false, storage: storage()}),
 };
 

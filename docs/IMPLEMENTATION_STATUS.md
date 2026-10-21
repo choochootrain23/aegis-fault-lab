@@ -71,10 +71,18 @@ Reports are under ignored `state/validation/`. The app is running at http://loca
 - Reliability: the evidence-browsing API now accepts every check kind (resource, disk, config and trace records could not be filtered before); polling backs off to 16 s while the controller is unreachable, announces reconnection, slows to 10 s in a hidden tab and refreshes immediately on return; a scenario that needs the fleet token is refused up front for every maintenance-based fault, not only disk-full.
 - Interface: request packets travel the live map (green and quick when healthy, amber and slow when degraded, red and stopping halfway when requests fail), remedy tags name the verb and the path it actually took, check buttons show a scanning bar while running, toasts carry a tone, verified recovery gets a brief celebration (a plain message under reduced motion), and keyboard shortcuts (**?** lists them) cover reading and checking but never fleet changes.
 
+## Ninth checkpoint (21 October 2026)
+
+- **Third node.** gateway-c is a second gateway that also calls catalog-b. Comparing the two gateways is now part of the diagnosis: a fault reaching both points at the shared catalogue, one reaching a single gateway is local. Guidance, the live map, the incident report (three series), keyboard shortcuts (A/B/C) and every validator cover all three services.
+- **Fifth fault: network delay.** The broker adds a fixed 600 ms netem delay to one service's network interface through a short-lived helper container that joins only that container's network namespace, with `NET_ADMIN` as its only capability, a read-only root, no new privileges and tight memory and process limits; it refuses to replace a queue it did not create. A new **Network path** check times TCP connects from the controller and lists the service's queue settings. Remedy: **Remove traffic delay**. Guidance points slow requests with normal CPU at the network path.
+- **Optional AI investigator.** A read-only panel asks a model (Gemini by default, or Claude through the Anthropic SDK) about the evidence on screen. It receives only summarised public observations and node health, never the fault record, cannot act, cites observations by id (citations are checked against what was sent) and is limited to 30 questions per investigation; use is recorded as help. Nothing is sent anywhere without `AEGIS_AI_API_KEY` in `.env`.
+- **Hardening.** Storage budget configurable with `AEGIS_STORAGE_LIMIT_MIB` and tested under pressure; `scripts/soak.py` for multi-hour runs (118 passing rounds over about 91 minutes so far, memory flat); an axe-core accessibility audit (contrast, landmark and focus fixes made); simulator walkthrough in Firefox as well as Chromium; a 320 px overflow in the scenario picker fixed.
+- Validation: see [validation](VALIDATION.md). A real Gemini model diagnosed a live network delay correctly in the lab; real answers have not been evaluated systematically.
+
 ## Next work
 
-1. Exercise storage-pressure exhaustion and a multi-hour run; broaden accessibility/browser coverage.
-2. Add the third node, the network-delay scenario and the read-only model investigator after the remaining first-scenario gates. No model key or paid cloud configuration has been used.
+1. Screen-reader review and Safari/WebKit coverage.
+2. A full uninterrupted multi-hour soak, and a systematic evaluation of the AI investigator's answers across every fault.
 
 ## Boundaries preserved
 

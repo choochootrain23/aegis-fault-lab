@@ -2,7 +2,12 @@
 import time
 
 SLOW_MS = 300  # request checks slower than this count as degraded, not healthy
-INSPECTIONS = ('service', 'resources', 'disk', 'config', 'trace')
+INSPECTIONS = ('service', 'resources', 'disk', 'config', 'trace', 'network')
+GATEWAYS = ('gateway-a', 'gateway-c')
+
+
+def healthy(live, business):
+    return all(e['body'].get('ok') and not e['body'].get('slow') for e in (live, business))
 
 
 def explain(latest, level, now=None):
@@ -11,40 +16,61 @@ def explain(latest, level, now=None):
     ids = []
     message = 'There is not enough fresh evidence yet. Start with a liveness check, then compare it with a business request.'
     suggested = {'node': 'gateway-a', 'kind': 'liveness'}
-    live = fresh.get(('gateway-a','liveness'))
-    business = fresh.get(('gateway-a','business'))
-    if live and business:
+    observed = [(g, fresh[(g, 'liveness')], fresh[(g, 'business')]) for g in GATEWAYS
+                if (g, 'liveness') in fresh and (g, 'business') in fresh]
+    if observed:
+        # Focus on a gateway that shows a problem; the others show how far it reaches.
+        g, live, business = next((o for o in observed if not healthy(o[1], o[2])), observed[0])
         ids = [live['id'], business['id']]
         result = business['body'].get('result') or {}
         if live['body']['ok'] and not business['body']['ok'] and (business['body'].get('http_status') == 507 or result.get('errno') == 'ENOSPC'):
-            message = 'The gateway is live, but its business request failed with HTTP 507 (insufficient storage) from its own receipt write. Check the gateway\'s disk usage.'
-            suggested = {'node':'gateway-a','kind':'disk'}
+            message = f'{g} is live, but its business request failed with HTTP 507 (insufficient storage) from its own receipt write. Check its disk usage.'
+            suggested = {'node':g,'kind':'disk'}
         elif live['body']['ok'] and not business['body']['ok'] and result.get('upstream_status') == 507:
-            message = 'The gateway is live, but the catalogue answered its request with HTTP 507 (insufficient storage). The catalogue is reachable yet cannot write; check its disk usage.'
+            message = f'{g} is live, but the catalogue answered its request with HTTP 507 (insufficient storage). The catalogue is reachable yet cannot write; check its disk usage.'
             suggested = {'node':'catalog-b','kind':'disk'}
         elif live['body']['ok'] and not business['body']['ok'] and result.get('upstream_status') == 500:
-            message = 'The gateway is live, but the catalogue answered its request with HTTP 500. The catalogue is reachable yet failing internally; compare its logs and running config with what was deployed.'
+            message = f'{g} is live, but the catalogue answered its request with HTTP 500. The catalogue is reachable yet failing internally; compare its logs and running config with what was deployed.'
             suggested = {'node':'catalog-b','kind':'config'}
         elif live['body']['ok'] and not live['body'].get('slow') and not business['body']['ok'] and catalogue_healthy(fresh):
             catalogue = fresh[('catalog-b', 'business')]
             ids.append(catalogue['id'])
-            message = 'The gateway is live but its business request fails, while the catalogue answers its own business requests quickly. The catalogue works, so the break is on the gateway\'s path to it: trace a gateway request and compare the gateway\'s running config with its deployed settings.'
-            suggested = {'node':'gateway-a','kind':'config'}
+            message = f'{g} is live but its business request fails, while the catalogue answers its own business requests quickly. The catalogue works, so the break is on {g}\'s path to it: trace one of its requests and compare its running config with its deployed settings.'
+            suggested = {'node':g,'kind':'config'}
+        elif live['body']['ok'] and not business['body']['ok'] and slow_catalogue(fresh):
+            catalogue = slow_catalogue(fresh)
+            ids.append(catalogue['id'])
+            message = f"{g} is live but its business request fails, and the catalogue it depends on answers slowly ({catalogue['body'].get('duration_ms')} ms). Slow upstream replies make the gateway's requests time out; compare the catalogue's resource use and network path."
+            suggested = {'node':'catalog-b','kind':'resources'}
         elif live['body']['ok'] and not business['body']['ok']:
-            message = 'The gateway responds to liveness checks but its business request fails. Its own process is reachable; inspect the catalogue dependency before concluding the gateway is down.'
+            message = f'{g} responds to liveness checks but its business request fails. Its own process is reachable; inspect the catalogue dependency before concluding the gateway is down.'
             suggested = {'node':'catalog-b','kind':'service'}
         elif not live['body']['ok']:
-            message = 'The gateway liveness check failed. This does not by itself distinguish a stopped process from a connectivity problem. Inspect its container state and compare the catalogue independently.'
-            suggested = {'node':'gateway-a','kind':'service'}
+            message = f'The {g} liveness check failed. This does not by itself distinguish a stopped process from a connectivity problem. Inspect its container state and compare the catalogue independently.'
+            suggested = {'node':g,'kind':'service'}
         elif live['body'].get('slow') or business['body'].get('slow'):
-            slow_node = 'gateway-a' if live['body'].get('slow') else 'catalog-b'
-            message = (f"Gateway requests succeed but slowly ({business['body'].get('duration_ms')} ms, above {SLOW_MS} ms). "
-                       + ('The gateway is slow even to liveness checks, so look at its own resources.' if slow_node == 'gateway-a'
+            slow_node = g if live['body'].get('slow') else 'catalog-b'
+            message = (f"{g}'s requests succeed but slowly ({business['body'].get('duration_ms')} ms, above {SLOW_MS} ms). "
+                       + ('It is slow even to liveness checks, so look at its own resources.' if slow_node == g
                           else 'Its liveness is quick, so the delay is probably in the catalogue it depends on; compare the catalogue\'s latency and resource usage.'))
             suggested = {'node':slow_node,'kind':'resources'}
-        elif business['body']['ok']:
+            cpu = fresh.get((slow_node, 'resources'))
+            if cpu and cpu['body'].get('ok') and (cpu['body'].get('cpu_pct_of_limit') or 0) < 50:
+                ids.append(cpu['id'])
+                message += f" Its recent CPU use is normal ({cpu['body'].get('cpu_pct_of_limit')}% of its limit), so the time is probably spent elsewhere: check its network path."
+                suggested = {'node':slow_node,'kind':'network'}
+        else:
             message = 'Recent gateway liveness and business checks succeeded. These observations do not establish an active failure; compare the incident timeline before changing anything.'
             suggested = {'node':'catalog-b','kind':'liveness'}
+        # The other gateway shows the boundary: a shared fault reaches both, a local one does not.
+        for other, other_live, other_business in observed:
+            if other == g or healthy(live, business):
+                continue
+            ids.append(other_business['id'])
+            if healthy(other_live, other_business):
+                message += f' {other} is healthy at the same time, so whatever is wrong is probably local to {g} rather than the catalogue they share.'
+            else:
+                message += f' {other} is affected too, which points at what both gateways share: the catalogue.'
     if level == 'action':
         found = remedy(fresh)
         if found:
@@ -60,6 +86,11 @@ def explain(latest, level, now=None):
 def catalogue_healthy(fresh):
     record = fresh.get(('catalog-b', 'business'))
     return bool(record and record['body'].get('ok') and not record['body'].get('slow'))
+
+
+def slow_catalogue(fresh):
+    record = next((fresh.get(('catalog-b', kind)) for kind in ('business', 'liveness') if fresh.get(('catalog-b', kind))), None)
+    return record if record and record['body'].get('ok') and record['body'].get('slow') else None
 
 
 def newer_success(fresh, record):
@@ -85,6 +116,9 @@ def remedy(fresh):
         elif kind == 'config' and (body.get('result') or {}).get('drifted'):
             setting = next(s for s in body['result']['settings'] if s['drifted'])
             action = f"The running config on {node} differs from its deployed settings: {setting['key']} is {setting['value']} but {setting['deployed']} was deployed. You can try restoring the deployed config, then verify business requests succeed again."
+        elif kind == 'network' and any(q.get('kind') == 'netem' and q.get('delay_ms') for q in (body.get('result') or {}).get('qdiscs', [])):
+            queue = next(q for q in body['result']['qdiscs'] if q.get('kind') == 'netem')
+            action = f"Traffic leaving {node} passes a netem queue that adds {queue['delay_ms']:g} ms, and new connections take about {body.get('median_connect_ms')} ms. You can try removing the traffic delay, then verify its latency returns below {SLOW_MS} ms."
         else:
             continue
         newer = newer_success(fresh, record) if kind == 'service' else None

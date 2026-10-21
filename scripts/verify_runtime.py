@@ -16,7 +16,7 @@ def docker(*args):
 
 def main():
     report = {'at': datetime.now(timezone.utc).isoformat(), 'fleet': {}, 'passed': False}
-    for node in ('gateway-a', 'catalog-b'):
+    for node in ('gateway-a', 'catalog-b', 'gateway-c'):
         ids = docker('compose', 'ps', '-a', '-q', node).split()
         if len(ids) != 1:
             raise RuntimeError(f'{node}: expected exactly one project container')

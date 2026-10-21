@@ -73,7 +73,7 @@ def main():
             state = operator.wait(lambda s:s['session']['status']=='investigating', 'fault detection', sid=sid)
             detected = time.monotonic()-round_start
             health = {n['id']:n['health'] for n in state['nodes']}
-            if health != {'gateway-a':'degraded','catalog-b':'unavailable'}:
+            if health != {'gateway-a':'degraded','catalog-b':'unavailable','gateway-c':'degraded'}:
                 raise RuntimeError('Unexpected measured fault effects: '+str(health))
             evidence = [operator.request('/api/check', {'node':n,'kind':k}) for n,k in
                         [('gateway-a','liveness'),('gateway-a','business'),('catalog-b','service')]]

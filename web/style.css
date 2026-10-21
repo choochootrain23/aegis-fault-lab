@@ -5,10 +5,10 @@
 @font-face{font-family:'Instrument Serif';src:url(fonts/instrument-serif-italic.woff2) format('woff2');font-style:italic;font-weight:400;font-display:swap}
 
 :root{color-scheme:light;
- --bg:#f2f1ee;--sheet:#f6f5f2;--well:#e9e8e4;--ink:#101014;--muted:#56565c;--faint:#77777d;
+ --bg:#f2f1ee;--sheet:#f6f5f2;--well:#e9e8e4;--ink:#101014;--muted:#56565c;--faint:#68686d;
  --line:rgba(16,16,20,.13);--line-strong:rgba(16,16,20,.82);
- --ok:#1e8e3e;--ok-soft:#e6f4ea;--warn:#b06000;--warn-soft:#fef7e0;--bad:#d93025;--bad-soft:#fce8e6;
- --accent:#1a73e8;--accent-soft:#e8f0fe;--violet:#9334e6;--orange:#e8710a;
+ --ok:#137333;--ok-soft:#e6f4ea;--warn:#b06000;--warn-soft:#fef7e0;--bad:#c5221f;--bad-soft:#fce8e6;
+ --accent:#1967d2;--accent-soft:#e8f0fe;--violet:#9334e6;--orange:#e8710a;
  --display:Archivo,'Archivo Fallback',system-ui,sans-serif;--sans:Inter,'Inter Fallback',system-ui,-apple-system,'Segoe UI',sans-serif;
  --mono:'Geist Mono',ui-monospace,SFMono-Regular,Menlo,monospace;--serif:'Instrument Serif',Georgia,'Times New Roman',serif;
  --nav:48px}
@@ -268,7 +268,7 @@ dialog p{color:var(--muted)}
 }
 
 /* Journey, signal colour and motion: directions are suggestions, colour marks what needs attention. */
-:root{--go:#1e8e3e;--go-soft:#e6f4ea;--signal:#f9ab00;--signal-soft:#fef7e0;--help:#9334e6;--help-soft:#f3e8fd}
+:root{--go:#137333;--go-soft:#e6f4ea;--signal:#f9ab00;--signal-soft:#fef7e0;--help:#9334e6;--help-soft:#f3e8fd}
 .signature{display:flex;justify-content:center;gap:6px;margin:-6px 0 26px}
 .signature i{width:44px;height:6px;background:var(--ok)}
 .signature i:nth-child(2){background:var(--accent)}.signature i:nth-child(3){background:var(--violet)}.signature i:nth-child(4){background:var(--orange)}
@@ -303,7 +303,7 @@ dialog p{color:var(--muted)}
 
 /* Coloured actions */
 .primary#start:not(:disabled),#start.primary{background:var(--go);border-color:var(--go)}
-#start:hover:not(:disabled){background:#137333}
+#start:hover:not(:disabled){background:#0d652d}
 #start:not(:disabled){box-shadow:5px 5px 0 rgba(30,142,62,.25)}
 .recovery:not(:disabled){box-shadow:5px 5px 0 rgba(26,115,232,.25)}
 #extend.attention{background:var(--signal);border-color:var(--signal);color:var(--ink);animation:step-glow 1.2s ease-in-out infinite}
@@ -355,7 +355,7 @@ dialog p{color:var(--muted)}
 .nav-links a[href^="#"].nav-active{background:var(--nav-tone);color:#fff;box-shadow:3px 3px 0 rgba(16,16,20,.18)}
 
 /* Live map: absolutely placed, draggable nodes with SVG edges drawn between them. */
-.topology{height:440px}
+.topology{height:540px}
 .topology::after{content:none!important}
 .topology .graph-node{position:absolute;transform:translate(-50%,-50%);touch-action:none;user-select:none;cursor:grab;z-index:2}
 .topology .graph-node.dragging{cursor:grabbing;z-index:4;box-shadow:10px 10px 0 rgba(16,16,20,.14)}
@@ -387,11 +387,11 @@ dialog p{color:var(--muted)}
 #topology-plane[aria-pressed=true]{background:var(--ink);color:var(--bg)}
 .dependency-caption span{color:var(--accent)}
 .topology .edge-label{z-index:3}
-@media(max-width:600px){.topology{height:480px}.topology .node{width:clamp(130px,42%,170px);padding:10px}.node>strong{font-size:14px}.graph-node.infra small{display:none}.topology-tools{top:auto;bottom:30px;right:8px}}
+@media(max-width:600px){.topology{height:620px}.topology .node{width:clamp(130px,42%,170px);padding:10px}.node>strong{font-size:14px}.graph-node.infra small{display:none}.topology-tools{top:auto;bottom:30px;right:8px}}
 
 /* Vibrant palette in the spirit of Google's colours. Text on light tints uses the darker "ink" shades. */
-:root{--accent:#1a73e8;--accent-soft:#e8f0fe;--ok:#1e8e3e;--ok-soft:#e6f4ea;--bad:#d93025;--bad-soft:#fce8e6;--warn:#b06000;--warn-soft:#fef7e0;
- --go:#1e8e3e;--go-soft:#e6f4ea;--signal:#f9ab00;--signal-soft:#fef7e0;--violet:#9334e6;--help:#9334e6;--help-soft:#f3e8fd;--orange:#e8710a;--cyan:#12b5cb;--pink:#d01884;--yellow:#fbbc04}
+:root{--accent:#1967d2;--accent-soft:#e8f0fe;--ok:#137333;--ok-soft:#e6f4ea;--bad:#c5221f;--bad-soft:#fce8e6;--warn:#b06000;--warn-soft:#fef7e0;
+ --go:#137333;--go-soft:#e6f4ea;--signal:#f9ab00;--signal-soft:#fef7e0;--violet:#9334e6;--help:#9334e6;--help-soft:#f3e8fd;--orange:#e8710a;--cyan:#12b5cb;--pink:#d01884;--yellow:#fbbc04}
 .journey{--tone-ink:#b06000}
 .journey[data-tone=go],.journey[data-tone=done]{--tone-ink:var(--ok)}
 .journey[data-tone=focus]{--tone-ink:var(--accent)}
@@ -420,7 +420,7 @@ dialog p{color:var(--muted)}
 .check-icon.cyan{background:var(--cyan)}.check-icon.pink{background:var(--pink)}
 .remedies{display:grid;gap:8px}
 .remedies .button{width:100%;justify-content:flex-start}
-.remedies .remedy-calm:not(:disabled){background:var(--orange);border-color:var(--orange);box-shadow:5px 5px 0 rgba(232,113,10,.22)}
+.remedies .remedy-calm:not(:disabled){background:#b45309;border-color:#b45309;box-shadow:5px 5px 0 rgba(232,113,10,.22)}
 .remedies .remedy-clear:not(:disabled){background:var(--pink);border-color:var(--pink);box-shadow:5px 5px 0 rgba(208,24,132,.2)}
 .nav-links a[href="#report-section"]{--nav-tone:var(--cyan)}
 .report-panel{--section:var(--cyan);border-bottom:1px solid var(--line)}
@@ -487,7 +487,7 @@ dialog p{color:var(--muted)}
 @media(max-width:600px){.nav-tour{padding:0 12px;letter-spacing:.12em}}
 /* Config and trace tools, packets, shortcuts, toasts and the recovery burst */
 .check-icon.teal{background:#00897b}.check-icon.gold{background:var(--yellow);color:var(--ink)}
-.remedies .remedy-restore:not(:disabled){background:#00897b;border-color:#00897b;box-shadow:5px 5px 0 rgba(0,137,123,.22)}
+.remedies .remedy-restore:not(:disabled){background:#00796b;border-color:#00796b;box-shadow:5px 5px 0 rgba(0,137,123,.22)}
 .checks button{position:relative;overflow:hidden}
 .checks button.running::after{content:'';position:absolute;left:0;bottom:0;height:3px;width:40%;background:linear-gradient(90deg,transparent,var(--accent),transparent);animation:scan .9s ease-in-out infinite}
 .checks button.running .check-icon{animation:step-glow .9s ease-in-out infinite}
@@ -543,4 +543,16 @@ kbd{display:inline-block;min-width:24px;padding:4px 6px;border:1px solid var(--l
 .pick select{border:0;border-left:3px solid var(--pick)}
 .pick:focus-within{box-shadow:0 0 0 3px color-mix(in srgb,var(--pick) 30%,transparent)}
 .pick-fault{--pick:var(--bad)}.pick-target{--pick:var(--accent)}.pick-mode{--pick:var(--violet)}
-@media(max-width:600px){.pick select{flex:1}}
+@media(max-width:600px){.scenario-controls{min-width:0;flex:1 1 100%}.pick select{flex:1;min-width:0}}
+.node-icon.teal{background:#e0f2f1;color:#00897b}
+@media(max-width:600px){.topology{height:760px}.topology-tools{bottom:8px}.edge-tag.check,.edge-tag.control{display:none}}
+.check-icon.indigo{background:#3f51b5}
+.remedies .remedy-undelay:not(:disabled){background:#3f51b5;border-color:#3f51b5;box-shadow:5px 5px 0 rgba(63,81,181,.22)}
+.ai-form{display:flex;gap:8px;align-items:stretch;margin-top:8px}
+.ai-form textarea{flex:1;min-width:0;resize:vertical;padding:8px 10px;border:1px solid var(--line-strong);background:var(--sheet);font:13px/1.4 var(--body, inherit)}
+.ai-ask:not(:disabled){background:var(--violet);border-color:var(--violet);color:#fff}
+.ai-answer{margin:10px 0 0;white-space:pre-wrap}
+.ai-answer small{display:block;margin-top:8px;color:var(--muted);font:11px/1.4 var(--mono)}
+.ai-answer.thinking{animation:step-glow 1.2s ease-in-out infinite}
+/* Very narrow phones: the state badge needs the full card width more than the decorative icon does. */
+@media(max-width:380px){.node .node-icon{display:none}.node-top{justify-content:flex-start}.node-state{letter-spacing:.06em;padding:4px 5px}}

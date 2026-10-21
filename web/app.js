@@ -21,7 +21,7 @@ async function request(path, data) {
 }
 async function action(path, data={}, message='Action recorded') {
   if(busy)return; busy=true; document.querySelector('main').setAttribute('aria-busy','true');renderControls();toast(path==='check'?'Running diagnostic check…':'Recording your request…');
-  try { const result=await request(path,{...data,...(['recover','reset','extend','reveal','note','help'].includes(path)?{session_id:state.session.id}:{}),...(['sessions','recover','reset','extend','reveal'].includes(path)?{key:crypto.randomUUID()}: {})}); toast(result.status==='unknown'?'Outcome uncertain. Inspect actual state before retrying.':result.status==='unchanged'?`Nothing changed: ${result.detail}`:message,result.status==='unknown'?'error':result.status==='unchanged'?'warn':'ok'); await refresh(); return result; }
+  try { const result=await request(path,{...data,...(['recover','reset','extend','reveal','note','help','ai'].includes(path)?{session_id:state.session.id}:{}),...(['sessions','recover','reset','extend','reveal'].includes(path)?{key:crypto.randomUUID()}: {})}); toast(result.status==='unknown'?'Outcome uncertain. Inspect actual state before retrying.':result.status==='unchanged'?`Nothing changed: ${result.detail}`:message,result.status==='unknown'?'error':result.status==='unchanged'?'warn':'ok'); await refresh(); return result; }
   catch(e){toast(e.message,true);}finally{busy=false;document.querySelector('main').setAttribute('aria-busy','false');renderControls();}
 }
 function renderControls(){
@@ -39,6 +39,7 @@ function renderControls(){
  $('clear-selection').disabled=chosen.size===0;
  $('suggested-check').disabled=busy||!connected;
  $('reveal').hidden=!s||s.mode!=='challenge'||s.revealed||s.status==='ended';
+ renderAI();
 }
 function renderEvidence(force=false){
  if(evidencePaused&&!force){const unseen=state.evidence.filter(e=>!evidenceSnapshot.some(old=>old.id===e.id)).length;$('evidence-status').textContent=`Reading paused · ${unseen} newer observations available`;return;}
@@ -47,7 +48,7 @@ function renderEvidence(force=false){
  const sig=evidence.map(e=>e.id).join(','); if(sig===evidenceSignature)return; evidenceSignature=sig;
  const open=new Set([...document.querySelectorAll('.evidence-row details[open]')].map(e=>e.dataset.id));
  $('evidence-count').textContent=state.evidence.length;
- $('evidence').innerHTML=evidence.length?evidence.map(e=>`<div class="evidence-row"><input type="checkbox" aria-label="Select evidence ${esc(e.id)}" data-evidence="${esc(e.id)}" ${chosen.has(e.id)?'checked':''}><details data-id="${esc(e.id)}" ${open.has(e.id)?'open':''}><summary><i class="dot ${AegisView.evidenceResult(e).tone}"></i><strong>${esc(e.node)}</strong><span class="kind">${esc(label(e.kind))} · ${e.body.origin==='operator'?'your check':'collector'} · ${esc(AegisView.evidenceResult(e).text)}</span><time>${new Date(e.at*1000).toLocaleTimeString()}</time></summary><p class="evidence-id">Evidence ${esc(e.id)}</p>${detailView(e)}<pre>${esc(JSON.stringify(e.body,null,2))}</pre></details></div>`).join(''):'<div class="empty">No matching evidence yet.<br><small>Choose a diagnostic check to gather observations.</small></div>';
+ $('evidence').innerHTML=evidence.length?evidence.map(e=>`<div class="evidence-row"><input type="checkbox" aria-label="Select evidence ${esc(e.id)}" data-evidence="${esc(e.id)}" ${chosen.has(e.id)?'checked':''}><details data-id="${esc(e.id)}" ${open.has(e.id)?'open':''}><summary><i class="dot ${AegisView.evidenceResult(e).tone}"></i><strong>${esc(e.node)}</strong><span class="kind">${esc(label(e.kind))} · ${e.body.origin==='operator'?'your check':'collector'} · ${esc(AegisView.evidenceResult(e).text)}</span><time>${new Date(e.at*1000).toLocaleTimeString()}</time></summary><p class="evidence-id">Evidence ${esc(e.id)}</p>${detailView(e)}<pre tabindex="0" aria-label="Raw observation">${esc(JSON.stringify(e.body,null,2))}</pre></details></div>`).join(''):'<div class="empty">No matching evidence yet.<br><small>Choose a diagnostic check to gather observations.</small></div>';
  document.querySelectorAll('[data-evidence]').forEach(el=>el.addEventListener('change',()=>{setEvidencePaused(true); if(el.checked&&chosen.size>=20){el.checked=false;toast('Select up to 20 evidence records for one diagnosis.',true);return;}el.checked?chosen.add(el.dataset.evidence):chosen.delete(el.dataset.evidence);$('selected-count').textContent=chosen.size+' evidence selected';$('clear-selection').disabled=chosen.size===0;}));
 }
 // Readable views of structured results, shown above the raw JSON.
@@ -61,6 +62,10 @@ function detailView(e){
   return `<div class="waterfall"><p class="waterfall-head">Request trace · ${esc(total)} ms round trip${result.request_ok?'':` · failed at ${esc(result.failed_at)}`}</p>${rows.map(r=>{
    const x=Math.min(99,r.start/total*100), w=Math.max(0.8,Math.min(100-x,r.ms/total*100));
    return `<div class="wf-row ${r.tone}${r===slowest&&r.ms>0?' slowest':''}"><span class="wf-name">${esc(r.name)}${r.note?` · <b>${esc(r.note)}</b>`:''}</span><svg viewBox="0 0 100 10" preserveAspectRatio="none" aria-hidden="true"><rect class="wf-track" width="100" height="10"/><rect class="wf-bar" x="${x.toFixed(2)}" width="${w.toFixed(2)}" height="10"/></svg><span class="wf-ms">${esc(r.ms)} ms</span></div>`;}).join('')}</div>`;
+ }
+ if(e.kind==='network'&&Array.isArray(e.body.connect_ms)){
+  const queues=result?.qdiscs||[];
+  return `<div class="waterfall"><p class="waterfall-head">TCP connect from the controller · ${e.body.connect_ms.map(ms=>esc(ms)+' ms').join(' · ')}</p></div><table class="config-table"><thead><tr><th>Interface</th><th>Queue</th><th>Added delay</th></tr></thead><tbody>${queues.length?queues.map(q=>`<tr class="${q.kind==='netem'?'drifted':''}"><td>${esc(q.dev)}</td><td>${esc(q.kind)}</td><td>${q.delay_ms!=null?esc(q.delay_ms)+' ms':'none'}</td></tr>`).join(''):'<tr><td colspan="3">Queue settings unavailable</td></tr>'}</tbody></table>`;
  }
  if(e.kind==='config'&&Array.isArray(result?.settings)){
   return `<table class="config-table"><thead><tr><th>Setting</th><th>Running</th><th>Deployed</th></tr></thead><tbody>${result.settings.map(s=>`<tr class="${s.drifted?'drifted':''}"><td>${esc(s.key)}</td><td>${esc(s.value)}${s.drifted?' <b>≠</b>':''}</td><td>${esc(s.deployed)}</td></tr>`).join('')}</tbody></table>`;
@@ -88,10 +93,10 @@ function render(){
  if(el.dataset.health&&el.dataset.health!==n.health){el.classList.remove('changed');void el.offsetWidth;el.classList.add('changed');}
  el.dataset.health=n.health;badge.textContent=label(n.health);badge.className='node-state '+n.health;
  el.querySelector('.node-measure').textContent=AegisView.measurement(n);}
- const gateway=state.nodes.find(n=>n.id==='gateway-a');const measured=gateway?.business;
+ const gateways=state.nodes.filter(n=>n.role==='gateway'&&n.business&&n.health!=='unknown'), failing=gateways.filter(n=>!n.business.body.ok).length;
  AegisTopology.update(state);
  renderJourney();renderCheckResults();renderScenario();
- $('edge-label').textContent=measured?(gateway.health==='unknown'?'Previous observation is stale':measured.body.ok?'Observed business request succeeded':'Observed business request failed'):'Waiting for observed requests';
+ $('edge-label').textContent=!gateways.length?'Waiting for fresh requests':failing?`Business requests failing on ${failing} of ${gateways.length} gateways`:'Observed business requests succeeded';
  $('scenario-reveal').textContent=s?.scenario?`Known scenario: ${label(s.scenario.kind)} on ${s.scenario.target}`:'';
  $('debrief').textContent=s?.debrief||'';
  const attempts=(s?.recovery_attempts||[]).map(a=>({at:a.at,title:`${AegisView.remedyLabel(a.verb||'start')} · ${a.node}`,detail:a.status==='succeeded'?'Action accepted; consult verification':a.detail||a.status}));
@@ -175,15 +180,34 @@ document.querySelectorAll('[data-help]').forEach(b=>b.addEventListener('click',a
  $('help-result').textContent=result.message;$('help-result').hidden=false;
  suggestedCheck=result.suggested_check;$('suggested-check').hidden=!suggestedCheck;
  if(suggestedCheck)$('suggested-check').textContent=`Run ${label(suggestedCheck.kind)} · ${suggestedCheck.node} ↗`;
- if(result.evidence_ids?.length){
-   // Cited service checks may have left the recent polling window. Keep their
-   // exact retained records visible instead of silently missing the highlight.
-   const records=new Map([...(result.evidence||[]),...state.evidence].map(e=>[e.id,e]));
-   evidenceSnapshot=[...records.values()].sort((a,b)=>b.at-a.at);
-   $('filter').value='all';evidenceSignature='';setEvidencePaused(true);renderEvidence(true);
-   for(const id of result.evidence_ids){const detail=document.querySelector(`details[data-id="${CSS.escape(id)}"]`);if(detail){detail.open=true;detail.closest('.evidence-row').classList.add('highlight');}}
- }
+ showCited(result);
 }));
+// Cited service checks may have left the recent polling window. Keep their
+// exact retained records visible instead of silently missing the highlight.
+function showCited(result){
+ if(!result.evidence_ids?.length)return;
+ const records=new Map([...(result.evidence||[]),...state.evidence].map(e=>[e.id,e]));
+ evidenceSnapshot=[...records.values()].sort((a,b)=>b.at-a.at);
+ $('filter').value='all';evidenceSignature='';setEvidencePaused(true);renderEvidence(true);
+ for(const id of result.evidence_ids){const detail=document.querySelector(`details[data-id="${CSS.escape(id)}"]`);if(detail){detail.open=true;detail.closest('.evidence-row').classList.add('highlight');}}
+}
+// The optional AI investigator: read-only, and only when a provider key is configured.
+function renderAI(){
+ const ai=state.ai||{}, s=state.session, active=s&&s.status!=='ended';
+ setText('ai-badge',ai.available?`ON · ${ai.provider}`:'OFF');$('ai-badge').className='badge '+(ai.available?'blue':'neutral');
+ setText('ai-status',ai.available?`${ai.model}. ${ai.reason}${active?'':' Start an investigation to ask.'}`:ai.reason||'Not configured.');
+ $('ai-ask').disabled=!ai.available||!active||busy||!connected;$('ai-question').disabled=!ai.available;
+}
+$('ai-form').addEventListener('submit',async e=>{
+ e.preventDefault();
+ $('ai-answer').hidden=false;$('ai-answer').classList.add('thinking');$('ai-answer').textContent='Reading the evidence…';
+ const result=await action('ai',{question:$('ai-question').value},'AI answer recorded with your help requests');
+ $('ai-answer').classList.remove('thinking');
+ if(!result){$('ai-answer').hidden=true;return;}
+ $('ai-answer').textContent=result.answer;
+ const meta=document.createElement('small');meta.textContent=`${result.provider} · ${result.model} · ${result.evidence_ids.length} cited observations · check what it cites`;$('ai-answer').append(meta);
+ $('ai-question').value='';showCited(result);
+});
 $('suggested-check').addEventListener('click',()=>{if(suggestedCheck)action('check',suggestedCheck,'Suggested check completed. Review the new observation.');});
 $('clear-selection').addEventListener('click',()=>{chosen.clear();$('selected-count').textContent='0 evidence selected';$('clear-selection').disabled=true;evidenceSignature='';renderEvidence(true);});
 
@@ -195,7 +219,7 @@ $('evidence-live').addEventListener('click',()=>setEvidencePaused(!evidencePause
 $('evidence').addEventListener('toggle',e=>{if(e.target.tagName==='DETAILS'&&e.target.open)setEvidencePaused(true);},true);
 $('maintenance').addEventListener('click',()=>action('maintenance',{},'Retention cleanup complete. Active investigation evidence is preserved.'));
 $('archive-close').addEventListener('click',()=>$('archive-dialog').close());
-function archiveRecord(e){return `<details class="archive-record"><summary><strong>${esc(e.node)}</strong> · ${esc(label(e.kind))} · ${esc(AegisView.evidenceResult(e).text)} <time>${new Date(e.at*1000).toLocaleString()}</time></summary><p class="evidence-id">${esc(e.id)}</p>${detailView(e)}<pre>${esc(JSON.stringify(e.body,null,2))}</pre></details>`;}
+function archiveRecord(e){return `<details class="archive-record"><summary><strong>${esc(e.node)}</strong> · ${esc(label(e.kind))} · ${esc(AegisView.evidenceResult(e).text)} <time>${new Date(e.at*1000).toLocaleString()}</time></summary><p class="evidence-id">${esc(e.id)}</p>${detailView(e)}<pre tabindex="0" aria-label="Raw observation">${esc(JSON.stringify(e.body,null,2))}</pre></details>`;}
 function archiveCitations(ids){return ids.length?ids.map(id=>`<button class="button compact citation" data-citation="${esc(id)}" title="Open this exact observation">↗ ${esc(id.slice(0,8))}</button>`).join(' '):'None recorded';}
 async function openCitation(id,button){
  const session=archiveId, sequence=citationOrder.begin();button.disabled=true;
@@ -250,7 +274,7 @@ addEventListener('keydown',e=>{
  if(document.body.classList.contains('touring')||document.querySelector('dialog[open]'))return;
  const key=e.key.toLowerCase(), press=el=>{if(el&&!el.disabled)el.click();};
  if(key==='?')$('keys-dialog').showModal();
- else if(key==='g'||key==='c')press($(key==='g'?'node-gateway-a':'node-catalog-b'));
+ else if(['a','b','c'].includes(key))press($({a:'node-gateway-a',b:'node-catalog-b',c:'node-gateway-c'}[key]));
  else if(/^[1-9]$/.test(key)&&!e.shiftKey)press(document.querySelectorAll('[data-check]')[Number(key)-1]);
  else if(key==='e')press(document.querySelector('[data-help="evidence"]'));
  else if(key==='p')press($('evidence-live'));

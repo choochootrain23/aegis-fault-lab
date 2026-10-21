@@ -1,6 +1,7 @@
 import asyncio
 import json
 import time
+import uuid
 
 import httpx
 import pytest
@@ -13,10 +14,11 @@ from aegis.store import Store
 class Fleet:
     """Test double only; never wired into the application runtime."""
     def __init__(self):
-        self.running = {'gateway-a': True, 'catalog-b': True}
-        self.busy = {'gateway-a': False, 'catalog-b': False}
-        self.full = {'gateway-a': False, 'catalog-b': False}
-        self.drifted = {'gateway-a': False, 'catalog-b': False}
+        self.running = {'gateway-a': True, 'catalog-b': True, 'gateway-c': True}
+        self.busy = {'gateway-a': False, 'catalog-b': False, 'gateway-c': False}
+        self.full = {'gateway-a': False, 'catalog-b': False, 'gateway-c': False}
+        self.drifted = {'gateway-a': False, 'catalog-b': False, 'gateway-c': False}
+        self.delayed = {'gateway-a': False, 'catalog-b': False, 'gateway-c': False}
         self.mutations = []
         self.broker_available = True
 
@@ -26,8 +28,12 @@ class Fleet:
         if verb not in ('inspect', 'resources'):
             if op['generation'] != node + '-generation':
                 return httpx.Response(409)
-            changed = self.running[node] != (verb == 'start')
-            self.running[node] = verb == 'start'
+            if verb in ('delay', 'undelay'):
+                changed = self.delayed[node] != (verb == 'delay')
+                self.delayed[node] = verb == 'delay'
+            else:
+                changed = self.running[node] != (verb == 'start')
+                self.running[node] = verb == 'start'
             if changed:
                 self.mutations.append((node, verb))
         return httpx.Response(200, json={'target': node, 'generation': node + '-generation', 'running': self.running[node],
@@ -60,7 +66,10 @@ class Fleet:
                                                                                'deployed': 'http://catalog-b:8000', 'drifted': bool(drifted)}]})
         if path == '/diagnostics/trace':
             return httpx.Response(200, json={'request_ok': not self.drifted[node], 'spans': [], 'handler_ms': 2.0})
-        slow = self.busy[node] or (node == 'gateway-a' and path == '/summary' and self.busy['catalog-b'])
+        if path == '/diagnostics/network':
+            return httpx.Response(200, json={'available': True, 'qdiscs': [{'kind': 'netem', 'dev': 'eth0', 'root': True, 'delay_ms': 600.0}]
+                                             if self.delayed[node] else [{'kind': 'noqueue', 'dev': 'eth0', 'root': True, 'delay_ms': None}]})
+        slow = self.delayed[node] or self.busy[node] or (node.startswith('gateway') and path == '/summary' and (self.busy['catalog-b'] or self.delayed['catalog-b']))
         if slow and path in ('/live', '/summary'):
             time.sleep(0.06)  # above the test SLOW_MS
         if path == '/live':
@@ -68,12 +77,12 @@ class Fleet:
         if self.full[node]:
             return httpx.Response(507, json={'ok': False, 'errno': 'ENOSPC'})
         if self.drifted[node]:
-            return httpx.Response(503 if node == 'gateway-a' else 500, json={'ok': False, 'error': 'ConnectError' if node == 'gateway-a' else 'FileNotFoundError'})
-        if node == 'gateway-a' and self.drifted['catalog-b']:
+            return httpx.Response(503 if node.startswith('gateway') else 500, json={'ok': False, 'error': 'ConnectError' if node.startswith('gateway') else 'FileNotFoundError'})
+        if node.startswith('gateway') and self.drifted['catalog-b']:
             return httpx.Response(503, json={'ok': False, 'upstream_status': 500})
-        if node == 'gateway-a' and not self.running['catalog-b']:
+        if node.startswith('gateway') and not self.running['catalog-b']:
             return httpx.Response(503, json={'ok': False, 'dependency': 'catalog-b'})
-        if node == 'gateway-a' and self.full['catalog-b']:
+        if node.startswith('gateway') and self.full['catalog-b']:
             return httpx.Response(503, json={'ok': False, 'upstream_status': 507})
         return httpx.Response(200, json={'ok': True, 'dependency': 'catalog-b'})
 
@@ -109,7 +118,7 @@ def test_dependency_failure_and_verified_recovery(lab):
             await controller.cycle()
         assert controller.session['status'] == 'investigating'
         states = {n['id']: n['health'] for n in controller.state()['nodes']}
-        assert states == {'gateway-a': 'degraded', 'catalog-b': 'unavailable'}
+        assert states == {'gateway-a': 'degraded', 'catalog-b': 'unavailable', 'gateway-c': 'degraded'}
         assert controller.latest[('gateway-a', 'liveness')]['body']['ok']
         result = await controller.mutate('recover-001', 'catalog-b', 'start')
         assert result['status'] == 'succeeded'
@@ -121,9 +130,9 @@ def test_dependency_failure_and_verified_recovery(lab):
         await controller.cycle()
         assert controller.session['status'] == 'recovered'
         ids = controller.session['recovery_evidence_ids']
-        assert len(ids) == len(set(ids)) == 12
+        assert len(ids) == len(set(ids)) == 18
         records = controller.store.evidence_by_ids(controller.session['id'], ids)
-        assert len(records) == 12 and all(e['body']['ok'] for e in records)
+        assert len(records) == 18 and all(e['body']['ok'] for e in records)
     run(scenario())
 
 
@@ -322,7 +331,7 @@ def test_reset_preserves_verified_recovery_outcome(lab):
         assert controller.session['recovery_verified_at']==recovered_at
         assert controller.session['closure']=='operator_reset'
         assert controller.session['recovery_evidence_ids'] == recovered_ids
-        assert len(controller.session['reset_evidence_ids']) == 12
+        assert len(controller.session['reset_evidence_ids']) == 18
         assert set(recovered_ids).isdisjoint(controller.session['reset_evidence_ids'])
     run(scenario())
 
@@ -406,7 +415,7 @@ def test_cpu_starvation_is_slow_not_down_and_restore_recovers(lab):
         await baseline(controller)
         await controller.start(Start(mode='practice', kind='cpu-starvation', key='start-cpu'))
         assert fleet.busy['catalog-b'] and fleet.running['catalog-b']
-        assert await investigate(controller) == {'gateway-a': 'degraded', 'catalog-b': 'degraded'}
+        assert await investigate(controller) == {'gateway-a': 'degraded', 'catalog-b': 'degraded', 'gateway-c': 'degraded'}
         assert controller.latest[('catalog-b', 'liveness')]['body']['slow']
         evidence = await controller.check('catalog-b', 'resources')
         assert evidence['body']['cpu_pct_of_limit'] == 100.0
@@ -424,7 +433,7 @@ def test_disk_full_fails_writes_and_clear_recovers(lab):
         await baseline(controller)
         await controller.start(Start(mode='practice', kind='disk-full', target='gateway-a', key='start-disk'))
         assert fleet.full['gateway-a']
-        assert await investigate(controller) == {'gateway-a': 'degraded', 'catalog-b': 'healthy'}
+        assert await investigate(controller) == {'gateway-a': 'degraded', 'catalog-b': 'healthy', 'gateway-c': 'healthy'}
         assert controller.latest[('gateway-a', 'business')]['body']['http_status'] == 507
         disk = await controller.check('gateway-a', 'disk')
         assert disk['body']['result']['free_bytes'] == 0
@@ -441,7 +450,7 @@ def test_reset_reverses_non_stop_faults(lab):
         await controller.start(Start(mode='practice', kind='disk-full', key='start-disk-reset'))
         await controller.reset_locked('reset-disk')
         assert not fleet.full['catalog-b']
-        assert [r['verb'] for r in controller.session['reset']['results']] == ['start', 'start', 'clear']
+        assert [r['verb'] for r in controller.session['reset']['results']] == ['start', 'start', 'start', 'clear']
         for _ in range(3):
             await controller.cycle()
         assert controller.session['status'] == 'ended' and controller.session['outcome'] == 'reset'
@@ -452,7 +461,7 @@ def test_challenge_hides_fault_kind_and_target(lab):
     async def scenario():
         controller, _ = lab
         seen = set()
-        for attempt in range(40):
+        for attempt in range(60):
             await baseline(controller)
             await controller.start(Start(mode='challenge', key=f'challenge-kind-{attempt:03d}'))
             public = controller.state()
@@ -461,9 +470,9 @@ def test_challenge_hides_fault_kind_and_target(lab):
             await controller.reset_locked(f'reset-kind-{attempt:03d}')
             for _ in range(3):
                 await controller.cycle()
-            if len(seen) == 4:
+            if len(seen) == 5:
                 break
-        assert seen == {'service-unavailable', 'cpu-starvation', 'disk-full', 'config-drift'}
+        assert seen == {'service-unavailable', 'cpu-starvation', 'disk-full', 'config-drift', 'network-delay'}
     run(scenario())
 
 
@@ -504,7 +513,7 @@ def test_config_drift_looks_like_a_dependency_failure_until_config_is_read(lab):
         await baseline(controller)
         await controller.start(Start(mode='practice', kind='config-drift', target='gateway-a', key='start-drift'))
         assert fleet.drifted['gateway-a'] and fleet.running['gateway-a']
-        assert await investigate(controller) == {'gateway-a': 'degraded', 'catalog-b': 'healthy'}
+        assert await investigate(controller) == {'gateway-a': 'degraded', 'catalog-b': 'healthy', 'gateway-c': 'healthy'}
         config = await controller.check('gateway-a', 'config')
         assert config['body']['result']['drifted'] == ['upstream']
         trace = await controller.check('gateway-a', 'trace')
@@ -525,5 +534,91 @@ def test_reset_restores_drifted_config(lab):
         assert fleet.drifted['catalog-b']
         await controller.reset_locked('reset-drift')
         assert not fleet.drifted['catalog-b']
-        assert [r['verb'] for r in controller.session['reset']['results']] == ['start', 'start', 'restore']
+        assert [r['verb'] for r in controller.session['reset']['results']] == ['start', 'start', 'start', 'restore']
     run(scenario())
+
+
+class Writer:
+    def close(self):
+        pass
+
+    async def wait_closed(self):
+        pass
+
+
+def test_network_delay_is_slow_not_down_and_undelay_recovers(lab):
+    async def scenario():
+        controller, fleet = lab
+        async def connect(host, port):
+            return None, Writer()
+        controller.connect = connect
+        await baseline(controller)
+        await controller.start(Start(mode='practice', kind='network-delay', target='catalog-b', key='start-delay'))
+        assert fleet.delayed['catalog-b'] and fleet.running['catalog-b']
+        assert await investigate(controller) == {'gateway-a': 'degraded', 'catalog-b': 'degraded', 'gateway-c': 'degraded'}
+        network = await controller.check('catalog-b', 'network')
+        assert network['body']['ok'] and len(network['body']['connect_ms']) == 3
+        assert network['body']['result']['qdiscs'][0]['kind'] == 'netem'
+        assert (await controller.mutate('wrong-undelay', 'gateway-a', 'undelay'))['status'] == 'unchanged'
+        await verify(controller, 'undelay', 'catalog-b', 'undelay')
+        assert controller.session['status'] == 'recovered'
+        assert '600 ms delay' in controller.public_session(controller.session | {'revealed': True})['debrief']
+        await controller.reset_locked('reset-delay')
+        assert [r['verb'] for r in controller.session['reset']['results']] == ['start', 'start', 'start', 'undelay']
+    run(scenario())
+
+
+def test_unreachable_network_path_is_a_failed_check(lab):
+    async def scenario():
+        controller, _ = lab
+        async def refused(host, port):
+            raise ConnectionRefusedError
+        controller.connect = refused
+        evidence = await controller.check('catalog-b', 'network')
+        assert evidence['body']['ok'] is False and evidence['body']['error'] == 'ConnectionRefusedError'
+    run(scenario())
+
+
+def test_ai_context_never_contains_the_hidden_fault(lab):
+    async def scenario():
+        controller, _ = lab
+        await baseline(controller)
+        await controller.start(Start(mode='challenge', key='challenge-ai'))
+        await investigate(controller)
+        await controller.check('catalog-b', 'service')
+        context, ids = controller.ai_context()
+        text = json.dumps(context)
+        assert 'fault_kind' not in text and 'fault_target' not in text and context['scenario'] is None
+        assert context['evidence'] and all(len(e['id']) == 8 for e in context['evidence']) and len(ids) == len(context['evidence'])
+    run(scenario())
+
+
+def test_storage_pressure_pauses_collection_and_retention_recovers_it(tmp_path, monkeypatch):
+    """A real SQLite store driven past a lowered budget: collection pauses loudly, cleanup frees it, collection resumes."""
+    monkeypatch.setenv('AEGIS_FLEET_TOKEN', 'fleet-token')
+    monkeypatch.setenv('AEGIS_STORAGE_LIMIT_MIB', '1')
+    fleet = Fleet()
+    store = Store(tmp_path / 'lab.sqlite')
+    client = httpx.AsyncClient(transport=httpx.MockTransport(fleet.handle))
+    controller = Lab(store, client, resource_check=False)
+    async def scenario():
+        await controller.cycle()
+        two_days_ago = time.time() - 2 * 86400
+        while store.storage()['live_bytes'] < store.live_limit:
+            store.db.execute('INSERT INTO evidence VALUES (?,?,?,?,?,?)', (uuid.uuid4().hex, None, two_days_ago, 'gateway-a', 'logs', json.dumps({'ok': True, 'pad': 'x' * 20000})))
+            store.db.commit()
+        with pytest.raises(HTTPException) as cycle_error:
+            await controller.cycle()
+        assert cycle_error.value.status_code == 507
+        with pytest.raises(HTTPException) as check_error:
+            await controller.check('gateway-a', 'liveness')
+        assert check_error.value.status_code == 507 and 'Export evidence and run retention' in check_error.value.detail
+        assert store.prune()['evidence_removed'] > 0
+        assert store.storage()['live_bytes'] < store.live_limit
+        await controller.cycle()
+        assert controller.collector_error is None and time.time() - controller.last_cycle < 2
+    try:
+        run(scenario())
+    finally:
+        run(client.aclose())
+        store.db.close()

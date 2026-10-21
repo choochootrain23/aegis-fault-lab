@@ -20,38 +20,42 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from aegis.store import Store
 from aegis.guidance import explain, SLOW_MS
+from aegis.broker import DELAY_MS
+from aegis.investigator import Investigator, InvestigatorError, summarise
 from aegis.ownership import controller_ownership
 
-NODES = {'gateway-a': 'http://gateway-a:8000', 'catalog-b': 'http://catalog-b:8000'}
+NODES = {'gateway-a': 'http://gateway-a:8000', 'catalog-b': 'http://catalog-b:8000', 'gateway-c': 'http://gateway-c:8000'}
 CHECKS = {'liveness': '/live', 'readiness': '/ready', 'business': '/summary', 'logs': '/diagnostics/logs', 'disk': '/diagnostics/disk',
           'config': '/diagnostics/config', 'trace': '/diagnostics/trace'}
 BROKER_CHECKS = {'service': 'inspect', 'resources': 'resources'}
 TERMINAL = {'ended'}
 # Each fault kind: the injection verb and the remedy that reverses it.
 FAULTS = {'service-unavailable': ('stop', 'start'), 'cpu-starvation': ('burn', 'calm'), 'disk-full': ('fill', 'clear'),
-          'config-drift': ('drift', 'restore')}
+          'config-drift': ('drift', 'restore'), 'network-delay': ('delay', 'undelay')}
 REMEDIES = {remedy for _, remedy in FAULTS.values()}
 NODE_VERBS = {'fill', 'clear', 'burn', 'calm', 'drift', 'restore'}  # applied through the service's token-protected maintenance endpoint
 UNCHANGED = {'start': 'Already running; nothing changed', 'stop': 'Already stopped; nothing changed',
              'calm': 'No background job running; nothing changed', 'burn': 'A background job was already running; nothing changed',
              'clear': 'No filler file present; nothing changed', 'fill': 'Nothing changed',
-             'restore': 'Running config already matches the deployed settings; nothing changed', 'drift': 'Setting already overridden; nothing changed'}
+             'restore': 'Running config already matches the deployed settings; nothing changed', 'drift': 'Setting already overridden; nothing changed',
+             'undelay': 'No network delay present; nothing changed', 'delay': 'Network delay already present; nothing changed'}
 DEBRIEFS = {
-    'service-unavailable': 'The scenario requested stopping {target}. When that succeeds, its container state reads stopped and its own probes fail. When the catalogue stops, the gateway stays live but its business requests fail, so the failure spreads; when the gateway stops, the catalogue stays healthy, so it does not. Starting the stopped service restores the request path.',
-    'cpu-starvation': 'The scenario requested a runaway background job inside {target}. When that succeeds, the service keeps running and answering, but slowly: the job uses the container\'s whole 0.25-CPU limit, the kernel throttles it, and requests queue behind it, crossing the {slow} ms threshold. Its log records the job starting. A slow catalogue makes the gateway slow, and sometimes time out, too. Stopping the job returns normal latency.',
-    'disk-full': 'The scenario requested filling {target}\'s 8 MiB /tmp with one large file. When that succeeds, the process stays live, but every business request must write a small receipt, so writes fail with ENOSPC (HTTP 507). A full catalogue fails the gateway\'s requests too; a full gateway fails only its own. Disk usage shows 100% and the filler as the largest file. Clearing it restores writes.',
-    'config-drift': 'The scenario requested a bad runtime configuration reload on {target}. When that succeeds, the process stays live and its container keeps running, so liveness, container state, CPU and disk all look normal. On the gateway, the upstream address points at a port nothing listens on, so every business request fails to connect, which looks like a stopped catalogue until the catalogue is checked directly. On the catalogue, the data source points at a dataset that was never deployed, so its business requests fail with HTTP 500 and the gateway\'s fail with them. The running config shows the drifted setting next to its deployed value, and the log records the reload. Restoring the deployed config fixes it.',
+    'service-unavailable': 'The scenario requested stopping {target}. When that succeeds, its container state reads stopped and its own probes fail. When the catalogue stops, both gateways stay live but their business requests fail, so the failure spreads; when one gateway stops, the catalogue and the other gateway stay healthy, so it does not. Starting the stopped service restores the request path.',
+    'cpu-starvation': 'The scenario requested a runaway background job inside {target}. When that succeeds, the service keeps running and answering, but slowly: the job uses the container\'s whole 0.25-CPU limit, the kernel throttles it, and requests queue behind it, crossing the {slow} ms threshold. Its log records the job starting. A slow catalogue makes both gateways slow, and sometimes time out, too. Stopping the job returns normal latency.',
+    'disk-full': 'The scenario requested filling {target}\'s 8 MiB /tmp with one large file. When that succeeds, the process stays live, but every business request must write a small receipt, so writes fail with ENOSPC (HTTP 507). A full catalogue fails both gateways\' requests too; a full gateway fails only its own. Disk usage shows 100% and the filler as the largest file. Clearing it restores writes.',
+    'config-drift': 'The scenario requested a bad runtime configuration reload on {target}. When that succeeds, the process stays live and its container keeps running, so liveness, container state, CPU and disk all look normal. On a gateway, the upstream address points at a port nothing listens on, so every business request fails to connect, which looks like a stopped catalogue until the catalogue is checked directly. On the catalogue, the data source points at a dataset that was never deployed, so its business requests fail with HTTP 500 and both gateways\' fail with them. The running config shows the drifted setting next to its deployed value, and the log records the reload. Restoring the deployed config fixes it.',
+    'network-delay': 'The scenario requested a {delay} ms delay on all traffic leaving {target}, applied with a Linux netem queue inside its own network namespace. When that succeeds, the process stays live and its CPU and disk stay normal, but every reply and every new connection waits: its own checks turn slow, and requests that need a fresh connection can exceed the gateways\' 1-second upstream timeout. A delayed catalogue slows or fails both gateways; a delayed gateway affects only its own requests. The network path check shows TCP connections taking about {delay} ms and the netem queue itself, and a request trace shows a fast handler with the time spent outside it. Removing the delay, or restarting the container, restores normal latency.',
 }
 
 
 def debrief(s):
-    text = DEBRIEFS[s.get('fault_kind', 'service-unavailable')].format(target=s['fault_target'], slow=SLOW_MS)
+    text = DEBRIEFS[s.get('fault_kind', 'service-unavailable')].format(target=s['fault_target'], slow=SLOW_MS, delay=DELAY_MS)
     return (text + ' Injection outcome: ' + s.get('fault_action', {}).get('status', 'not recorded') + '. The action record explains the exercise but was not evidence available during the investigation. Other evidence-supported investigation orders are valid.')
 
 
-FaultKind = Literal['service-unavailable', 'cpu-starvation', 'disk-full', 'config-drift']
-NodeName = Literal['gateway-a', 'catalog-b']
-CheckKind = Literal['liveness', 'readiness', 'business', 'logs', 'service', 'resources', 'disk', 'config', 'trace']
+FaultKind = Literal['service-unavailable', 'cpu-starvation', 'disk-full', 'config-drift', 'network-delay']
+NodeName = Literal['gateway-a', 'catalog-b', 'gateway-c']
+CheckKind = Literal['liveness', 'readiness', 'business', 'logs', 'service', 'resources', 'disk', 'config', 'trace', 'network']
 
 
 class Input(BaseModel):
@@ -80,7 +84,7 @@ class Action(SessionInput):
 
 
 class Recover(Action):
-    verb: Literal['start', 'calm', 'clear', 'restore'] = 'start'
+    verb: Literal['start', 'calm', 'clear', 'restore', 'undelay'] = 'start'
 
 
 class Note(SessionInput):
@@ -93,6 +97,10 @@ class Help(SessionInput):
     level: Literal['evidence', 'hint', 'action']
 
 
+class Ask(SessionInput):
+    question: str = Field(default='', max_length=500)
+
+
 class Lab:
     def __init__(self, store, client, nodes=None, resource_check=True):
         self.store, self.client = store, client
@@ -101,6 +109,8 @@ class Lab:
         self.fleet_token = os.getenv('AEGIS_FLEET_TOKEN', '')
         self.broker_url = os.getenv('AEGIS_BROKER_URL', 'http://broker:8000')
         self.resource_check = resource_check
+        self.connect = asyncio.open_connection  # replaceable in tests, which have no real sockets
+        self.investigator = Investigator(client)
         self.lock = asyncio.Lock()
         self.latest = {}
         self.baseline = 0
@@ -135,7 +145,7 @@ class Lab:
         if memory < 1024 ** 3 or shutil.disk_usage(Path(os.getenv('AEGIS_STATE', 'state/lab.sqlite')).parent).free < 10 * 1024 ** 3:
             raise HTTPException(409, 'Insufficient memory or disk headroom for a fault/extension')
         db_size = self.store.storage()['live_bytes']
-        if db_size > 256 * 1024 ** 2:
+        if db_size > self.store.live_limit:
             raise HTTPException(409, 'Evidence storage budget reached; export and perform retention before continuing')
 
     async def broker(self, node, verb, generation=None):
@@ -152,7 +162,9 @@ class Lab:
             self.persistence_budget()
         started = time.monotonic()
         try:
-            if kind in BROKER_CHECKS:
+            if kind == 'network':
+                body = await self.network_path(node)
+            elif kind in BROKER_CHECKS:
                 body = {'ok': True, **await self.broker(node, BROKER_CHECKS[kind])}
                 body.pop('changed', None)
             else:
@@ -169,7 +181,7 @@ class Lab:
             if kind == 'trace' and isinstance(body.get('result'), dict) and body['result'].get('handler_ms') is not None:
                 # Time the request spent outside the handler: connection, queueing and scheduling under CPU pressure.
                 body['outside_handler_ms'] = round(max(0.0, body['duration_ms'] - body['result']['handler_ms']), 1)
-        except (httpx.HTTPError, ValueError, HTTPException) as error:
+        except (httpx.HTTPError, ValueError, HTTPException, OSError) as error:
             body = {'ok': False, 'error': type(error).__name__, 'detail': 'Check unavailable or failed',
                     'duration_ms': round((time.monotonic() - started) * 1000, 1)}
         body['origin'] = origin
@@ -182,6 +194,21 @@ class Lab:
         evidence = self.store.record(sid, node, kind, body)
         self.latest[(node, kind)] = evidence
         return evidence
+
+    async def network_path(self, node):
+        """Three timed TCP connections from the controller, plus the service's own queue settings."""
+        url = httpx.URL(self.nodes[node])
+        samples = []
+        for _ in range(3):
+            began = time.monotonic()
+            _, writer = await asyncio.wait_for(self.connect(url.host, url.port), 3)
+            samples.append(round((time.monotonic() - began) * 1000, 1))
+            writer.close()
+            with contextlib.suppress(OSError):
+                await writer.wait_closed()
+        response = await self.client.get(self.nodes[node] + '/diagnostics/network', timeout=3)
+        return {'ok': response.is_success, 'http_status': response.status_code, 'connect_ms': samples,
+                'median_connect_ms': sorted(samples)[1], 'result': response.json()}
 
     def persistence_budget(self):
         usage = self.store.storage()
@@ -250,7 +277,7 @@ class Lab:
             plan.append((session['fault_target'], remedy))
         return plan
 
-    def state(self):
+    def state_nodes(self):
         now = time.time()
         nodes = []
         for node in self.nodes:
@@ -260,15 +287,31 @@ class Lab:
             fast = fresh and not live['body'].get('slow') and not business['body'].get('slow')
             health = 'unknown' if not fresh else ('unavailable' if not live['body']['ok'] else
                                                   'healthy' if business['body']['ok'] and fast else 'degraded')
-            nodes.append({'id': node, 'role': 'gateway' if node == 'gateway-a' else 'catalogue', 'health': health,
+            nodes.append({'id': node, 'role': 'gateway' if node.startswith('gateway') else 'catalogue', 'health': health,
                           'live': live, 'business': business})
+        return nodes
+
+    def state(self):
+        now = time.time()
+        nodes = self.state_nodes()
         return {'nodes': nodes, 'session': self.public_session(), 'baseline_cycles': self.baseline, 'healthy_streak': self.successes,
                 'collector_error': self.collector_error, 'last_cycle': self.last_cycle,
                 'evidence': self.store.evidence(self.session['id'], 60) if self.session else self.store.baseline_evidence(),
-                'ai': {'available': False, 'reason': 'AI integration is a later milestone; manual investigation is fully available.'},
+                'ai': self.investigator.status(),
                 'now': now, 'history': [self.history_summary(s) for s in self.store.sessions()[:20]],
                 'storage': self.store.storage(),
                 'retention': {'raw_hours': 24, 'summary_days': 30, 'warning': 'Export supporting evidence before 24 hours. Older references may become unavailable.'}}
+
+    def ai_context(self):
+        """What the AI investigator may see: public session facts, node health and recent evidence summaries."""
+        public = self.public_session()
+        evidence = self.store.evidence(self.session['id'], 40)
+        nodes = [{'id': n['id'], 'role': n['role'], 'health': n['health']} for n in self.state_nodes()]
+        context = {'mode': public['mode'], 'status': public['status'], 'started_s_ago': round(time.time() - public['started_at']),
+                   'scenario': public.get('scenario'), 'slow_threshold_ms': SLOW_MS, 'nodes': nodes,
+                   'recovery_attempts': [{'node': a['node'], 'verb': a.get('verb'), 'status': a['status']} for a in public['recovery_attempts']],
+                   'evidence': [{**summarise(e), 'age_s': round(time.time() - e['at'])} for e in evidence]}
+        return context, [e['id'] for e in evidence]
 
     def history_summary(self, session):
         public = self.public_session(session)
@@ -592,6 +635,29 @@ async def help_request(data: Help):
         return {**guidance, 'evidence': lab.store.evidence_by_ids(lab.session['id'], guidance['evidence_ids'])}
 
 
+@app.post('/api/ai')
+async def ask_ai(data: Ask):
+    lab = app.state.lab
+    async with lab.lock:
+        active(data.session_id)
+        if not lab.investigator.status()['available']:
+            raise HTTPException(409, lab.investigator.status()['reason'])
+        if sum(1 for h in lab.session['help'] if h['level'] == 'ai') >= 30:
+            raise HTTPException(409, 'This investigation has reached its 30-question limit for the AI investigator')
+        context, ids = lab.ai_context()
+    # The model call happens outside the lock so health collection keeps running while it thinks.
+    try:
+        answer = await lab.investigator.ask(context, data.question, ids)
+    except InvestigatorError as error:
+        raise HTTPException(502, str(error)) from error
+    async with lab.lock:
+        active(data.session_id)
+        lab.session['help'].append({'at': time.time(), 'level': 'ai', 'question': data.question, 'evidence_ids': answer['evidence_ids'],
+                                    'message': answer['answer'], 'model': answer['model']})
+        lab.store.save(lab.session)
+        return {**answer, 'evidence': lab.store.evidence_by_ids(lab.session['id'], answer['evidence_ids'])}
+
+
 @app.get('/api/investigations/{session_id}')
 async def investigation(session_id: str):
     return app.state.lab.session_detail(session_id)
@@ -605,7 +671,7 @@ async def investigation_timeline(session_id: str):
 @app.get('/api/investigations/{session_id}/evidence')
 async def investigation_evidence(session_id: str, limit: int = Query(default=50, ge=1, le=100),
                                  before: str | None = Query(default=None, max_length=80),
-                                 node: Literal['gateway-a', 'catalog-b'] | None = None,
+                                 node: NodeName | None = None,
                                  kind: CheckKind | None = None):
     lab = app.state.lab
     lab.session_detail(session_id)

@@ -113,3 +113,78 @@ def test_replacement_during_operation_remains_uncertain():
             with pytest.raises(ValueError,match='replaced during'):
                 await Docker(client).operate(Operation(target='catalog-b',verb='stop',generation='old'))
     asyncio.run(exercise())
+
+
+def frame(text):
+    data = text.encode()
+    return b'\x01\x00\x00\x00' + len(data).to_bytes(4, 'big') + data
+
+
+def network_docker(inspected, qdisc, calls, created):
+    """Fake Docker whose short-lived helpers run tc against a pretend queue discipline."""
+    state = {'qdisc': qdisc, 'argv': None}
+    def transport(request):
+        calls.append(request)
+        path = request.url.path
+        if path.endswith('/containers/json'):
+            return httpx.Response(200, json=[{'Id': inspected['Id']}])
+        if path.endswith('/containers/create'):
+            body = json.loads(request.content)
+            created.append(body)
+            state['argv'] = body['Cmd'][1:]
+            return httpx.Response(201, json={'Id': 'h' * 64})
+        if path.endswith('/start'):
+            return httpx.Response(204)
+        if path.endswith('/wait'):
+            argv = state['argv']
+            if argv[:2] == ['qdisc', 'add']:
+                state['qdisc'] = 'qdisc netem 8001: root refcnt 2 limit 1000 delay 600ms\n'
+            elif argv[:2] == ['qdisc', 'del']:
+                state['qdisc'] = 'qdisc noqueue 0: root refcnt 2\n'
+            return httpx.Response(200, json={'StatusCode': 0})
+        if path.endswith('/logs'):
+            return httpx.Response(200, content=frame(state['qdisc'] if state['argv'][:2] == ['qdisc', 'show'] else ''))
+        if request.method == 'DELETE':
+            return httpx.Response(204)
+        return httpx.Response(200, json=copy.deepcopy(inspected))
+    return transport, state
+
+
+def run_network(verb, qdisc):
+    async def exercise():
+        inspected = target(); inspected.update(Id='a' * 64, State={'Running': True, 'Status': 'running', 'ExitCode': 0})
+        calls, created = [], []
+        transport, state = network_docker(inspected, qdisc, calls, created)
+        async with httpx.AsyncClient(transport=httpx.MockTransport(transport), base_url='http://docker') as client:
+            result = await Docker(client).operate(Operation(target='catalog-b', verb=verb, generation='a' * 64))
+        return result, state, calls, created
+    return asyncio.run(exercise())
+
+
+def test_delay_adds_a_fixed_netem_queue_through_a_minimal_helper():
+    result, state, calls, created = run_network('delay', 'qdisc noqueue 0: root refcnt 2\n')
+    assert result['changed'] is True and 'delay 600ms' in state['qdisc']
+    assert [c['Cmd'] for c in created] == [['tc', 'qdisc', 'show', 'dev', 'eth0'], ['tc', 'qdisc', 'add', 'dev', 'eth0', 'root', 'netem', 'delay', '600ms']]
+    for config in created:
+        host = config['HostConfig']
+        assert host['NetworkMode'] == 'container:' + 'a' * 64 and host['CapAdd'] == ['NET_ADMIN'] and host['CapDrop'] == ['ALL']
+        assert host['ReadonlyRootfs'] and 'Binds' not in host and 'Mounts' not in host and config['Image'] == PROJECT + ':local'
+    # Every helper is removed again.
+    assert sum(1 for r in calls if r.method == 'DELETE') == len(created)
+
+
+def test_delay_and_undelay_report_unchanged_when_nothing_to_do():
+    assert run_network('delay', 'qdisc netem 8001: root refcnt 2 limit 1000 delay 600ms\n')[0]['changed'] is False
+    assert run_network('undelay', 'qdisc noqueue 0: root refcnt 2\n')[0]['changed'] is False
+
+
+def test_undelay_removes_only_the_fault_queue():
+    result, state, _, created = run_network('undelay', 'qdisc netem 8001: root refcnt 2 limit 1000 delay 600ms\n')
+    assert result['changed'] is True and state['qdisc'].startswith('qdisc noqueue')
+    assert created[-1]['Cmd'] == ['tc', 'qdisc', 'del', 'dev', 'eth0', 'root']
+
+
+def test_foreign_queue_disciplines_are_never_touched():
+    for verb, qdisc in (('delay', 'qdisc fq_codel 0: root refcnt 2\n'), ('undelay', 'qdisc netem 8001: root refcnt 2 delay 50ms\n')):
+        with pytest.raises(ValueError):
+            run_network(verb, qdisc)

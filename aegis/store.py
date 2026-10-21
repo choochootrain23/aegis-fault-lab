@@ -1,5 +1,6 @@
 """Durable evidence and workflow ledger with bounded queries and retention."""
 import json
+import os
 import sqlite3
 import time
 import uuid
@@ -8,6 +9,8 @@ from pathlib import Path
 
 class Store:
     def __init__(self, path):
+        # Evidence storage budget; lowered only to exercise storage pressure in tests.
+        self.live_limit = int(os.getenv('AEGIS_STORAGE_LIMIT_MIB', '256')) * 1024**2
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(path, check_same_thread=False)
@@ -132,7 +135,7 @@ class Store:
         wal = Path(str(self.path) + '-wal')
         return {'live_bytes': (count-free)*page, 'allocated_bytes': count*page,
                 'wal_bytes': wal.stat().st_size if wal.exists() else 0,
-                'live_limit_bytes': 256*1024**2, 'wal_limit_bytes': 128*1024**2}
+                'live_limit_bytes': self.live_limit, 'wal_limit_bytes': 128*1024**2}
 
     def prune(self, now=None, batch_size=1000):
         now = time.time() if now is None else now

@@ -3,10 +3,11 @@
 // investigation's real observations, with a crosshair and a play/scrub replay cursor.
 globalThis.AegisReport = (() => {
 const SVG = 'http://www.w3.org/2000/svg';
-// Series colours: validated default palette slots 1-2; failures use the reserved status red.
-const SERIES = [{node:'gateway-a', label:'gateway-a business', colour:'#2a78d6'}, {node:'catalog-b', label:'catalog-b business', colour:'#eb6834'}];
+// Series colours: validated default palette slots 1-3 (all-pairs CVD safe); failures use the reserved status red.
+const SERIES = [{node:'gateway-a', label:'gateway-a business', colour:'#2a78d6'}, {node:'catalog-b', label:'catalog-b business', colour:'#eb6834'},
+  {node:'gateway-c', label:'gateway-c business', colour:'#1baf7a'}];
 const FAIL = '#d93025';
-const H = 300, M = {top:52, right:18, bottom:34, left:76}, LANE = 14;
+const H = 316, M = {top:66, right:18, bottom:34, left:76}, LANE = 14;
 const el = (tag, attrs = {}, text) => { const node = document.createElement(tag); for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v); if (text != null) node.textContent = text; return node; };
 const svg = (tag, attrs = {}, text) => { const node = document.createElementNS(SVG, tag); for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v); if (text != null) node.textContent = text; return node; };
 const seconds = s => s == null ? '—' : s < 60 ? `${s.toFixed(1)} s` : `${Math.floor(s / 60)} min ${Math.round(s % 60)} s`;
@@ -79,7 +80,7 @@ function chart(timeline, width) {
     root.append(g);
   });
   const cursor = svg('line', {y1:4, y2:H - M.bottom, class:'cursor', visibility:'hidden'});
-  const hit = svg('rect', {x:M.left, y:0, width:plotW, height:H - M.bottom, class:'hit', tabindex:'0', 'aria-label':'Chart area. Use left and right arrow keys to move through time.'});
+  const hit = svg('rect', {x:M.left, y:0, width:plotW, height:H - M.bottom, class:'hit', tabindex:'0', role:'group', 'aria-label':'Chart area. Use left and right arrow keys to move through time.'});
   root.append(cursor, hit);
   return {root, cursor, hit, x, t0, t1, points, failures, plotW};
 }
