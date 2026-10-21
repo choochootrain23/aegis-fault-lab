@@ -84,10 +84,21 @@ Reports are under ignored `state/validation/`. The app is running at http://loca
 - Portfolio: [interview walkthrough](interview-walkthrough.md), two [example incident exports](examples/) from real challenge runs (one with real AI answers), and `scripts/record_demo.py`, which records a captioned simulator demo.
 - Interface motion: the suggested-next card breathes in its tone colour, with a light running down its bar and a comet circling it when an action is suggested; Start investigation carries a rotating ring of the signature colours; failing services ping on the live map; the AI shows a flowing line while it thinks. Everything stops under reduced motion.
 
+## Tenth checkpoint (22 October 2026)
+
+- **Sixth fault: packet loss.** The broker's helper applies a fixed `netem loss 50%` (exaggerated from real-world 1–2% so it shows within a minute). Requests are intermittently late or time out while nothing is down. **Network path** now reports the loss setting and each service's TCP retransmissions since the previous check, and records a connection attempt that outlasts its 3-second limit as a measurement instead of failing the check (found on the real lab: at 50% loss, the check that reveals the fault was itself failing over half the time). Each network remedy leaves the other fault's queue alone and reports *unchanged*. Remedy: **Remove packet loss**.
+- **Seventh fault: quota set to zero**, inspired by public reports of the December 2020 Google authentication outage. The catalogue enforces per-caller quotas, which come from a quota system rather than its config; the fault pushes 0 for both gateways. The controller's probes are not limited, so the catalogue stays green while every gateway request gets HTTP 429. A new **Traffic & quotas** check shows requests, rejections and quotas per caller. This fault only targets the catalogue, and the scenario picker enforces that. Remedy: **Reset client quotas**.
+- **Detection and verification for intermittent faults.** An investigation opens when three of the last five cycles fail (it needed three in a row). Once failures have come and gone twice, recovery needs ten consecutive healthy cycles instead of three, shown on the verification meter, so a lucky healthy run cannot pass a wrong fix.
+- Guidance: HTTP 429 from the catalogue points at its traffic and quotas; a timeout beside a fast catalogue points at the network path; action guidance cites a loss queue or a zero quota. The AI investigator's prompt and evidence summaries include both faults.
+- Simulator: packet loss is calibrated from real measurements (about 280 checks per path at 50% loss), and the quota fault, traffic counts and flapping rules mirror the controller.
+- Interface: the evidence notebook shows a **Live** or **Paused** state, a **Cite** column and the list of cited records in the diagnosis; help answers say which kind they are and offer the next check inline; the AI investigator is a card.
+- The planned scenarios are in the [scenario roadmap](scenario-roadmap.md).
+
 ## Next work
 
-1. Screen-reader review.
-2. Runs measured in days; AI evaluation with other models and question wording.
+1. Roadmap step 2: a bad release on one gateway and a memory leak, with Release history and Memory & restarts checks.
+2. AI evaluation covering packet loss and quotas, and with other models.
+3. Screen-reader review; runs measured in days.
 
 ## Boundaries preserved
 

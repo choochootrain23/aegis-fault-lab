@@ -18,6 +18,7 @@ const NARROW = {'gateway-a':[.26,.3], 'gateway-c':[.74,.3], 'catalog-b':[.5,.67]
 const DEFAULT = () => (map.clientWidth && map.clientWidth < 560 ? NARROW : WIDE);
 const STORE = 'aegis-topology-3';  // layouts saved for the two-service map no longer fit
 const SVG = 'http://www.w3.org/2000/svg';
+const BROKER_VERBS = ['start', 'reset', 'undelay', 'undrop'];  // remedies the broker carries out, rather than a service's maintenance endpoint
 const map = document.getElementById('topology');
 const svg = document.getElementById('graph-edges');
 const tags = document.getElementById('graph-tags');
@@ -218,15 +219,15 @@ function update(state) {
   for (const edge of EDGES.filter(e => e.kind !== 'dependency')) {
     if (edge.kind === 'check') {
       const health = byId[edge.node]?.health;
-      // Job, disk and config remedies travel from the controller to the service's maintenance endpoint.
-      const verb = !['start', 'reset', 'undelay'].includes(recent[edge.node]) && recent[edge.node];
+      // Job, disk, config and quota remedies travel from the controller to the service's maintenance endpoint.
+      const verb = !BROKER_VERBS.includes(recent[edge.node]) && recent[edge.node];
       tone(edge, verb ? 'active' : TONE[health] || '');
       edge.tag.textContent = verb ? `${verb} sent` : health && health !== 'unknown' ? `checks · ${health}` : 'checks · unknown';
       setFlow(edge, health && health !== 'unknown' ? 'flow' : 'off', TONE[health]);
     } else {
-      const verb = ['start', 'reset', 'undelay'].includes(recent[edge.node]) && recent[edge.node];
+      const verb = BROKER_VERBS.includes(recent[edge.node]) && recent[edge.node];
       tone(edge, verb ? 'active' : '');
-      edge.tag.textContent = verb ? `${verb} sent` : 'inspect · start · stop · delay';
+      edge.tag.textContent = verb ? `${verb} sent` : 'inspect · start · stop · delay · drop';
     }
   }
 }

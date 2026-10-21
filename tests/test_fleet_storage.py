@@ -16,6 +16,8 @@ def service(tmp_path, monkeypatch):
     monkeypatch.setattr(fleet, 'FLEET_TOKEN', 'fleet-token')
     fleet.LOGS.clear()
     fleet.config.update(fleet.DEPLOYED)
+    fleet.quota.update(fleet.QUOTA_DEPLOYED)
+    fleet.TRAFFIC.clear()
 
     async def call(method, path, **kwargs):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=fleet.app), base_url='http://catalog-b') as client:
@@ -105,3 +107,49 @@ def test_trace_times_each_step_of_a_healthy_request(service):
     assert trace['request_ok'] is True and trace['failed_at'] is None
     assert [s['name'] for s in trace['spans']] == ['catalogue load', 'receipt write']
     assert all(s['ms'] >= 0 and s['start_ms'] >= 0 for s in trace['spans'])
+
+
+def test_zero_quota_refuses_gateways_but_not_unlimited_callers(service):
+    gateway = {'X-Aegis-Client': 'gateway-a'}
+    assert service('GET', '/catalog', headers=gateway).status_code == 200
+    assert service('POST', '/maintenance/squeeze').status_code == 403
+    assert service('POST', '/maintenance/squeeze', headers=TOKEN).json()['changed'] is True
+    assert service('POST', '/maintenance/squeeze', headers=TOKEN).json()['changed'] is False
+    refused = service('GET', '/catalog', headers=gateway)
+    assert refused.status_code == 429 and refused.json()['error'] == 'QuotaExceeded' and refused.json()['limit_rps'] == 0
+    # The controller's probes have no quota, so the catalogue's own checks stay green.
+    assert service('GET', '/summary', headers={'X-Aegis-Client': 'controller'}).status_code == 200
+    report = service('GET', '/diagnostics/traffic').json()
+    assert {q['client']: q['limit_rps'] for q in report['quotas']} == {'gateway-a': 0, 'gateway-c': 0}
+    assert report['quota_source']['pushed_by'] == 'quota-manager'
+    callers = {c['client']: c for c in report['clients']}
+    assert callers['gateway-a']['requests'] == 2 and callers['gateway-a']['rejected'] == 1 and callers['controller']['rejected'] == 0
+    # The quota is not part of the service's own config, so restoring config cannot fix it.
+    assert service('GET', '/diagnostics/config').json()['drifted'] == []
+    assert service('POST', '/maintenance/restore', headers=TOKEN).json()['changed'] is False
+    assert any(e.get('event') == 'quota policy updated' for e in fleet.LOGS)
+    assert service('POST', '/maintenance/requota', headers=TOKEN).json() == {'changed': True, 'restored': ['gateway-a', 'gateway-c']}
+    assert service('POST', '/maintenance/requota', headers=TOKEN).json()['changed'] is False
+    assert service('GET', '/catalog', headers=gateway).status_code == 200
+
+
+def test_quota_limits_accepted_requests_per_second(service, monkeypatch):
+    monkeypatch.setitem(fleet.quota, 'gateway-c', 2)
+    codes = [service('GET', '/catalog', headers={'X-Aegis-Client': 'gateway-c'}).status_code for _ in range(4)]
+    assert codes == [200, 200, 429, 429]
+
+
+def test_network_report_reads_loss_and_retransmissions(service, monkeypatch):
+    class Shown:
+        returncode, stderr = 0, ''
+        stdout = 'qdisc netem 8003: dev eth0 root refcnt 2 limit 1000 loss 40% seed 1277\nqdisc noqueue 0: dev lo root refcnt 2\n'
+    monkeypatch.setattr(fleet.subprocess, 'run', lambda *a, **k: Shown)
+    readings = iter([{'at': 10.0, 'OutSegs': 1000, 'RetransSegs': 100}, {'at': 15.0, 'OutSegs': 1400, 'RetransSegs': 200}])
+    monkeypatch.setattr(fleet, 'tcp_counters', lambda: next(readings))
+    monkeypatch.setattr(fleet, 'tcp_last', None)
+    first = service('GET', '/diagnostics/network').json()
+    assert first['qdiscs'] == [{'kind': 'netem', 'dev': 'eth0', 'root': True, 'delay_ms': None, 'loss_pct': 40.0,
+                                'line': 'qdisc netem 8003: dev eth0 root refcnt 2 limit 1000 loss 40% seed 1277'}]
+    assert first['tcp']['since'] == 'process start' and first['tcp']['retrans_pct'] == 10.0
+    second = service('GET', '/diagnostics/network').json()['tcp']
+    assert second == {'available': True, 'since': 'previous network check', 'interval_s': 5.0, 'out_segs': 400, 'retrans_segs': 100, 'retrans_pct': 25.0}

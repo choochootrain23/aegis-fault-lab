@@ -582,6 +582,9 @@ kbd{display:inline-block;min-width:24px;padding:4px 6px;border:1px solid var(--l
 @media(max-width:600px){.topology{height:760px}.topology-tools{bottom:8px}.edge-tag.check,.edge-tag.control{display:none}}
 .check-icon.indigo{background:#3f51b5}
 .remedies .remedy-undelay:not(:disabled){background:#3f51b5;border-color:#3f51b5;box-shadow:5px 5px 0 rgba(63,81,181,.22)}
+.remedies .remedy-undrop:not(:disabled){background:#5b3fb5;border-color:#5b3fb5;box-shadow:5px 5px 0 rgba(91,63,181,.22)}
+.remedies .remedy-requota:not(:disabled){background:#8a5a00;border-color:#8a5a00;box-shadow:5px 5px 0 rgba(176,96,0,.22)}
+.check-icon.amber{background:#b06000}
 /* The side panel is narrow: the question gets the full width and Ask sits underneath it. */
 .ai-form{display:flex;flex-direction:column;gap:8px;margin-top:8px}
 .ai-form .ai-ask{align-self:flex-end}
@@ -634,3 +637,32 @@ kbd{display:inline-block;min-width:24px;padding:4px 6px;border:1px solid var(--l
 
 @media(prefers-reduced-motion:reduce){.next-step::after{display:none}}
 .nobreak{white-space:nowrap}
+
+/* Citing evidence draws the eye to the diagnosis it will support: a ring of the signature colours circles the
+   section, its ground breathes a warm tint, and the count pops on each new citation. */
+.diagnosis.citing{animation:cite-breathe 3.2s ease-in-out infinite}
+.diagnosis.citing::after{content:'';position:absolute;inset:0;padding:4px;pointer-events:none;z-index:2;-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask:linear-gradient(#000 0 0) content-box exclude,linear-gradient(#000 0 0);background:conic-gradient(from var(--spin),var(--yellow),var(--orange),var(--pink),var(--violet),var(--accent),var(--ok),var(--yellow));animation:spin 3.6s linear infinite}
+.diagnosis.citing #selected-count{background:var(--yellow);border-color:var(--ink);color:var(--ink);font-weight:700}
+.diagnosis.cite-ping #selected-count{animation:count-pop .55s cubic-bezier(.3,1.6,.5,1)}
+.diagnosis.citing .cited-chip{border-color:color-mix(in srgb,var(--orange) 55%,var(--line));background:color-mix(in srgb,var(--yellow) 18%,var(--sheet))}
+@keyframes cite-breathe{50%{background:color-mix(in srgb,var(--yellow) 13%,var(--bg))}}
+@keyframes count-pop{40%{transform:scale(1.28)}}
+
+/* Everything clickable announces itself. At rest: a pointer and a colour cue on its marker. On hover or keyboard
+   focus: a ring cycling through the signature colours. Full-width rows draw it inside their edges, because their
+   panels clip anything outside. Under reduced motion the ring stays, in one colour. */
+:is(button,a[href],summary,select,input[type=checkbox],[tabindex="0"]):not(:disabled){cursor:pointer}
+:is(button,a[href],summary,select,input[type=checkbox],[tabindex="0"]):not(:disabled):is(:hover,:focus-visible){outline:3px solid var(--accent);outline-offset:3px;animation:click-ring 1.8s linear infinite}
+:is(.checks button,.help-options button,.evidence-row summary,.archive-record summary,.ai-panel summary,.nav-links a):not(:disabled):is(:hover,:focus-visible){outline-offset:-3px}
+.evidence-row summary,.archive-record summary{border-radius:2px}
+.evidence-row summary::before{color:var(--accent);font-weight:700}
+.checks button>span:last-child,.help-options b{color:var(--accent);font-weight:700}
+.evidence-row input{cursor:pointer}
+@keyframes click-ring{0%,100%{outline-color:var(--yellow)}20%{outline-color:var(--orange)}40%{outline-color:var(--pink)}60%{outline-color:var(--violet)}80%{outline-color:var(--accent)}}
+.help-options button:is(:hover,:focus-visible):not(:disabled) b{color:inherit}
+
+/* A section reached from the top bar glows once in its own colour: visible, not loud. */
+.history-grid{--section:var(--orange)}
+.arrived{animation:arrive 2.4s ease-in-out .3s}
+.diagnosis.citing.arrived{animation:arrive 2.4s ease-in-out .3s,cite-breathe 3.2s ease-in-out infinite}
+@keyframes arrive{35%{box-shadow:inset 0 0 0 3px color-mix(in srgb,var(--section,var(--accent)) 60%,transparent),inset 0 0 70px color-mix(in srgb,var(--section,var(--accent)) 18%,transparent)}}

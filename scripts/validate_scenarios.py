@@ -21,20 +21,31 @@ ROOT = Path(__file__).resolve().parents[1]
 NODES = ('gateway-a', 'catalog-b', 'gateway-c')
 # A different node to try a wrong remedy on.
 OTHER = {'gateway-a': 'catalog-b', 'catalog-b': 'gateway-c', 'gateway-c': 'gateway-a'}
-KINDS = ('service-unavailable', 'cpu-starvation', 'disk-full', 'config-drift', 'network-delay')
-REMEDY = {'service-unavailable': 'start', 'cpu-starvation': 'calm', 'disk-full': 'clear', 'config-drift': 'restore', 'network-delay': 'undelay'}
+KINDS = ('service-unavailable', 'cpu-starvation', 'disk-full', 'config-drift', 'network-delay', 'packet-loss', 'quota-zero')
+REMEDY = {'service-unavailable': 'start', 'cpu-starvation': 'calm', 'disk-full': 'clear', 'config-drift': 'restore', 'network-delay': 'undelay',
+          'packet-loss': 'undrop', 'quota-zero': 'requota'}
+TARGETS = {'quota-zero': ('catalog-b',)}  # faults that only exist on some services
+# The fix for the fault each one is most easily mistaken for: it must change nothing.
+LOOKALIKE = {'packet-loss': 'undelay', 'network-delay': 'undrop', 'quota-zero': 'restore'}
+INTERMITTENT = ('cpu-starvation', 'packet-loss')  # effects that come and go from one cycle to the next
 
 
 def expected(kind, target):
     """Usual health right after detection. A catalogue fault reaches both gateways (through failure or
     slowness); a gateway fault stays on that gateway."""
+    if kind == 'quota-zero':  # the catalogue refuses its callers but answers its own probes
+        return {n: 'healthy' if n == target else 'degraded' for n in NODES}
     if target == 'catalog-b':
         return {n: 'unavailable' if n == target and kind == 'service-unavailable' else 'degraded' for n in NODES}
     return {n: ('unavailable' if kind == 'service-unavailable' else 'degraded') if n == target else 'healthy' for n in NODES}
 
 
 def check(operator, node, kind):
-    return operator.request('/api/check', {'node': node, 'kind': kind})
+    """Run one check; a failed inspection is run once more, as a learner would when a lossy reply times out."""
+    result = operator.request('/api/check', {'node': node, 'kind': kind})
+    if not result['body'].get('ok') and kind not in ('liveness', 'readiness', 'business'):
+        result = operator.request('/api/check', {'node': node, 'kind': kind})
+    return result
 
 
 def export(sid):
@@ -69,8 +80,9 @@ def anomalies(operator):
     """Inspect every node five ways and report what the evidence shows, without the fault record."""
     found, evidence = [], {}
     for node in NODES:
-        service, resources, disk, config, network = (check(operator, node, k) for k in ('service', 'resources', 'disk', 'config', 'network'))
-        evidence[node] = {'service': service, 'resources': resources, 'disk': disk, 'config': config, 'network': network}
+        service, resources, disk, config, network, traffic = (check(operator, node, k) for k in ('service', 'resources', 'disk', 'config', 'network', 'traffic'))
+        evidence[node] = {'service': service, 'resources': resources, 'disk': disk, 'config': config, 'network': network, 'traffic': traffic}
+        queues = network['body']['result'].get('qdiscs', []) if network['body'].get('ok') else []
         if service['body'].get('running') is False:
             found.append(('service-unavailable', node, service))
         elif (resources['body'].get('cpu_pct_of_limit') or 0) >= 80:
@@ -79,8 +91,12 @@ def anomalies(operator):
             found.append(('disk-full', node, disk))
         elif config['body'].get('ok') and config['body']['result']['drifted']:
             found.append(('config-drift', node, config))
-        elif network['body'].get('ok') and any(q['kind'] == 'netem' for q in network['body']['result'].get('qdiscs', [])):
+        elif any(q['kind'] == 'netem' and q.get('loss_pct') for q in queues):
+            found.append(('packet-loss', node, network))
+        elif any(q['kind'] == 'netem' for q in queues):
             found.append(('network-delay', node, network))
+        elif traffic['body'].get('ok') and any(q['limit_rps'] == 0 for q in traffic['body']['result'].get('quotas', [])):
+            found.append(('quota-zero', node, traffic))
     return found, evidence
 
 
@@ -93,7 +109,7 @@ def diagnose(operator, sid, state, mode):
     kind, target, inspection = found[0]
     # Health is a per-cycle sample and CPU starvation is statistical, so judge the usual reading over several cycles.
     samples = []
-    for _ in range(5):
+    for _ in range(10 if kind == 'packet-loss' else 5):  # about half of a lossy fleet's cycles fail, so take more samples
         samples.append({n['id']: n['health'] for n in operator.request('/api/state')['nodes']})
         time.sleep(2)
     # A healthy node must read healthy most of the time; an affected node must show its effect in at least two of
@@ -104,9 +120,9 @@ def diagnose(operator, sid, state, mode):
         readings = Counter(sample[node] for sample in samples)
         if want[node] == 'healthy':
             ok = readings.most_common(1)[0][0] == 'healthy'
-        elif kind == 'cpu-starvation':
-            # Starvation slows whichever request lands on a throttled period: in a given cycle that may be the
-            # catalogue's own probe or only the gateways' calls through it. Judge the affected group as a whole.
+        elif kind in INTERMITTENT:
+            # Starvation slows, and packet loss delays or fails, whichever request it lands on: in a given cycle that
+            # may be the catalogue's own probe or only the gateways' calls through it. Judge the affected group as a whole.
             ok = sum(any(sample[n] == 'degraded' for n in affected) for sample in samples) >= 2
         else:
             ok = readings[want[node]] >= 2
@@ -116,7 +132,9 @@ def diagnose(operator, sid, state, mode):
     # CPU starvation is statistical: judge the recent gateway requests, not one sample.
     recent = [e for e in operator.request('/api/state')['evidence'] if e['node'] == watched and e['kind'] == 'business'][:10]
     affected = sum(1 for e in recent if e['body']['ok'] is False or e['body'].get('slow'))
-    ensure(affected >= len(recent) // 2, f'gateway business requests should mostly fail or be slow; {affected}/{len(recent)} were affected')
+    # Packet loss leaves most requests working, which is the point; the others mostly fail or are slow.
+    floor = len(recent) // 5 if kind == 'packet-loss' else len(recent) // 2
+    ensure(affected >= floor, f'gateway business requests should be affected; {affected}/{len(recent)} were')
     action = operator.request('/api/help', {'session_id': sid, 'level': 'action'})
     ensure(target in action['message'] and inspection['id'] in action['evidence_ids'], f'action guidance did not cite the {kind} evidence: {action["message"]}')
     note = operator.request('/api/note', {'session_id': sid, 'explanation': f'{kind} on {target}, from inspections.',
@@ -127,7 +145,7 @@ def diagnose(operator, sid, state, mode):
 
 def recover(operator, sid, kind, target):
     # A wrong node, and (while the target still runs) a wrong kind of remedy, must both change nothing.
-    wrong = [(OTHER[target], REMEDY[kind])] + ([(target, 'start')] if kind != 'service-unavailable' else [])
+    wrong = [(OTHER[target], REMEDY[kind])] + ([(target, 'start')] if kind != 'service-unavailable' else []) + ([(target, LOOKALIKE[kind])] if kind in LOOKALIKE else [])
     for node, verb in wrong:
         wrong = operator.action('recover', sid, node=node, verb=verb)
         ensure(wrong['status'] == 'unchanged', f'{verb} on {node} should change nothing, got {wrong["status"]}')
@@ -138,6 +156,8 @@ def recover(operator, sid, kind, target):
     ensure(right['status'] == 'succeeded', f'{REMEDY[kind]} on {target} not confirmed: {right}')
     state = operator.wait(lambda s: s['session']['status'] == 'recovered', 'verified recovery', sid=sid)
     ensure(len(state['session']['recovery_evidence_ids']) == 6 * len(NODES), 'recovery should cite three cycles of every node')
+    flapping = state['session'].get('flaps', 0) >= 2
+    ensure(state['session'].get('required_streak', 3) == (10 if flapping else 3), 'ten healthy cycles are required exactly when failures came and went twice')
     return round(time.monotonic() - began, 2)
 
 
@@ -157,8 +177,14 @@ def close(operator, sid, cited, mode):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--run', action='store_true', help='Authorize stopping and starting the two project services')
-    if not parser.parse_args().run:
+    parser.add_argument('--kinds', help='Comma-separated fault kinds to run in practice only, skipping the challenge rounds')
+    parser.add_argument('--challenge', action='store_true', help='With --kinds, still run the challenge rounds over every fault')
+    args = parser.parse_args()
+    if not args.run:
         parser.error('--run is required; this interrupts project services')
+    kinds = tuple(args.kinds.split(',')) if args.kinds else KINDS
+    if not set(kinds) <= set(KINDS):
+        parser.error('unknown fault kind in --kinds')
     operator = Operator()
     state = operator.request('/api/state')
     if state['session'] and state['session']['status'] != 'ended':
@@ -166,8 +192,8 @@ def main():
     report = {'started_at': datetime.now(timezone.utc).isoformat(), 'rounds': [], 'passed': False}
     sid = None
     try:
-        for kind in KINDS:
-            for target in NODES:
+        for kind in kinds:
+            for target in TARGETS.get(kind, NODES):
                 sid, state, detect = start(operator, 'practice', target, kind)
                 ensure(state['session']['scenario'] == {'kind': kind, 'target': target}, 'practice scenario not shown')
                 found_kind, found, cited = diagnose(operator, sid, state, 'practice')
@@ -178,7 +204,8 @@ def main():
                 print(f'practice {kind} {target}: detect {detect}s, recovery {recovery}s, {ended["outcome"]}', flush=True)
                 sid = None
         kinds_seen, targets_seen = set(), set()
-        for attempt in range(48):
+        challenge = not args.kinds or args.challenge
+        for attempt in range(64 if challenge else 0):
             if kinds_seen == set(KINDS) and targets_seen == set(NODES):
                 break
             sid, state, detect = start(operator, 'challenge')
@@ -190,7 +217,7 @@ def main():
             report['rounds'].append({'mode': 'challenge', 'kind': kind, 'target': found, 'detect_s': detect, 'recovery_s': recovery, 'outcome': ended['outcome']})
             print(f'challenge {kind} {found}: detect {detect}s, recovery {recovery}s', flush=True)
             sid = None
-        ensure(kinds_seen == set(KINDS) and targets_seen == set(NODES), f'challenge only selected {kinds_seen} on {targets_seen}')
+        ensure(not challenge or (kinds_seen == set(KINDS) and targets_seen == set(NODES)), f'challenge only selected {kinds_seen} on {targets_seen}')
         # Reset without any recovery closes as a reset, not a recovery.
         sid, state, detect = start(operator, 'practice', 'catalog-b')
         operator.action('reset', sid)

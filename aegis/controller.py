@@ -8,6 +8,7 @@ import secrets
 import shutil
 import time
 import uuid
+from collections import deque
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
@@ -20,42 +21,55 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from aegis.store import Store
 from aegis.guidance import explain, SLOW_MS
-from aegis.broker import DELAY_MS
+from aegis.broker import DELAY_MS, LOSS_PCT
 from aegis.investigator import Investigator, InvestigatorError, summarise
 from aegis.ownership import controller_ownership
 
+CONNECT_LIMIT_S = 3  # how long one network-path connection attempt may take
+PROBE = {'X-Aegis-Client': 'controller'}  # how the controller's checks identify themselves to the services
 NODES = {'gateway-a': 'http://gateway-a:8000', 'catalog-b': 'http://catalog-b:8000', 'gateway-c': 'http://gateway-c:8000'}
 CHECKS = {'liveness': '/live', 'readiness': '/ready', 'business': '/summary', 'logs': '/diagnostics/logs', 'disk': '/diagnostics/disk',
-          'config': '/diagnostics/config', 'trace': '/diagnostics/trace'}
+          'config': '/diagnostics/config', 'trace': '/diagnostics/trace', 'traffic': '/diagnostics/traffic'}
 BROKER_CHECKS = {'service': 'inspect', 'resources': 'resources'}
 TERMINAL = {'ended'}
 # Each fault kind: the injection verb and the remedy that reverses it.
 FAULTS = {'service-unavailable': ('stop', 'start'), 'cpu-starvation': ('burn', 'calm'), 'disk-full': ('fill', 'clear'),
-          'config-drift': ('drift', 'restore'), 'network-delay': ('delay', 'undelay')}
+          'config-drift': ('drift', 'restore'), 'network-delay': ('delay', 'undelay'), 'packet-loss': ('drop', 'undrop'),
+          'quota-zero': ('squeeze', 'requota')}
+# Faults that only exist on some services; every other fault can target any of the three.
+FAULT_TARGETS = {'quota-zero': ('catalog-b',)}
 REMEDIES = {remedy for _, remedy in FAULTS.values()}
-NODE_VERBS = {'fill', 'clear', 'burn', 'calm', 'drift', 'restore'}  # applied through the service's token-protected maintenance endpoint
+NODE_VERBS = {'fill', 'clear', 'burn', 'calm', 'drift', 'restore', 'squeeze', 'requota'}  # applied through the service's token-protected maintenance endpoint
+DETECT_FAILING = 3     # failing cycles among the last DETECT_WINDOW that open an investigation
+DETECT_WINDOW = 5
+VERIFY_STREAK = 3      # consecutive healthy cycles that verify recovery or reset
+FLAPPING_STREAK = 10   # required instead once failures have come and gone twice, so a lucky run cannot pass a wrong fix
 UNCHANGED = {'start': 'Already running; nothing changed', 'stop': 'Already stopped; nothing changed',
              'calm': 'No background job running; nothing changed', 'burn': 'A background job was already running; nothing changed',
              'clear': 'No filler file present; nothing changed', 'fill': 'Nothing changed',
              'restore': 'Running config already matches the deployed settings; nothing changed', 'drift': 'Setting already overridden; nothing changed',
-             'undelay': 'No network delay present; nothing changed', 'delay': 'Network delay already present; nothing changed'}
+             'undelay': 'No network delay present; nothing changed', 'delay': 'Network delay already present; nothing changed',
+             'undrop': 'No packet loss present; nothing changed', 'drop': 'Packet loss already present; nothing changed',
+             'requota': 'Quotas already match the deployed limits; nothing changed', 'squeeze': 'Quotas already at zero; nothing changed'}
 DEBRIEFS = {
     'service-unavailable': 'The scenario requested stopping {target}. When that succeeds, its container state reads stopped and its own probes fail. When the catalogue stops, both gateways stay live but their business requests fail, so the failure spreads; when one gateway stops, the catalogue and the other gateway stay healthy, so it does not. Starting the stopped service restores the request path.',
     'cpu-starvation': 'The scenario requested a runaway background job inside {target}. When that succeeds, the service keeps running and answering, but slowly: the job uses the container\'s whole 0.25-CPU limit, the kernel throttles it, and requests queue behind it, crossing the {slow} ms threshold. Its log records the job starting. A slow catalogue makes both gateways slow, and sometimes time out, too. Stopping the job returns normal latency.',
     'disk-full': 'The scenario requested filling {target}\'s 8 MiB /tmp with one large file. When that succeeds, the process stays live, but every business request must write a small receipt, so writes fail with ENOSPC (HTTP 507). A full catalogue fails both gateways\' requests too; a full gateway fails only its own. Disk usage shows 100% and the filler as the largest file. Clearing it restores writes.',
     'config-drift': 'The scenario requested a bad runtime configuration reload on {target}. When that succeeds, the process stays live and its container keeps running, so liveness, container state, CPU and disk all look normal. On a gateway, the upstream address points at a port nothing listens on, so every business request fails to connect, which looks like a stopped catalogue until the catalogue is checked directly. On the catalogue, the data source points at a dataset that was never deployed, so its business requests fail with HTTP 500 and both gateways\' fail with them. The running config shows the drifted setting next to its deployed value, and the log records the reload. Restoring the deployed config fixes it.',
+    'packet-loss': 'The scenario requested dropping {loss}% of the packets leaving {target}, applied with a Linux netem queue inside its own network namespace. Real links already hurt at 1 to 2% loss; the lab exaggerates it so the effect shows within a minute. When that succeeds, the process stays live and its CPU, disk and config stay normal, but TCP must resend every lost packet after a timeout of at least 200 ms. So the same request is sometimes instant, sometimes about 200 ms or 600 ms late, and sometimes fails when a lost connection setup or reply outlasts the gateways\' 1-second upstream timeout. A lossy catalogue makes both gateways fail intermittently; a lossy gateway affects only itself. Because failures come and go, recovery has to hold for ten healthy cycles rather than three. The network path check shows the netem loss setting and a high share of retransmitted TCP segments, and some connection attempts take about a second while a lost handshake is resent. Removing the packet loss, or restarting the container, restores reliable requests.',
+    'quota-zero': 'The scenario requested a quota push that set both gateways\' request quotas on {target} to zero, as a faulty quota system might. Quotas are enforced by the shared catalogue for each named caller and come from the quota system, not the service\'s own config. When that succeeds, the catalogue is up, fast and idle, and its own checks pass, because the controller\'s health probes have no quota: the monitoring is green while every gateway request is refused with HTTP 429. Both gateways stay live but fail every business request. The running config matches what was deployed, so restoring config changes nothing; the traffic check shows each gateway\'s requests rejected against a limit of 0 per second, and the log records the quota push. Resetting the client quotas restores service.',
     'network-delay': 'The scenario requested a {delay} ms delay on all traffic leaving {target}, applied with a Linux netem queue inside its own network namespace. When that succeeds, the process stays live and its CPU and disk stay normal, but everything it sends waits in the queue: its own checks take about {delay} ms longer. A delayed catalogue slows both gateways\' requests by the same amount; a delayed gateway pays the delay twice, on its call to the catalogue and on its reply, while the catalogue and the other gateway stay fast. Requests still succeed, because each wait stays under the gateways\' 1-second upstream timeout. The network path check shows TCP connections taking about {delay} ms and the netem queue itself, and a request trace shows a fast handler with the time spent outside it. Removing the delay, or restarting the container, restores normal latency.',
 }
 
 
 def debrief(s):
-    text = DEBRIEFS[s.get('fault_kind', 'service-unavailable')].format(target=s['fault_target'], slow=SLOW_MS, delay=DELAY_MS)
+    text = DEBRIEFS[s.get('fault_kind', 'service-unavailable')].format(target=s['fault_target'], slow=SLOW_MS, delay=DELAY_MS, loss=LOSS_PCT)
     return (text + ' Injection outcome: ' + s.get('fault_action', {}).get('status', 'not recorded') + '. The action record explains the exercise but was not evidence available during the investigation. Other evidence-supported investigation orders are valid.')
 
 
-FaultKind = Literal['service-unavailable', 'cpu-starvation', 'disk-full', 'config-drift', 'network-delay']
+FaultKind = Literal['service-unavailable', 'cpu-starvation', 'disk-full', 'config-drift', 'network-delay', 'packet-loss', 'quota-zero']
 NodeName = Literal['gateway-a', 'catalog-b', 'gateway-c']
-CheckKind = Literal['liveness', 'readiness', 'business', 'logs', 'service', 'resources', 'disk', 'config', 'trace', 'network']
+CheckKind = Literal['liveness', 'readiness', 'business', 'logs', 'service', 'resources', 'disk', 'config', 'trace', 'network', 'traffic']
 
 
 class Input(BaseModel):
@@ -84,7 +98,7 @@ class Action(SessionInput):
 
 
 class Recover(Action):
-    verb: Literal['start', 'calm', 'clear', 'restore', 'undelay'] = 'start'
+    verb: Literal['start', 'calm', 'clear', 'restore', 'undelay', 'undrop', 'requota'] = 'start'
 
 
 class Note(SessionInput):
@@ -116,7 +130,7 @@ class Lab:
         self.baseline = 0
         self.successes = 0
         self.healthy_observations = []
-        self.failures = 0
+        self.recent_cycles = deque(maxlen=DETECT_WINDOW)  # True for a healthy cycle, newest last
         self.collector_error = None
         self.last_cycle = None
         self.session = store.active_session()
@@ -168,7 +182,7 @@ class Lab:
                 body = {'ok': True, **await self.broker(node, BROKER_CHECKS[kind])}
                 body.pop('changed', None)
             else:
-                async with self.client.stream('GET', self.nodes[node] + CHECKS[kind], timeout=3) as response:
+                async with self.client.stream('GET', self.nodes[node] + CHECKS[kind], headers=PROBE, timeout=3) as response:
                     raw = bytearray()
                     async for chunk in response.aiter_bytes():
                         raw.extend(chunk)
@@ -196,18 +210,33 @@ class Lab:
         return evidence
 
     async def network_path(self, node):
-        """Three timed TCP connections from the controller, plus the service's own queue settings."""
+        """Three timed TCP connections from the controller, plus the service's own queue settings.
+
+        An attempt that outlasts the 3-second limit is itself a measurement (a lost handshake resent twice), so it is
+        recorded at the limit and counted rather than failing the whole check; a refused connection still fails it.
+        """
         url = httpx.URL(self.nodes[node])
-        samples = []
+        samples, timeouts = [], 0
         for _ in range(3):
             began = time.monotonic()
-            _, writer = await asyncio.wait_for(self.connect(url.host, url.port), 3)
+            try:
+                _, writer = await asyncio.wait_for(self.connect(url.host, url.port), CONNECT_LIMIT_S)
+            except asyncio.TimeoutError:
+                samples.append(CONNECT_LIMIT_S * 1000.0)
+                timeouts += 1
+                continue
             samples.append(round((time.monotonic() - began) * 1000, 1))
             writer.close()
             with contextlib.suppress(OSError):
                 await writer.wait_closed()
-        response = await self.client.get(self.nodes[node] + '/diagnostics/network', timeout=3)
-        return {'ok': response.is_success, 'http_status': response.status_code, 'connect_ms': samples,
+        for attempt in range(2):  # a lossy service's reply can need one more try
+            try:
+                response = await self.client.get(self.nodes[node] + '/diagnostics/network', headers=PROBE, timeout=8)
+                break
+            except httpx.TimeoutException:
+                if attempt:
+                    raise
+        return {'ok': response.is_success, 'http_status': response.status_code, 'connect_ms': samples, 'connect_timeouts': timeouts,
                 'median_connect_ms': sorted(samples)[1], 'result': response.json()}
 
     def persistence_budget(self):
@@ -221,23 +250,31 @@ class Lab:
             self.persistence_budget()
             results = await asyncio.gather(*(self.check(n, k, origin='collector') for n in self.nodes for k in ('liveness', 'business')))
             good = all(e['body']['ok'] and not e['body'].get('slow') for e in results)
+            recovered_cycle = good and bool(self.recent_cycles) and not self.recent_cycles[-1]
             self.baseline = self.baseline + 1 if good else 0
             self.successes = self.successes + 1 if good else 0
             if self.successes <= 1:
                 self.healthy_observations = []
             if good:
                 self.healthy_observations = (self.healthy_observations + [[e['id'] for e in results]])[-3:]
-            self.failures = self.failures + 1 if not good else 0
+            self.recent_cycles.append(good)
             self.last_cycle = time.time()
             self.collector_error = None
             s = self.session
             if not s or s['status'] == 'ended':
                 return
-            if self.failures >= 3 and s['status'] == 'observing':
+            # Intermittent faults fail some cycles and pass others, so detection counts failures in a window.
+            if s['status'] == 'observing' and sum(not g for g in self.recent_cycles) >= DETECT_FAILING:
                 s['status'] = 'investigating'
                 s['detected_at'] = time.time()
                 s['verification'] = 'Repeated failures observed; investigate the evidence'
-            if s['status'] in ('verifying', 'resetting') and self.successes >= 3:
+            # Once failures have come and gone twice, three healthy cycles can be luck: require a longer run.
+            if recovered_cycle and s['status'] in ('observing', 'investigating', 'verifying'):
+                s['flaps'] = s.get('flaps', 0) + 1
+                if s['flaps'] >= 2 and s.get('required_streak', VERIFY_STREAK) < FLAPPING_STREAK:
+                    s['required_streak'] = FLAPPING_STREAK
+            needed = VERIFY_STREAK if s['status'] == 'resetting' else s.get('required_streak', VERIFY_STREAK)
+            if s['status'] in ('verifying', 'resetting') and self.successes >= needed:
                 if s['status'] == 'resetting':
                     s['status'] = 'ended'
                     s['ended_at'] = time.time()
@@ -249,7 +286,7 @@ class Lab:
                     s['status'] = 'recovered'
                     s['outcome'] = 'verified_recovery'
                     s['recovery_verified_at'] = time.time()
-                    s['verification'] = 'Three consecutive healthy fleet and business checks'
+                    s['verification'] = ('Three' if needed == VERIFY_STREAK else str(needed)) + ' consecutive healthy fleet and business checks'
                     s['recovery_evidence_ids'] = [eid for cycle in self.healthy_observations for eid in cycle]
                 s['verified_at'] = time.time()
             elif s['status'] == 'verifying' and not good:
@@ -426,8 +463,10 @@ class Lab:
             self.admission()
             if not self.fleet_token and (data.mode == 'challenge' or FAULTS[data.kind][0] in NODE_VERBS):
                 raise HTTPException(409, 'This scenario needs AEGIS_FLEET_TOKEN. Run scripts/init_env.py, then docker compose up -d.')
-            target = secrets.choice(list(self.nodes)) if data.mode == 'challenge' else data.target
             kind = secrets.choice(list(FAULTS)) if data.mode == 'challenge' else data.kind
+            target = secrets.choice(list(FAULT_TARGETS.get(kind, self.nodes))) if data.mode == 'challenge' else data.target
+            if target not in FAULT_TARGETS.get(kind, self.nodes):
+                raise HTTPException(422, 'This fault only applies to ' + ' or '.join(FAULT_TARGETS[kind]))
             # Resolve both targets before recording an active scenario or changing anything.
             for node in self.nodes:
                 inspected = await self.broker(node, 'inspect')
@@ -444,7 +483,8 @@ class Lab:
             if result['status'] != 'succeeded':
                 self.session['status'] = 'investigating'
                 self.session['verification'] = 'Injection outcome uncertain; inspect fleet or reset'
-            self.baseline = self.successes = self.failures = 0
+            self.baseline = self.successes = 0
+            self.recent_cycles.clear()
             self.store.save(self.session)
             return self.public_session()
 

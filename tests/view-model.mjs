@@ -58,6 +58,30 @@ export function run(){
   });
   // Parse the actual event wiring too; layout/visual review still requires a browser.
   new vm.Script(readFileSync(new URL('../web/app.js',import.meta.url),'utf8'));
+  check('Packet loss and retransmissions are named on the network result',()=>{
+    const result=view.evidenceResult({kind:'network',body:{ok:true,median_connect_ms:1.1,result:{qdiscs:[{kind:'netem',loss_pct:40}],tcp:{retrans_pct:24.6}}}});
+    assert.equal(result.tone,'red');assert.match(result.text,/dropping 40%/);assert.match(result.text,/24.6% resent/);
+    assert.match(view.checkSummary({kind:'network',body:{ok:true,median_connect_ms:1.1,result:{tcp:{retrans_pct:24.6}}}}).text,/24.6% resent/);
+  });
+  check('A zero quota and rejected callers read as a failure',()=>{
+    const traffic={kind:'traffic',body:{ok:true,result:{window_s:60,clients:[{client:'gateway-a',requests:30,rejected:30}],quotas:[{client:'gateway-a',limit_rps:0}]}}};
+    const result=view.evidenceResult(traffic);
+    assert.equal(result.tone,'red');assert.match(result.text,/30 rejected/);assert.match(result.text,/quota 0\/s for gateway-a/);
+    assert.match(view.checkSummary(traffic).text,/30 rejected/);
+    assert.equal(view.evidenceResult({kind:'traffic',body:{ok:true,result:{window_s:60,clients:[{client:'controller',requests:5,rejected:0}],quotas:[]}}}).tone,'green');
+  });
+  check('Quota faults only target the catalogue',()=>{
+    assert.deepEqual([...view.faultTargets('quota-zero')],['catalog-b']);assert.equal(view.faultTargets('packet-loss'),null);
+  });
+  check('Flapping raises the verification meter to ten cycles',()=>{
+    const journey=view.journey({session:{status:'verifying',required_streak:10},healthy_streak:4},true);
+    assert.deepEqual({...journey.meter},{done:4,total:10});assert.match(journey.detail,/10 consecutive/);assert.match(journey.detail,/could be luck/);
+    assert.deepEqual({...view.journey({session:{status:'verifying'},healthy_streak:2},true).meter},{done:2,total:3});
+  });
+  check('New fixes have readable labels',()=>{
+    assert.equal(view.remedyLabel('undrop'),'Remove packet loss');assert.equal(view.remedyLabel('requota'),'Reset client quotas');
+    assert.equal(view.scenarioCopy('quota-zero','catalog-b','practice').number,'07');
+  });
   return {passed,scope:'Pure UI state and timer decisions; frontend JavaScript parsed. No visual/browser validation.'};
 }
 if(typeof process!=='undefined' && process.argv[1] && import.meta.url===new URL('file://'+process.argv[1]).href) console.log(run());

@@ -32,6 +32,7 @@ function renderControls(){
  $('start').disabled=!AegisView.canStart(state,connected,busy);
  $('mode').disabled=busy||active;
  for(const id of ['practice-target','practice-kind']){$(id).disabled=busy||active;$(id).closest('.pick').hidden=$('mode').value==='challenge';}
+ restrictTargets();
  $('expiry-continue').disabled=busy||!connected; $('expiry-reset').disabled=busy||!connected;
  $('maintenance').disabled=busy||!connected;
  for(const id of ['reset','save-note','reveal'])$(id).disabled=busy||!connected||!active;
@@ -68,7 +69,13 @@ function detailView(e){
  }
  if(e.kind==='network'&&Array.isArray(e.body.connect_ms)){
   const queues=result?.qdiscs||[];
-  return `<div class="waterfall"><p class="waterfall-head">TCP connect from the controller · ${e.body.connect_ms.map(ms=>esc(ms)+' ms').join(' · ')}</p></div><table class="config-table"><thead><tr><th>Interface</th><th>Queue</th><th>Added delay</th></tr></thead><tbody>${queues.length?queues.map(q=>`<tr class="${q.kind==='netem'?'drifted':''}"><td>${esc(q.dev)}</td><td>${esc(q.kind)}</td><td>${q.delay_ms!=null?esc(q.delay_ms)+' ms':'none'}</td></tr>`).join(''):'<tr><td colspan="3">Queue settings unavailable</td></tr>'}</tbody></table>`;
+  const tcp=result?.tcp?.available?`<p class="waterfall-head">TCP segments sent since the ${esc(result.tcp.since)} · ${esc(result.tcp.out_segs)} · resent ${esc(result.tcp.retrans_segs)} (${esc(result.tcp.retrans_pct)}%)</p>`:'';
+  return `<div class="waterfall"><p class="waterfall-head">TCP connect from the controller · ${e.body.connect_ms.map(ms=>esc(ms)+' ms').join(' · ')}${e.body.connect_timeouts?` · ${esc(e.body.connect_timeouts)} gave up at 3 s`:''}</p>${tcp}</div><table class="config-table"><thead><tr><th>Interface</th><th>Queue</th><th>Added delay</th><th>Packet loss</th></tr></thead><tbody>${queues.length?queues.map(q=>`<tr class="${q.kind==='netem'?'drifted':''}"><td>${esc(q.dev)}</td><td>${esc(q.kind)}</td><td>${q.delay_ms!=null?esc(q.delay_ms)+' ms':'none'}</td><td>${q.loss_pct!=null?esc(q.loss_pct)+'%':'none'}</td></tr>`).join(''):'<tr><td colspan="3">Queue settings unavailable</td></tr>'}</tbody></table>`;
+ }
+ if(e.kind==='traffic'&&Array.isArray(result?.clients)){
+  const callers=result.clients.length?result.clients.map(c=>`<tr class="${c.rejected?'drifted':''}"><td>${esc(c.client)}</td><td>${esc(c.requests)}</td><td>${esc(c.rejected)}</td><td>${esc(c.errors)}</td></tr>`).join(''):'<tr><td colspan="4">No business requests in the window</td></tr>';
+  const quotas=(result.quotas||[]).length?`<table class="config-table"><thead><tr><th>Caller</th><th>Quota now</th><th>Deployed</th></tr></thead><tbody>${result.quotas.map(q=>`<tr class="${q.changed?'drifted':''}"><td>${esc(q.client)}</td><td>${esc(q.limit_rps)}/s${q.changed?' <b>≠</b>':''}</td><td>${esc(q.deployed_rps)}/s</td></tr>`).join('')}</tbody></table><p class="waterfall-head">Quotas set by ${esc(result.quota_source?.pushed_by||'unknown')}${result.quota_source?.at?' at '+new Date(result.quota_source.at*1000).toLocaleTimeString():''} · callers without a quota are not limited</p>`:'<p class="waterfall-head">This service enforces no per-caller quotas</p>';
+  return `<table class="config-table"><thead><tr><th>Caller · last ${esc(result.window_s)} s</th><th>Requests</th><th>Rejected (429)</th><th>Errors</th></tr></thead><tbody>${callers}</tbody></table>${quotas}`;
  }
  if(e.kind==='config'&&Array.isArray(result?.settings)){
   return `<table class="config-table"><thead><tr><th>Setting</th><th>Running</th><th>Deployed</th></tr></thead><tbody>${result.settings.map(s=>`<tr class="${s.drifted?'drifted':''}"><td>${esc(s.key)}</td><td>${esc(s.value)}${s.drifted?' <b>≠</b>':''}</td><td>${esc(s.deployed)}</td></tr>`).join('')}</tbody></table>`;
@@ -235,6 +242,9 @@ $('suggested-check').addEventListener('click',async()=>{
 // What the ticked notebook records will be saved with, so the checkbox's purpose is visible where it matters.
 function renderCited(){
  for(const id of citedLabels.keys())if(!chosen.has(id))citedLabels.delete(id);
+ const section=$('diagnosis-section'), grew=chosen.size>(renderCited.count||0);renderCited.count=chosen.size;
+ section.classList.toggle('citing',chosen.size>0);
+ if(grew){section.classList.remove('cite-ping');void section.offsetWidth;section.classList.add('cite-ping');}
  $('selected-count').textContent=chosen.size+' cited';$('clear-selection').disabled=chosen.size===0;
  const list=$('cited-list');list.replaceChildren();
  if(!chosen.size){list.textContent='No evidence cited yet. Tick the Cite box on records in the evidence notebook to back up your reasoning (optional).';list.classList.add('empty-cite');return;}
@@ -247,7 +257,13 @@ $('clear-selection').addEventListener('click',()=>{chosen.clear();renderCited();
 $('note-form').addEventListener('submit',async e=>{e.preventDefault();const saved=await action('note',{explanation:$('explanation').value,uncertainty:$('uncertainty').value,evidence_ids:[...chosen]},'Diagnosis saved with evidence references');if(saved){$('explanation').value='';$('uncertainty').value='';chosen.clear();renderCited();evidenceSignature='';renderEvidence(true);}});
 $('expiry-dialog').addEventListener('cancel',e=>e.preventDefault());
 $('mode').addEventListener('change',()=>{renderControls();renderScenario();});
-for(const id of ['practice-kind','practice-target'])$(id).addEventListener('change',renderScenario);
+// Some faults only exist on the shared catalogue; keep the target picker to the services that can have them.
+function restrictTargets(){
+ const only=AegisView.faultTargets($('practice-kind').value);
+ for(const option of $('practice-target').options)option.disabled=!!only&&!only.includes(option.value);
+ if(only&&!only.includes($('practice-target').value)){$('practice-target').value=only[0];renderScenario();}
+}
+for(const id of ['practice-kind','practice-target'])$(id).addEventListener('change',()=>{restrictTargets();renderScenario();});
 $('evidence-live').addEventListener('click',()=>setEvidencePaused(!evidencePaused));
 $('evidence').addEventListener('toggle',e=>{if(e.target.tagName==='DETAILS'&&e.target.open)setEvidencePaused(true);},true);
 $('maintenance').addEventListener('click',()=>action('maintenance',{},'Retention cleanup complete. Active investigation evidence is preserved.'));
@@ -308,7 +324,7 @@ addEventListener('keydown',e=>{
  const key=e.key.toLowerCase(), press=el=>{if(el&&!el.disabled)el.click();};
  if(key==='?')$('keys-dialog').showModal();
  else if(['a','b','c'].includes(key))press($({a:'node-gateway-a',b:'node-catalog-b',c:'node-gateway-c'}[key]));
- else if(/^[1-9]$/.test(key)&&!e.shiftKey)press(document.querySelectorAll('[data-check]')[Number(key)-1]);
+ else if(/^[0-9]$/.test(key)&&!e.shiftKey)press(document.querySelectorAll('[data-check]')[(Number(key)+9)%10]);
  else if(key==='e')press(document.querySelector('[data-help="evidence"]'));
  else if(key==='p')press($('evidence-live'));
  else if(key==='t')press($('tour-start'));
@@ -327,7 +343,8 @@ function spy(){
  markNav(current);
 }
 // A clicked link stays highlighted even if the page cannot scroll its section to the top.
-for(const t of navTargets)t.a.addEventListener('click',()=>{spy.lock=performance.now()+900;markNav(t);});
+// The section it leads to glows once in its own colour, so the eye lands on it.
+for(const t of navTargets)t.a.addEventListener('click',()=>{spy.lock=performance.now()+900;markNav(t);t.el.classList.remove('arrived');void t.el.offsetWidth;t.el.classList.add('arrived');});
 for(const type of ['wheel','touchstart','keydown'])addEventListener(type,()=>{spy.lock=0;},{passive:true});
 addEventListener('scroll',()=>{if(spy.queued)return;spy.queued=true;requestAnimationFrame(()=>{spy.queued=false;spy();});},{passive:true});
 addEventListener('resize',spy);spy();

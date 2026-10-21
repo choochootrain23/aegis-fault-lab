@@ -23,9 +23,15 @@ globalThis.AegisView = Object.freeze({
       return drifted.length?{text:`Config drifted · ${drifted.join(', ')} differs from deployed`,tone:'red'}:{text:`Config matches deployed · ${config.settings.length} settings`,tone:'green'};
     }
     if(record.kind==='network'){
-      const queues=body.result?.qdiscs||[], netem=queues.find(q=>q.kind==='netem');
-      const shaped=netem?` · netem queue${netem.delay_ms?` +${netem.delay_ms} ms`:''}`:'';
-      return {text:`Network · connect ${body.median_connect_ms} ms${shaped}`,tone:netem||body.median_connect_ms>100?'red':body.median_connect_ms>20?'amber':'green'};
+      const queues=body.result?.qdiscs||[], netem=queues.find(q=>q.kind==='netem'), resent=body.result?.tcp?.retrans_pct;
+      const shaped=netem?` · netem queue${netem.delay_ms?` +${netem.delay_ms} ms`:''}${netem.loss_pct?` dropping ${netem.loss_pct}%`:''}`:'';
+      const retrans=resent>=1?` · ${resent}% resent`:'';
+      return {text:`Network · connect ${body.median_connect_ms} ms${shaped}${retrans}`,tone:netem||body.median_connect_ms>100||resent>=10?'red':body.median_connect_ms>20||resent>=1?'amber':'green'};
+    }
+    if(record.kind==='traffic'){
+      const t=body.result||{}, callers=t.clients||[], rejected=callers.reduce((a,c)=>a+(c.rejected||0),0), zero=(t.quotas||[]).filter(q=>q.limit_rps===0);
+      const total=callers.reduce((a,c)=>a+(c.requests||0),0);
+      return {text:`Traffic · ${total} requests in ${t.window_s} s${rejected?` · ${rejected} rejected`:''}${zero.length?` · quota 0/s for ${zero.map(q=>q.client).join(', ')}`:''}`,tone:zero.length||rejected?'red':'green'};
     }
     if(record.kind==='trace'){
       const trace=body.result||{}, slowest=this.slowestSpan(trace);
@@ -54,24 +60,31 @@ globalThis.AegisView = Object.freeze({
     return value>=1048576?`${(value/1048576).toFixed(1)} MiB`:value>=1024?`${Math.round(value/1024)} KiB`:`${value} B`;
   },
   remedyLabel(verb) {
-    return ({start:'Start service',calm:'Stop runaway job',clear:'Clear temp files',restore:'Restore config',undelay:'Remove traffic delay'})[verb]||verb;
+    return ({start:'Start service',calm:'Stop runaway job',clear:'Clear temp files',restore:'Restore config',undelay:'Remove traffic delay',undrop:'Remove packet loss',requota:'Reset client quotas'})[verb]||verb;
   },
   faultLabel(kind) {
-    return ({'service-unavailable':'Stopped service','cpu-starvation':'CPU starvation','disk-full':'Disk full','config-drift':'Config drift','network-delay':'Network delay'})[kind]||kind;
+    return ({'service-unavailable':'Stopped service','cpu-starvation':'CPU starvation','disk-full':'Disk full','config-drift':'Config drift','network-delay':'Network delay','packet-loss':'Packet loss','quota-zero':'Quota set to zero'})[kind]||kind;
+  },
+  // The services a fault can target, when it cannot target all three.
+  faultTargets(kind) {
+    return ({'quota-zero':['catalog-b']})[kind]||null;
   },
   // Scenario heading: the selected fault and target, the running practice scenario, or a hidden challenge.
   scenarioCopy(kind, target, mode) {
     if (mode==='challenge') return {number:'??', eyebrow:'Challenge · hidden fault', title:['A ','hidden',' fault'],
-      text:'One of five faults on one of the three services, picked at random and kept secret. Find it from the evidence, fix it, then reveal it to check.'};
-    const kinds=['service-unavailable','cpu-starvation','disk-full','config-drift','network-delay'];
+      text:'One of seven faults on one of the three services, picked at random and kept secret. Find it from the evidence, fix it, then reveal it to check.'};
+    const kinds=['service-unavailable','cpu-starvation','disk-full','config-drift','network-delay','packet-loss','quota-zero'];
     const copy={
       'service-unavailable':{title:['When a service ','stops',''], text:'Its container is stopped, so its own checks fail.'},
       'cpu-starvation':{title:['When a service is ','starved',' of CPU'], text:'A runaway job uses its whole CPU limit. It still answers, just slowly.'},
       'disk-full':{title:['When the disk ','fills up',''], text:'Its 8 MiB /tmp is full. The process stays live, but every write fails with HTTP 507.'},
       'config-drift':{title:['When config ','drifts',''], text:'A bad reload changes one setting. Liveness, CPU and disk look normal, yet requests fail.'},
       'network-delay':{title:['When the network ','lags',''], text:'Every packet leaving it waits 600 ms. It stays up with idle CPU, yet everything it sends arrives late.'},
+      'packet-loss':{title:['When packets ','go missing',''], text:'Half the packets it sends are dropped. Requests sometimes work, sometimes stall, sometimes time out.'},
+      'quota-zero':{title:['When the quota ','hits zero',''], text:'A quota push lets the gateways make zero requests. The catalogue is up, fast and green to its own probes.'},
     }[kind]||{title:['A ','fault',''], text:''};
-    const scope=target==='catalog-b'?'On the shared catalogue: see whether both gateways are affected too.':`On ${target}, a local fault: see whether the catalogue and the other gateway stay healthy.`;
+    const scope=kind==='quota-zero'?'Enforced by the shared catalogue: compare what its callers see with what its own checks say.'
+      :target==='catalog-b'?'On the shared catalogue: see whether both gateways are affected too.':`On ${target}, a local fault: see whether the catalogue and the other gateway stay healthy.`;
     return {number:String(kinds.indexOf(kind)+1).padStart(2,'0'), eyebrow:`Scenario ${String(kinds.indexOf(kind)+1).padStart(2,'0')} · ${this.faultLabel(kind)} · ${target}`,
       title:copy.title, text:`${copy.text} ${scope}`};
   },
@@ -107,8 +120,10 @@ globalThis.AegisView = Object.freeze({
     }
     if (s.status==='observing') return {step:2, tone:'wait', title:'Fault injected. Watch the topology', detail:'Checks run every two seconds. Repeated failures open the investigation.', meter:null};
     if (s.status==='investigating') return {step:2, tone:'focus', title:'Find the boundary of the failure', detail:'Select a node and run checks in any order. Compare liveness, latency and business requests, then inspect container state, resources, disk and running config. A trace shows where a request spends its time. When the evidence points to a cause, try the matching recovery action.', meter:null};
-    if (s.status==='verifying' && /has not restored/.test(s.verification||'')) return {step:4, tone:'alert', title:'Not restored yet', detail:'Affected checks still fail or stay slow. Re-check both nodes; a different action or node may be needed.', meter:{done:streak, total:3}};
-    if (s.status==='verifying') return {step:4, tone:'wait', title:'Verifying recovery', detail:'An accepted action is not proof. Three consecutive healthy, fast cycles are required.', meter:{done:streak, total:3}};
+    const need=s.required_streak||3, flapping=need>3?' Failures have come and gone, so a short healthy run could be luck.':'';
+    const run=Math.min(state.healthy_streak??0,need);
+    if (s.status==='verifying' && /has not restored/.test(s.verification||'')) return {step:4, tone:'alert', title:'Not restored yet', detail:'Affected checks still fail or stay slow. Re-check both nodes; a different action or node may be needed.'+flapping, meter:{done:run, total:need}};
+    if (s.status==='verifying') return {step:4, tone:'wait', title:'Verifying recovery', detail:`An accepted action is not proof. ${need===3?'Three':need} consecutive healthy, fast cycles are required.${flapping}`, meter:{done:run, total:need}};
     if (s.status==='recovered') return {step:5, tone:'done', title:'Recovery verified', detail:'Record what the evidence supports in your diagnosis, then End & reset to close the investigation.', meter:null};
     return {step:5, tone:'wait', title:'Restoring the baseline', detail:'All three services are started and re-verified. History is preserved.', meter:{done:streak, total:3}};
   },
@@ -120,7 +135,8 @@ globalThis.AegisView = Object.freeze({
     else if(body.ok&&record.kind==='resources')outcome=body.cpu_pct_of_limit==null?'no sample':`CPU ${body.cpu_pct_of_limit}%`;
     else if(body.ok&&record.kind==='disk')outcome=`${body.result?.used_pct}% used`;
     else if(body.ok&&record.kind==='config')outcome=body.result?.drifted?.length?'drifted':'matches';
-    else if(body.ok&&record.kind==='network')outcome=`connect ${body.median_connect_ms} ms`;
+    else if(body.ok&&record.kind==='network')outcome=`connect ${body.median_connect_ms} ms${body.result?.tcp?.retrans_pct>=1?` · ${body.result.tcp.retrans_pct}% resent`:''}`;
+    else if(body.ok&&record.kind==='traffic'){const rejected=(body.result?.clients||[]).reduce((a,c)=>a+(c.rejected||0),0);outcome=rejected?`${rejected} rejected`:'no rejections';}
     else if(body.ok&&record.kind==='trace')outcome=body.result?.request_ok===false?'failed':'traced';
     else if(body.slow)outcome='slow';
     return {text:`${result.tone==='green'?'✓':result.tone==='red'?'✕':'•'} ${outcome}${body.duration_ms!=null?' · '+body.duration_ms+' ms':''}`, tone:result.tone};

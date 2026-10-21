@@ -188,3 +188,23 @@ def test_foreign_queue_disciplines_are_never_touched():
     for verb, qdisc in (('delay', 'qdisc fq_codel 0: root refcnt 2\n'), ('undelay', 'qdisc netem 8001: root refcnt 2 delay 50ms\n')):
         with pytest.raises(ValueError):
             run_network(verb, qdisc)
+
+
+def test_drop_adds_a_fixed_loss_queue_and_undrop_removes_it():
+    result, state, _, created = run_network('drop', 'qdisc noqueue 0: root refcnt 2\n')
+    assert result['changed'] is True and created[-1]['Cmd'] == ['tc', 'qdisc', 'add', 'dev', 'eth0', 'root', 'netem', 'loss', '50%']
+    result, state, _, created = run_network('undrop', 'qdisc netem 8003: root refcnt 2 limit 1000 loss 50% seed 1277\n')
+    assert result['changed'] is True and created[-1]['Cmd'] == ['tc', 'qdisc', 'del', 'dev', 'eth0', 'root']
+
+
+def test_each_network_remedy_leaves_the_other_fault_alone():
+    # A wrong remedy is an honest no-op, never an error and never a removal of the other fault's queue.
+    for verb, qdisc in (('undelay', 'qdisc netem 8003: root refcnt 2 limit 1000 loss 50% seed 1277\n'),
+                        ('undrop', 'qdisc netem 8001: root refcnt 2 limit 1000 delay 600ms\n')):
+        result, _, _, created = run_network(verb, qdisc)
+        assert result['changed'] is False and len(created) == 1
+    assert run_network('drop', 'qdisc netem 8003: root refcnt 2 limit 1000 loss 50% seed 9\n')[0]['changed'] is False
+    with pytest.raises(ValueError):
+        run_network('drop', 'qdisc netem 8001: root refcnt 2 limit 1000 delay 600ms\n')
+    with pytest.raises(ValueError):
+        run_network('undrop', 'qdisc netem 8003: root refcnt 2 limit 1000 loss 5%\n')

@@ -17,6 +17,7 @@ from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import JSONResponse
 
 ROLE = os.getenv('AEGIS_ROLE', 'catalog')
+NAME = os.getenv('AEGIS_NAME', ROLE)  # how this service identifies itself to the services it calls
 UPSTREAM = os.getenv('AEGIS_UPSTREAM', 'http://catalog-b:8000')
 SCRATCH = Path(os.getenv('AEGIS_SCRATCH', '/tmp'))
 FLEET_TOKEN = os.getenv('AEGIS_FLEET_TOKEN', '')
@@ -38,6 +39,15 @@ DEPLOYED = {'gateway': {'upstream': UPSTREAM, 'upstream_timeout_s': 1.0},
 DRIFT = {'gateway': ('upstream', UPSTREAM.rsplit(':', 1)[0] + ':8080'),
          'catalog': ('catalogue_source', 'file:' + str(SCRATCH / 'catalogue-v2.json'))}.get(ROLE)
 config = dict(DEPLOYED)
+# Per-caller request quotas, enforced by the catalogue on its business endpoint. They come from a separate quota
+# system rather than the service's own config, so a bad quota push leaves the running config untouched. Callers
+# without a quota, such as the controller's health probes, are not limited.
+QUOTA_DEPLOYED = {'gateway-a': 20, 'gateway-c': 20} if ROLE == 'catalog' else {}
+quota = dict(QUOTA_DEPLOYED)
+quota_source = {'pushed_by': 'deployment', 'at': time.time()}
+TRAFFIC = deque(maxlen=4000)  # (at, client, status) for business requests, newest last
+TRAFFIC_WINDOW_S = 60
+tcp_last = None  # TCP counters at the previous network check, so retransmissions are reported per interval
 
 
 @asynccontextmanager
@@ -48,6 +58,14 @@ async def lifespan(app):
 
 
 app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None)
+
+
+@app.middleware('http')
+async def count_traffic(request, call_next):
+    response = await call_next(request)
+    if request.url.path in ('/summary', '/catalog', '/ready'):
+        TRAFFIC.append((time.time(), request.headers.get('x-aegis-client', 'unidentified')[:40], response.status_code))
+    return response
 
 
 def write_receipt(kind):
@@ -87,9 +105,23 @@ def load_catalogue():
     return [{'sku': 'LAB-001', 'name': 'Synthetic component', 'quantity': 12}]
 
 
+def over_quota(client):
+    """True when this caller has already used its quota of accepted requests in the past second."""
+    limit = quota.get(client)
+    if limit is None:
+        return False
+    now = time.time()
+    return sum(1 for at, who, status in reversed(TRAFFIC) if now - at <= 1 and who == client and status < 400) >= limit
+
+
 @app.get('/catalog')
-async def catalog():
+async def catalog(x_aegis_client: str = Header(default='unidentified')):
     started = time.monotonic()
+    if over_quota(x_aegis_client):
+        result = {'ok': False, 'error': 'QuotaExceeded', 'client': x_aegis_client[:40], 'limit_rps': quota[x_aegis_client],
+                  'detail': 'per-client request quota exhausted', 'generation': BOOT, 'duration_ms': round((time.monotonic() - started) * 1000, 1)}
+        LOGS.append({'at': time.time(), **result})
+        return JSONResponse(result, status_code=429)
     try:
         items = load_catalogue()
     except (OSError, ValueError, KeyError) as error:
@@ -108,14 +140,14 @@ async def dependency():
     started = time.monotonic()
     correlation = str(uuid.uuid4())
     try:
-        response = await app.state.client.get(config['upstream'] + '/catalog', headers={'X-Correlation-ID': correlation},
+        response = await app.state.client.get(config['upstream'] + '/catalog', headers={'X-Correlation-ID': correlation, 'X-Aegis-Client': NAME},
                                               timeout=config['upstream_timeout_s'])
         response.raise_for_status()
         result = {'ok': True, 'dependency': 'catalog-b', 'correlation': correlation, 'catalog': response.json()}
         status = 200
     except httpx.HTTPStatusError as error:
         result = {'ok': False, 'dependency': 'catalog-b', 'correlation': correlation, 'error': 'HTTPStatusError',
-                  'upstream_status': error.response.status_code}
+                  'upstream_status': error.response.status_code, 'upstream_error': upstream_error(error.response)}
         status = 503
     except (httpx.HTTPError, ValueError) as error:
         result = {'ok': False, 'dependency': 'catalog-b', 'correlation': correlation, 'error': type(error).__name__}
@@ -131,6 +163,13 @@ async def dependency():
     return JSONResponse(result, status_code=status)
 
 
+def upstream_error(response):
+    try:
+        return str(response.json().get('error'))[:40]
+    except (ValueError, AttributeError):
+        return None
+
+
 @app.get('/ready')
 async def ready():
     if ROLE == 'gateway':
@@ -139,10 +178,10 @@ async def ready():
 
 
 @app.get('/summary')
-async def summary():
+async def summary(x_aegis_client: str = Header(default='unidentified')):
     if ROLE == 'gateway':
         return await dependency()
-    return await catalog()
+    return await catalog(x_aegis_client)
 
 
 @app.get('/diagnostics/logs')
@@ -185,13 +224,57 @@ def read_qdiscs():
             continue
         delay = re.search(r'delay (\d+(?:\.\d+)?)(us|ms|s)\b', line)
         delay_ms = None if not delay else float(delay[1]) * {'us': 0.001, 'ms': 1, 's': 1000}[delay[2]]
-        entries.append({'kind': match[1], 'dev': match[2], 'root': match[3] == 'root', 'delay_ms': delay_ms, 'line': line.strip()})
+        loss = re.search(r'loss (\d+(?:\.\d+)?)%', line)
+        entries.append({'kind': match[1], 'dev': match[2], 'root': match[3] == 'root', 'delay_ms': delay_ms,
+                        'loss_pct': float(loss[1]) if loss else None, 'line': line.strip()})
     return {'available': True, 'qdiscs': entries}
+
+
+def tcp_counters():
+    """This network namespace's TCP segment counters from /proc/net/snmp (read-only)."""
+    rows = [line.split() for line in Path('/proc/net/snmp').read_text().splitlines() if line.startswith('Tcp:')]
+    return {'at': time.time(), **dict(zip(rows[0][1:], map(int, rows[1][1:])))}
+
+
+def retransmissions():
+    """Segments sent and retransmitted since the previous network check: lost packets must be sent again."""
+    global tcp_last
+    try:
+        now = tcp_counters()
+    except (OSError, ValueError, IndexError):
+        return {'available': False}
+    before, tcp_last = tcp_last, now
+    if not before:
+        return {'available': True, 'since': 'process start', 'out_segs': now['OutSegs'], 'retrans_segs': now['RetransSegs'],
+                'retrans_pct': round(100 * now['RetransSegs'] / now['OutSegs'], 1) if now['OutSegs'] else 0.0}
+    sent, again = now['OutSegs'] - before['OutSegs'], now['RetransSegs'] - before['RetransSegs']
+    return {'available': True, 'since': 'previous network check', 'interval_s': round(now['at'] - before['at'], 1),
+            'out_segs': sent, 'retrans_segs': again, 'retrans_pct': round(100 * again / sent, 1) if sent else 0.0}
 
 
 @app.get('/diagnostics/network')
 async def network():
-    return {**read_qdiscs(), 'generation': BOOT}
+    return {**read_qdiscs(), 'tcp': retransmissions(), 'generation': BOOT}
+
+
+@app.get('/diagnostics/traffic')
+async def traffic():
+    """Business requests per caller over the last minute, and the quotas this service enforces."""
+    now = time.time()
+    callers = {}
+    for at, client, status in TRAFFIC:
+        if now - at > TRAFFIC_WINDOW_S:
+            continue
+        entry = callers.setdefault(client, {'client': client, 'requests': 0, 'rejected': 0, 'errors': 0})
+        entry['requests'] += 1
+        entry['rejected'] += status == 429
+        entry['errors'] += status >= 500
+    for entry in callers.values():
+        entry['rps'] = round(entry['requests'] / TRAFFIC_WINDOW_S, 2)
+    quotas = [{'client': client, 'limit_rps': quota[client], 'deployed_rps': deployed, 'changed': quota[client] != deployed}
+              for client, deployed in QUOTA_DEPLOYED.items()]
+    return {'window_s': TRAFFIC_WINDOW_S, 'clients': sorted(callers.values(), key=lambda e: -e['requests']), 'quotas': quotas,
+            'quota_source': quota_source if QUOTA_DEPLOYED else None, 'generation': BOOT}
 
 
 @app.get('/diagnostics/trace')
@@ -208,7 +291,7 @@ async def trace():
     if ROLE == 'gateway':
         name = 'upstream ' + config['upstream'].split('//')[-1] + '/catalog'
         try:
-            response = await app.state.client.get(config['upstream'] + '/catalog', timeout=config['upstream_timeout_s'])
+            response = await app.state.client.get(config['upstream'] + '/catalog', headers={'X-Aegis-Client': NAME}, timeout=config['upstream_timeout_s'])
             ok = span(name, began, response.is_success, status=response.status_code)
         except httpx.HTTPError as error:
             ok = span(name, began, False, error=type(error).__name__)
@@ -312,6 +395,33 @@ async def drift(x_aegis_fleet_token: str = Header(default='')):
     config[key] = value
     LOGS.append({'at': time.time(), 'ok': True, 'event': 'configuration reloaded', 'changed': {key: value}, 'generation': BOOT})
     return {'changed': True, 'key': key}
+
+
+@app.post('/maintenance/squeeze')
+async def squeeze(x_aegis_fleet_token: str = Header(default='')):
+    """Fault injection: a quota push that sets every gateway's catalogue quota to zero. Only the catalogue has quotas."""
+    global quota_source
+    authorize(x_aegis_fleet_token)
+    if not QUOTA_DEPLOYED or all(limit == 0 for limit in quota.values()):
+        return {'changed': False}
+    quota.update({client: 0 for client in QUOTA_DEPLOYED})
+    quota_source = {'pushed_by': 'quota-manager', 'at': time.time()}
+    LOGS.append({'at': time.time(), 'ok': True, 'event': 'quota policy updated', 'pushed_by': 'quota-manager', 'limits_rps': dict(quota), 'generation': BOOT})
+    return {'changed': True}
+
+
+@app.post('/maintenance/requota')
+async def requota(x_aegis_fleet_token: str = Header(default='')):
+    """Recovery: reapply the deployed per-caller quotas."""
+    global quota_source
+    authorize(x_aegis_fleet_token)
+    changed = sorted(client for client, limit in QUOTA_DEPLOYED.items() if quota[client] != limit)
+    if not changed:
+        return {'changed': False}
+    quota.update(QUOTA_DEPLOYED)
+    quota_source = {'pushed_by': 'deployment', 'at': time.time()}
+    LOGS.append({'at': time.time(), 'ok': True, 'event': 'quota policy restored', 'clients': changed, 'generation': BOOT})
+    return {'changed': True, 'restored': changed}
 
 
 @app.post('/maintenance/restore')

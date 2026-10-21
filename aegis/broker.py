@@ -14,8 +14,11 @@ PROJECT = 'aegis-rack-diagnostics'
 TARGETS = ('gateway-a', 'catalog-b', 'gateway-c')
 TOKEN = os.getenv('AEGIS_BROKER_TOKEN', '')
 READ_VERBS = ('inspect', 'resources')
-NET_VERBS = ('delay', 'undelay')
+NET_VERBS = ('delay', 'undelay', 'drop', 'undrop')
 DELAY_MS = 600          # fixed egress delay of the network-delay fault
+LOSS_PCT = 50           # fixed egress loss of the packet-loss fault; far above real-world harm (1-2%) so it shows within a minute
+# Each network fault's exact netem parameters, as `tc qdisc show` prints them after the queue limit.
+NETEM = {'delay': ('delay', f'{DELAY_MS}ms'), 'drop': ('loss', f'{LOSS_PCT}%')}
 HELPER_IMAGE = PROJECT + ':local'
 HELPER_LABEL = PROJECT + '.role'
 
@@ -23,7 +26,7 @@ HELPER_LABEL = PROJECT + '.role'
 class Operation(BaseModel):
     model_config = ConfigDict(extra='forbid')
     target: Literal['gateway-a', 'catalog-b', 'gateway-c']
-    verb: Literal['inspect', 'resources', 'start', 'stop', 'delay', 'undelay']
+    verb: Literal['inspect', 'resources', 'start', 'stop', 'delay', 'undelay', 'drop', 'undrop']
     generation: str | None = Field(default=None, max_length=80)
 
 
@@ -109,9 +112,10 @@ class Docker:
         return True
 
     async def network(self, data, verb):
-        """Add or remove the fault's netem delay on the target's interface; False when nothing needs changing.
+        """Add or remove one network fault's netem queue on the target's interface; False when nothing needs changing.
 
-        Refuses to touch any queue discipline it did not create.
+        Refuses to touch any queue discipline it did not create. Removing one fault's queue leaves the other
+        fault's queue alone and reports nothing changed, as any other wrong remedy does.
         """
         if not data['State']['Running']:
             raise ValueError('Target must be running to change its network')
@@ -119,16 +123,17 @@ class Docker:
         if status:
             raise ValueError('Could not read the target network queue')
         root = next((line for line in shown.splitlines() if ' root ' in line), '')
-        ours = root.startswith('qdisc netem ') and f'delay {DELAY_MS}ms' in root
-        if verb == 'delay':
-            if ours:
+        fault = 'delay' if verb in ('delay', 'undelay') else 'drop'
+        settings = netem_settings(root)
+        if verb in ('delay', 'drop'):
+            if settings == NETEM[fault]:
                 return False
             if root and not root.startswith('qdisc noqueue'):
                 raise ValueError('Unexpected queue discipline present; refusing to replace it')
-            argv = ['qdisc', 'add', 'dev', 'eth0', 'root', 'netem', 'delay', f'{DELAY_MS}ms']
+            argv = ['qdisc', 'add', 'dev', 'eth0', 'root', 'netem', *NETEM[fault]]
         else:
-            if not ours:
-                if root.startswith('qdisc netem '):
+            if settings != NETEM[fault]:
+                if settings is not None and settings not in NETEM.values():
                     raise ValueError('Unexpected netem settings present; refusing to remove them')
                 return False
             argv = ['qdisc', 'del', 'dev', 'eth0', 'root']
@@ -183,6 +188,18 @@ class Docker:
                       throttled_ms=round(throttling.get('throttled_time', 0) / 1e6, 1),
                       memory_mib=round(memory.get('usage', 0) / 2**20, 1), memory_limit_mib=round(memory.get('limit', 0) / 2**20, 1))
         return report
+
+
+def netem_settings(root):
+    """A root netem queue's parameters after its limit, without the loss seed; None for any other queue."""
+    words = root.split()
+    if words[:2] != ['qdisc', 'netem']:
+        return None
+    params = words[words.index('limit') + 2:] if 'limit' in words else words[words.index('root') + 3:]
+    if 'seed' in params:
+        index = params.index('seed')
+        params = params[:index] + params[index + 2:]
+    return tuple(params)
 
 
 def demultiplex(raw):

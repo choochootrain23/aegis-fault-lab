@@ -2,7 +2,8 @@
 import time
 
 SLOW_MS = 300  # request checks slower than this count as degraded, not healthy
-INSPECTIONS = ('service', 'resources', 'disk', 'config', 'trace', 'network')
+INSPECTIONS = ('service', 'resources', 'disk', 'config', 'trace', 'network', 'traffic')
+TIMEOUTS = ('ConnectTimeout', 'ReadTimeout', 'WriteTimeout', 'PoolTimeout')
 GATEWAYS = ('gateway-a', 'gateway-c')
 
 
@@ -29,6 +30,14 @@ def explain(latest, level, now=None):
         elif live['body']['ok'] and not business['body']['ok'] and result.get('upstream_status') == 507:
             message = f'{g} is live, but the catalogue answered its request with HTTP 507 (insufficient storage). The catalogue is reachable yet cannot write; check its disk usage.'
             suggested = {'node':'catalog-b','kind':'disk'}
+        elif live['body']['ok'] and not business['body']['ok'] and result.get('upstream_status') == 429:
+            message = f'{g} is live, but the catalogue refused its request with HTTP 429 (too many requests: {result.get("upstream_error") or "quota exceeded"}). The catalogue is up and answering; it is rejecting this caller. Its own health checks may still pass, because they come from a different caller. Check the catalogue\'s traffic and quotas.'
+            suggested = {'node':'catalog-b','kind':'traffic'}
+        elif live['body']['ok'] and not business['body']['ok'] and result.get('error') in TIMEOUTS and catalogue_healthy(fresh):
+            ids.append(fresh[('catalog-b', 'business')]['id'])
+            message = (f"{g} is live, but its call to the catalogue timed out ({result.get('error')}) rather than being refused, while the catalogue answers its own business requests quickly. "
+                       "A timeout without a slow service means packets went missing on the way: a lost connection setup or reply. If the same request sometimes works, compare the network path of both ends.")
+            suggested = {'node':'catalog-b','kind':'network'}
         elif live['body']['ok'] and not business['body']['ok'] and result.get('upstream_status') == 500:
             message = f'{g} is live, but the catalogue answered its request with HTTP 500. The catalogue is reachable yet failing internally; compare its logs and running config with what was deployed.'
             suggested = {'node':'catalog-b','kind':'config'}
@@ -116,6 +125,15 @@ def remedy(fresh):
         elif kind == 'config' and (body.get('result') or {}).get('drifted'):
             setting = next(s for s in body['result']['settings'] if s['drifted'])
             action = f"The running config on {node} differs from its deployed settings: {setting['key']} is {setting['value']} but {setting['deployed']} was deployed. You can try restoring the deployed config, then verify business requests succeed again."
+        elif kind == 'network' and any(q.get('kind') == 'netem' and q.get('loss_pct') for q in (body.get('result') or {}).get('qdiscs', [])):
+            queue = next(q for q in body['result']['qdiscs'] if q.get('kind') == 'netem')
+            tcp = body['result'].get('tcp') or {}
+            resent = f", and {tcp['retrans_pct']:g}% of the TCP segments it sent had to be resent" if tcp.get('retrans_pct') is not None else ''
+            action = f"Traffic leaving {node} passes a netem queue that drops {queue['loss_pct']:g}% of packets{resent}. You can try removing the packet loss, then verify requests succeed reliably, not just once."
+        elif kind == 'traffic' and any(q.get('limit_rps') == 0 for q in (body.get('result') or {}).get('quotas', [])):
+            zero = [q['client'] for q in body['result']['quotas'] if q.get('limit_rps') == 0]
+            rejected = sum(c.get('rejected', 0) for c in body['result'].get('clients', []))
+            action = f"{node} enforces a request quota of 0 per second for {' and '.join(zero)}, set by {(body['result'].get('quota_source') or {}).get('pushed_by', 'the quota system')} rather than its deployed {body['result']['quotas'][0].get('deployed_rps')}; {rejected} requests were rejected in the last minute. You can try resetting the client quotas, then verify the gateways' business requests succeed."
         elif kind == 'network' and any(q.get('kind') == 'netem' and q.get('delay_ms') for q in (body.get('result') or {}).get('qdiscs', [])):
             queue = next(q for q in body['result']['qdiscs'] if q.get('kind') == 'netem')
             action = f"Traffic leaving {node} passes a netem queue that adds {queue['delay_ms']:g} ms, and new connections take about {body.get('median_connect_ms')} ms. You can try removing the traffic delay, then verify its latency returns below {SLOW_MS} ms."

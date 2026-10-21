@@ -19,6 +19,9 @@ class Fleet:
         self.full = {'gateway-a': False, 'catalog-b': False, 'gateway-c': False}
         self.drifted = {'gateway-a': False, 'catalog-b': False, 'gateway-c': False}
         self.delayed = {'gateway-a': False, 'catalog-b': False, 'gateway-c': False}
+        self.lossy = {'gateway-a': False, 'catalog-b': False, 'gateway-c': False}
+        self.squeezed = {'gateway-a': False, 'catalog-b': False, 'gateway-c': False}  # only the catalogue has quotas
+        self.loss_tick = 0  # a lossy path repeats three failing cycles, then two working ones
         self.mutations = []
         self.broker_available = True
         self.log_entries = None  # set to plant entries in /diagnostics/logs
@@ -29,9 +32,10 @@ class Fleet:
         if verb not in ('inspect', 'resources'):
             if op['generation'] != node + '-generation':
                 return httpx.Response(409)
-            if verb in ('delay', 'undelay'):
-                changed = self.delayed[node] != (verb == 'delay')
-                self.delayed[node] = verb == 'delay'
+            if verb in ('delay', 'undelay', 'drop', 'undrop'):
+                state = self.delayed if verb in ('delay', 'undelay') else self.lossy
+                changed = state[node] != (verb in ('delay', 'drop'))
+                state[node] = verb in ('delay', 'drop')
             else:
                 changed = self.running[node] != (verb == 'start')
                 self.running[node] = verb == 'start'
@@ -53,9 +57,12 @@ class Fleet:
             if request.headers.get('x-aegis-fleet-token') != 'fleet-token':
                 return httpx.Response(403)
             verb = path.rsplit('/', 1)[1]
-            state = {'fill': self.full, 'clear': self.full, 'burn': self.busy, 'calm': self.busy, 'drift': self.drifted, 'restore': self.drifted}[verb]
-            changed = state[node] != (verb in ('fill', 'burn', 'drift'))
-            state[node] = verb in ('fill', 'burn', 'drift')
+            state = {'fill': self.full, 'clear': self.full, 'burn': self.busy, 'calm': self.busy, 'drift': self.drifted, 'restore': self.drifted,
+                     'squeeze': self.squeezed, 'requota': self.squeezed}[verb]
+            on = verb in ('fill', 'burn', 'drift', 'squeeze')
+            changed = state[node] != on and (state is not self.squeezed or node == 'catalog-b')
+            if changed:
+                state[node] = on
             if changed:
                 self.mutations.append((node, path.rsplit('/', 1)[1]))
             return httpx.Response(200, json={'changed': changed})
@@ -70,8 +77,20 @@ class Fleet:
         if path == '/diagnostics/trace':
             return httpx.Response(200, json={'request_ok': not self.drifted[node], 'spans': [], 'handler_ms': 2.0})
         if path == '/diagnostics/network':
-            return httpx.Response(200, json={'available': True, 'qdiscs': [{'kind': 'netem', 'dev': 'eth0', 'root': True, 'delay_ms': 600.0}]
-                                             if self.delayed[node] else [{'kind': 'noqueue', 'dev': 'eth0', 'root': True, 'delay_ms': None}]})
+            queue = ({'kind': 'netem', 'dev': 'eth0', 'root': True, 'delay_ms': 600.0, 'loss_pct': None} if self.delayed[node] else
+                     {'kind': 'netem', 'dev': 'eth0', 'root': True, 'delay_ms': None, 'loss_pct': 50.0} if self.lossy[node] else
+                     {'kind': 'noqueue', 'dev': 'eth0', 'root': True, 'delay_ms': None, 'loss_pct': None})
+            return httpx.Response(200, json={'available': True, 'qdiscs': [queue], 'tcp': {'available': True, 'retrans_pct': 25.0 if self.lossy[node] else 0.0}})
+        if path == '/diagnostics/traffic':
+            quotas = [{'client': g, 'limit_rps': 0 if self.squeezed[node] else 20, 'deployed_rps': 20, 'changed': self.squeezed[node]}
+                      for g in ('gateway-a', 'gateway-c')] if node == 'catalog-b' else []
+            clients = [{'client': g, 'requests': 30, 'rejected': 30 if self.squeezed[node] else 0, 'errors': 0} for g in ('gateway-a', 'gateway-c')]
+            return httpx.Response(200, json={'window_s': 60, 'clients': clients if node == 'catalog-b' else [], 'quotas': quotas,
+                                             'quota_source': {'pushed_by': 'quota-manager' if self.squeezed[node] else 'deployment'} if node == 'catalog-b' else None})
+        if path == '/summary' and node.startswith('gateway') and (self.lossy['catalog-b'] or self.lossy[node]):
+            self.loss_tick += 1
+            if (self.loss_tick - 1) // 2 % 5 < 3:  # two gateway requests a cycle
+                return httpx.Response(503, json={'ok': False, 'error': 'ReadTimeout'})
         slow = self.delayed[node] or self.busy[node] or (node.startswith('gateway') and path == '/summary' and (self.busy['catalog-b'] or self.delayed['catalog-b']))
         if slow and path in ('/live', '/summary'):
             time.sleep(0.06)  # above the test SLOW_MS
@@ -81,6 +100,8 @@ class Fleet:
             return httpx.Response(507, json={'ok': False, 'errno': 'ENOSPC'})
         if self.drifted[node]:
             return httpx.Response(503 if node.startswith('gateway') else 500, json={'ok': False, 'error': 'ConnectError' if node.startswith('gateway') else 'FileNotFoundError'})
+        if node.startswith('gateway') and self.squeezed['catalog-b']:
+            return httpx.Response(503, json={'ok': False, 'error': 'HTTPStatusError', 'upstream_status': 429, 'upstream_error': 'QuotaExceeded'})
         if node.startswith('gateway') and self.drifted['catalog-b']:
             return httpx.Response(503, json={'ok': False, 'upstream_status': 500})
         if node.startswith('gateway') and not self.running['catalog-b']:
@@ -473,9 +494,9 @@ def test_challenge_hides_fault_kind_and_target(lab):
             await controller.reset_locked(f'reset-kind-{attempt:03d}')
             for _ in range(3):
                 await controller.cycle()
-            if len(seen) == 5:
+            if len(seen) == 7:
                 break
-        assert seen == {'service-unavailable', 'cpu-starvation', 'disk-full', 'config-drift', 'network-delay'}
+        assert seen == {'service-unavailable', 'cpu-starvation', 'disk-full', 'config-drift', 'network-delay', 'packet-loss', 'quota-zero'}
     run(scenario())
 
 
@@ -670,3 +691,95 @@ def test_storage_pressure_pauses_collection_and_retention_recovers_it(tmp_path, 
     finally:
         run(client.aclose())
         store.db.close()
+
+
+def test_packet_loss_flaps_and_recovery_needs_a_longer_streak(lab):
+    async def scenario():
+        controller, fleet = lab
+        async def connect(host, port):
+            return None, Writer()
+        controller.connect = connect
+        await baseline(controller)
+        await controller.start(Start(mode='practice', kind='packet-loss', target='catalog-b', key='start-loss'))
+        assert fleet.lossy['catalog-b'] and fleet.running['catalog-b']
+        for _ in range(10):
+            await controller.cycle()
+        # Failures come and go, yet the window still detects them, and the flapping raises the bar for recovery.
+        assert controller.session['status'] == 'investigating' and controller.session['required_streak'] == 10
+        network = await controller.check('catalog-b', 'network')
+        assert network['body']['result']['qdiscs'][0]['loss_pct'] == 50.0
+        for node, verb in (('catalog-b', 'undelay'), ('gateway-a', 'undrop'), ('catalog-b', 'restore')):
+            assert (await controller.mutate(f'wrong-{node}-{verb}', node, verb))['status'] == 'unchanged'
+        # A wrong fix with a lucky healthy run is not credited: the lossy path keeps failing within ten cycles.
+        controller.session['status'] = 'verifying'
+        controller.successes = 0
+        for _ in range(12):
+            await controller.cycle()
+        assert controller.session['status'] == 'verifying'
+        await verify(controller, 'undrop', 'catalog-b', 'undrop')
+        assert controller.session['status'] == 'verifying'
+        for _ in range(7):
+            await controller.cycle()
+        assert controller.session['status'] == 'recovered' and controller.session['verification'].startswith('10 consecutive')
+        assert '50% of the packets' in controller.public_session(controller.session | {'revealed': True})['debrief']
+        await controller.reset_locked('reset-loss')
+        assert [r['verb'] for r in controller.session['reset']['results']] == ['start', 'start', 'start', 'undrop']
+    run(scenario())
+
+
+def test_steady_faults_keep_the_three_cycle_verification(lab):
+    async def scenario():
+        controller, _ = lab
+        await baseline(controller)
+        await controller.start(Start(mode='practice', key='start-steady'))
+        await investigate(controller)
+        await verify(controller, 'recover-steady', 'catalog-b', 'start')
+        assert controller.session['status'] == 'recovered' and 'required_streak' not in controller.session
+    run(scenario())
+
+
+def test_quota_zero_is_catalogue_only_and_hides_behind_green_probes(lab):
+    async def scenario():
+        controller, fleet = lab
+        await baseline(controller)
+        with pytest.raises(HTTPException) as refused:
+            await controller.start(Start(mode='practice', kind='quota-zero', target='gateway-a', key='start-quota-gw'))
+        assert refused.value.status_code == 422 and controller.session is None
+        await controller.start(Start(mode='practice', kind='quota-zero', target='catalog-b', key='start-quota'))
+        assert await investigate(controller) == {'gateway-a': 'degraded', 'catalog-b': 'healthy', 'gateway-c': 'degraded'}
+        business = controller.latest[('gateway-a', 'business')]
+        assert business['body']['result']['upstream_status'] == 429
+        traffic = await controller.check('catalog-b', 'traffic')
+        assert {q['limit_rps'] for q in traffic['body']['result']['quotas']} == {0}
+        for node, verb in (('catalog-b', 'restore'), ('gateway-c', 'requota')):
+            assert (await controller.mutate(f'wrong-quota-{node}', node, verb))['status'] == 'unchanged'
+        await verify(controller, 'requota', 'catalog-b', 'requota')
+        assert controller.session['status'] == 'recovered'
+        assert 'HTTP 429' in controller.public_session(controller.session | {'revealed': True})['debrief']
+    run(scenario())
+
+
+def test_challenge_only_picks_valid_targets(lab, monkeypatch):
+    async def scenario():
+        controller, _ = lab
+        picks = iter(['quota-zero', 'catalog-b'])
+        monkeypatch.setattr('aegis.controller.secrets.choice', lambda options: (choice := next(picks)) in options and choice)
+        await baseline(controller)
+        await controller.start(Start(mode='challenge', key='challenge-quota'))
+        assert (controller.session['fault_kind'], controller.session['fault_target']) == ('quota-zero', 'catalog-b')
+    run(scenario())
+
+
+def test_a_timed_out_connection_is_a_measurement_not_a_failed_check(lab, monkeypatch):
+    async def scenario():
+        controller, _ = lab
+        monkeypatch.setattr('aegis.controller.CONNECT_LIMIT_S', 0.05)
+        attempts = iter([True, False, False])
+        async def connect(host, port):
+            if next(attempts):
+                await asyncio.sleep(1)  # a handshake reply lost twice outlasts the limit
+            return None, Writer()
+        controller.connect = connect
+        evidence = await controller.check('catalog-b', 'network')
+        assert evidence['body']['ok'] and evidence['body']['connect_timeouts'] == 1 and evidence['body']['connect_ms'][0] == 50.0
+    run(scenario())

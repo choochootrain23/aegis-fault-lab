@@ -172,9 +172,51 @@ def test_simulator_debriefs_match_the_controller():
     """The browser simulator keeps its own copy of the debriefs; it must not drift from what the real lab says."""
     from pathlib import Path
     import json
-    from aegis.controller import DEBRIEFS, DELAY_MS, SLOW_MS
+    from aegis.controller import DEBRIEFS, DELAY_MS, LOSS_PCT, SLOW_MS
     source = (Path(__file__).resolve().parents[1] / 'preview' / 'sim.js').read_text()
     block = source.split('const DEBRIEFS = ', 1)[1].split('\n};', 1)[0].rstrip().rstrip(',') + '\n}'  # JS allows a trailing comma
     simulated = json.loads(block)
-    expected = {k: v.replace('{slow}', str(SLOW_MS)).replace('{delay}', str(DELAY_MS)) for k, v in DEBRIEFS.items()}
+    expected = {k: v.replace('{slow}', str(SLOW_MS)).replace('{delay}', str(DELAY_MS)).replace('{loss}', str(LOSS_PCT)) for k, v in DEBRIEFS.items()}
     assert simulated == expected
+
+
+def test_upstream_429_points_at_catalogue_traffic():
+    latest={('gateway-a','liveness'):observation('gateway-a','liveness'),
+            ('gateway-a','business'):observation('gateway-a','business',False,result={'upstream_status':429,'upstream_error':'QuotaExceeded'})}
+    result=explain(latest,'hint',now=101)
+    assert result['suggested_check']=={'node':'catalog-b','kind':'traffic'} and 'HTTP 429' in result['message'] and 'different caller' in result['message']
+
+
+def test_timeout_with_a_fast_catalogue_points_at_the_network():
+    latest={('gateway-a','liveness'):observation('gateway-a','liveness'),
+            ('gateway-a','business'):observation('gateway-a','business',False,result={'error':'ReadTimeout'}),
+            ('catalog-b','business'):observation('catalog-b','business',duration_ms=6)}
+    result=explain(latest,'evidence',now=101)
+    assert result['suggested_check']=={'node':'catalog-b','kind':'network'} and 'catalog-b-business' in result['evidence_ids']
+    assert 'packets went missing' in result['message']
+
+
+def test_timeout_without_catalogue_evidence_does_not_claim_packet_loss():
+    latest={('gateway-a','liveness'):observation('gateway-a','liveness'),
+            ('gateway-a','business'):observation('gateway-a','business',False,result={'error':'ReadTimeout'})}
+    assert 'packets went missing' not in explain(latest,'evidence',now=101)['message']
+
+
+def test_netem_loss_supports_removing_packet_loss():
+    network=observation('catalog-b','network',median_connect_ms=1.2,result={'qdiscs':[{'kind':'netem','dev':'eth0','delay_ms':None,'loss_pct':40.0}],'tcp':{'retrans_pct':24.6}})
+    result=explain({('catalog-b','network'):network},'action',now=101)
+    assert result['evidence_ids']==[network['id']] and 'removing the packet loss' in result['message'] and '40%' in result['message'] and '24.6%' in result['message']
+    assert 'removing the traffic delay' not in result['message']
+
+
+def test_zero_quota_supports_resetting_client_quotas():
+    traffic=observation('catalog-b','traffic',result={'quotas':[{'client':'gateway-a','limit_rps':0,'deployed_rps':20},{'client':'gateway-c','limit_rps':0,'deployed_rps':20}],
+                                                     'clients':[{'client':'gateway-a','rejected':29},{'client':'gateway-c','rejected':31}],'quota_source':{'pushed_by':'quota-manager'}})
+    result=explain({('catalog-b','traffic'):traffic},'action',now=101)
+    assert result['suggested_check']=={'node':'catalog-b','kind':'traffic'} and 'resetting the client quotas' in result['message']
+    assert '60 requests were rejected' in result['message'] and 'quota-manager' in result['message']
+
+
+def test_healthy_traffic_supports_no_quota_action():
+    traffic=observation('catalog-b','traffic',result={'quotas':[{'client':'gateway-a','limit_rps':20,'deployed_rps':20}],'clients':[]})
+    assert 'No fresh inspection yet supports' in explain({('catalog-b','traffic'):traffic},'action',now=101)['message']

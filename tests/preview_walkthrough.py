@@ -276,6 +276,62 @@ def main():
             page.click('#reset')
             expect(page.locator('#session-status')).to_have_text('ended', timeout=15000)
 
+            # Packet loss on the catalogue: intermittent failures, a netem loss queue and resent segments; the
+            # look-alike delay fix changes nothing, and flapping makes recovery wait for ten healthy cycles.
+            page.select_option('#practice-kind', 'packet-loss')
+            page.select_option('#practice-target', 'catalog-b')
+            expect(page.locator('#scenario-title')).to_have_text('When packets go missing')
+            expect(page.locator('#start')).to_be_enabled(timeout=20000)
+            page.click('#start')
+            expect(page.locator('#session-status')).to_have_text('investigating', timeout=30000)
+            page.keyboard.press('b')
+            page.keyboard.press('8')
+            row = page.locator('.evidence-row').filter(has_text='dropping 50%').first
+            row.locator('summary').click()
+            expect(row.locator('.config-table tr.drifted')).to_contain_text('50%')
+            expect(row.locator('.waterfall')).to_contain_text('resent')
+            page.click('[data-help="action"]')
+            expect(page.locator('#help-result')).to_contain_text('removing the packet loss')
+            page.click('[data-remedy="undelay"]')
+            expect(page.locator('#toast')).to_contain_text('No network delay present')
+            page.click('[data-remedy="undrop"]')
+            expect(page.locator('#session-status')).to_have_text('recovered', timeout=45000)
+            # Ten cycles are required only once the failures have come and gone twice before the fix.
+            flaps = page.evaluate('AegisSimulator.lab.session.flaps || 0')
+            expect(page.locator('#verification')).to_contain_text('10 consecutive' if flaps >= 2 else 'Three consecutive')
+            page.click('#reset')
+            expect(page.locator('#session-status')).to_have_text('ended', timeout=15000)
+
+            # A zero quota only exists on the catalogue: the picker keeps the target there. The catalogue stays
+            # green to its own probes while both gateways are refused with HTTP 429; restoring config does nothing.
+            page.select_option('#practice-target', 'gateway-a')
+            page.select_option('#practice-kind', 'quota-zero')
+            expect(page.locator('#practice-target')).to_have_value('catalog-b')
+            assert page.locator('#practice-target option[value="gateway-a"]').evaluate('o => o.disabled')
+            expect(page.locator('#scenario-title')).to_have_text('When the quota hits zero')
+            expect(page.locator('#start')).to_be_enabled(timeout=20000)
+            page.click('#start')
+            expect(page.locator('#session-status')).to_have_text('investigating', timeout=20000)
+            expect(page.locator('#node-catalog-b .node-state')).to_have_text('healthy')
+            expect(page.locator('#node-gateway-a .node-state')).to_have_text('degraded')
+            page.click('[data-help="evidence"]')
+            expect(page.locator('#help-result')).to_contain_text('HTTP 429')
+            page.click('#suggested-check')
+            expect(page.locator('#inspector-title')).to_have_text('catalog-b')
+            expect(page.locator('[data-check="traffic"] .check-result')).to_contain_text('rejected')
+            traffic = page.locator('.evidence-row').filter(has_text='quota 0/s').first
+            expect(traffic.locator('.config-table').first).to_contain_text('gateway-a')
+            page.click('[data-help="action"]')
+            expect(page.locator('#help-result')).to_contain_text('resetting the client quotas')
+            page.click('[data-remedy="restore"]')
+            expect(page.locator('#toast')).to_contain_text('Running config already matches')
+            page.click('[data-remedy="requota"]')
+            expect(page.locator('#session-status')).to_have_text('recovered', timeout=25000)
+            page.click('#reset')
+            expect(page.locator('#session-status')).to_have_text('ended', timeout=15000)
+            page.select_option('#practice-kind', 'service-unavailable')
+            assert not page.locator('#practice-target option[value="gateway-a"]').evaluate('o => o.disabled')
+
             # A stopped gateway-c is local: gateway-a and the catalogue stay healthy, and guidance says so.
             page.select_option('#practice-kind', 'service-unavailable')
             page.select_option('#practice-target', 'gateway-c')
@@ -316,7 +372,7 @@ def main():
             expect(page.locator('#scenario-reveal')).to_contain_text('Known scenario:')
             page.click('#reset')
             expect(page.locator('#session-status')).to_have_text('ended', timeout=15000)
-            expect(page.locator('#history .history-item')).to_have_count(7)
+            expect(page.locator('#history .history-item')).to_have_count(9)
 
             mobile = browser.new_page(viewport={'width': 390, 'height': 844})
             mobile.on('pageerror', lambda error: errors.append(str(error)))
