@@ -102,7 +102,7 @@ globalThis.AegisView = Object.freeze({
     const s=state.session, streak=Math.min(state.healthy_streak??0,3);
     if (!s || s.status==='ended') {
       if (state.collector_error) return {step:0, tone:'alert', title:'Collector interrupted', detail:state.collector_error, meter:null};
-      if (state.baseline_cycles<5) return {step:0, tone:'wait', title:'Collecting a healthy baseline', detail:'Both services must pass five consecutive check cycles before a fault can be injected.', meter:{done:Math.max(0,state.baseline_cycles), total:5}};
+      if (state.baseline_cycles<5) return {step:0, tone:'wait', title:'Collecting a healthy baseline', detail:'All three services must pass five consecutive check cycles before a fault can be injected.', meter:{done:Math.max(0,state.baseline_cycles), total:5}};
       return {step:1, tone:'go', title:s?'Ready for another investigation':'Ready when you are', detail:'Choose practice (known fault) or challenge (hidden fault), then press Start investigation.', meter:null};
     }
     if (s.status==='observing') return {step:2, tone:'wait', title:'Fault injected. Watch the topology', detail:'Checks run every two seconds. Repeated failures open the investigation.', meter:null};
@@ -110,10 +110,10 @@ globalThis.AegisView = Object.freeze({
     if (s.status==='verifying' && /has not restored/.test(s.verification||'')) return {step:4, tone:'alert', title:'Not restored yet', detail:'Affected checks still fail or stay slow. Re-check both nodes; a different action or node may be needed.', meter:{done:streak, total:3}};
     if (s.status==='verifying') return {step:4, tone:'wait', title:'Verifying recovery', detail:'An accepted action is not proof. Three consecutive healthy, fast cycles are required.', meter:{done:streak, total:3}};
     if (s.status==='recovered') return {step:5, tone:'done', title:'Recovery verified', detail:'Record what the evidence supports in your diagnosis, then End & reset to close the investigation.', meter:null};
-    return {step:5, tone:'wait', title:'Restoring the baseline', detail:'Both services are started and re-verified. History is preserved.', meter:{done:streak, total:3}};
+    return {step:5, tone:'wait', title:'Restoring the baseline', detail:'All three services are started and re-verified. History is preserved.', meter:{done:streak, total:3}};
   },
   checkSummary(record) {
-    if (!record) return {text:'Not run', tone:''};
+    if (!record) return {text:'Not checked yet', tone:'idle'};
     const result=this.evidenceResult(record), body=record.body||{};
     let outcome=result.tone==='red'?'failed':'ok';
     if(body.ok&&record.kind==='service')outcome=body.running?'running':body.running===false?'stopped':'unknown';

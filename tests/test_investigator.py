@@ -52,6 +52,10 @@ def test_gemini_errors_are_explained(monkeypatch):
         asyncio.run(investigator(monkeypatch, 'gemini', lambda r: httpx.Response(429)).ask(CONTEXT, '', IDS))
     with pytest.raises(InvestigatorError, match='no answer'):
         asyncio.run(investigator(monkeypatch, 'gemini', lambda r: httpx.Response(200, json={'candidates': []})).ask(CONTEXT, '', IDS))
+    def slow(request):
+        raise httpx.ReadTimeout('timed out', request=request)
+    with pytest.raises(InvestigatorError, match='took too long'):
+        asyncio.run(investigator(monkeypatch, 'gemini', slow).ask(CONTEXT, '', IDS))
 
 
 def test_gemini_overload_is_retried_once_then_reported_as_temporary(monkeypatch):

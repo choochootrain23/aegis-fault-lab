@@ -6,9 +6,12 @@ let historySignature='';
 let state, selected = 'gateway-a', busy = false, token = '', chosen = new Set(), evidenceSignature = '', lastSession, connected=false, serverOffset=0, evidencePaused=false, evidenceSnapshot=[], archiveId=null, archiveCursor=null, archiveBusy=false, suggestedCheck=null;
 const esc = text => String(text ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const label = text => String(text || '').replaceAll('_', ' ').replaceAll('-', ' ');
-function setText(id,text){if($(id).textContent!==text)$(id).textContent=text;}
+// Service names never break at their hyphen ("catalog-" then "b"): wrap them, building text nodes rather than HTML.
+const SERVICE_NAME=/\b(gateway-a|gateway-c|catalog-b)\b/;
+function prose(el,text){text=String(text??'');if(el.textContent===text)return;el.replaceChildren(...text.split(SERVICE_NAME).map((part,i)=>{if(i%2===0)return part;const name=document.createElement('span');name.className='nobreak';name.textContent=part;return name;}));}
+function setText(id,text){prose($(id),text);}
 // Tone: true or 'error' for failures, 'ok' for confirmed good news, otherwise neutral progress.
-function toast(text, tone=false) { const el=$('toast'), kind=tone===true?'error':tone||'info'; el.textContent=text; el.dataset.tone=kind; el.classList.toggle('error',kind==='error'); el.hidden=false; el.classList.remove('enter'); void el.offsetWidth; el.classList.add('enter'); clearTimeout(toast.timer); toast.timer=setTimeout(()=>el.hidden=true,kind==='error'?9000:6000); }
+function toast(text, tone=false) { const el=$('toast'), kind=tone===true?'error':tone||'info'; prose(el,text); el.dataset.tone=kind; el.classList.toggle('error',kind==='error'); el.hidden=false; el.classList.remove('enter'); void el.offsetWidth; el.classList.add('enter'); clearTimeout(toast.timer); toast.timer=setTimeout(()=>el.hidden=true,kind==='error'?9000:6000); }
 async function request(path, data) {
   const abort=new AbortController(), deadline=setTimeout(()=>abort.abort(),data?45000:5000);
   try{
@@ -87,7 +90,7 @@ function render(){
  $('baseline').textContent=`${Math.min(state.baseline_cycles,5)}/5 healthy baseline cycles`;
  $('session-status').textContent=s?label(s.status):'Baseline collection';
  $('session-dot').className='dot '+(s?.status==='recovered'?'green':s&&s.status!=='ended'?'amber':'');
- $('verification').textContent=s?.verification||'A successful control action is followed by three healthy verification cycles.';
+ prose($('verification'),s?.verification||'A successful control action is followed by three healthy verification cycles.');
  for(const n of state.nodes){const el=$('node-'+n.id); const badge=el.querySelector('.node-state');
  // Pulse once when measured health changes so the operator notices it without constant motion.
  if(el.dataset.health&&el.dataset.health!==n.health){el.classList.remove('changed');void el.offsetWidth;el.classList.add('changed');}
@@ -97,8 +100,8 @@ function render(){
  AegisTopology.update(state);
  renderJourney();renderCheckResults();renderScenario();
  $('edge-label').textContent=!gateways.length?'Waiting for fresh requests':failing?`Business requests failing on ${failing} of ${gateways.length} gateways`:'Observed business requests succeeded';
- $('scenario-reveal').textContent=s?.scenario?`Known scenario: ${label(s.scenario.kind)} on ${s.scenario.target}`:'';
- $('debrief').textContent=s?.debrief||'';
+ prose($('scenario-reveal'),s?.scenario?`Known scenario: ${label(s.scenario.kind)} on ${s.scenario.target}`:'');
+ prose($('debrief'),s?.debrief||'');
  const attempts=(s?.recovery_attempts||[]).map(a=>({at:a.at,title:`${AegisView.remedyLabel(a.verb||'start')} · ${a.node}`,detail:a.status==='succeeded'?'Action accepted; consult verification':a.detail||a.status}));
  if(s?.reset)attempts.push({at:s.reset.at,title:s.reset.automatic?'Timer expiry reset':'Operator reset',detail:s.status==='ended'?'Baseline verified; investigation ended':'Waiting for healthy baseline; inspect unresolved failures'});
  if(s?.verified_at)attempts.push({at:s.verified_at,title:'Verification complete',detail:s.verification});
@@ -127,7 +130,7 @@ async function renderReport(){
  try{
   const [detail,timeline]=await Promise.all([request('investigations/'+encodeURIComponent(id)),request('investigations/'+encodeURIComponent(id)+'/timeline')]);
   reportKey=key;AegisReport.render($('report'),detail,timeline);
-  if(detail.session.debrief){const p=document.createElement('p');p.className='report-debrief';p.textContent=detail.session.debrief;$('report').append(p);}
+  if(detail.session.debrief){const p=document.createElement('p');p.className='report-debrief';prose(p,detail.session.debrief);$('report').append(p);}
   setText('report-badge',live?'Live · updating':label(detail.session.outcome||detail.session.status));
   setText('report-intro',live?'This investigation is still running; the replay grows as new observations arrive.':'Replay of your most recent investigation. Older ones are under Investigation history.');
  }catch(e){/* the next poll retries */}finally{reportBusy=false;}
@@ -179,7 +182,7 @@ $('filter').addEventListener('change',()=>{evidenceSignature='';renderEvidence(t
 document.querySelectorAll('[data-help]').forEach(b=>b.addEventListener('click',async()=>{
  const result=await action('help',{level:b.dataset.help},'Assistance recorded');
  if(!result)return;
- $('help-result').textContent=result.message;$('help-result').hidden=false;
+ prose($('help-result'),result.message);$('help-result').hidden=false;
  suggestedCheck=result.suggested_check;$('suggested-check').hidden=!suggestedCheck;
  if(suggestedCheck)$('suggested-check').textContent=`Run ${label(suggestedCheck.kind)} · ${suggestedCheck.node} ↗`;
  showCited(result);
@@ -206,7 +209,7 @@ $('ai-form').addEventListener('submit',async e=>{
  const result=await action('ai',{question:$('ai-question').value},'AI answer recorded with your help requests');
  $('ai-answer').classList.remove('thinking');
  if(!result){$('ai-answer').hidden=true;return;}
- $('ai-answer').textContent=result.answer;
+ prose($('ai-answer'),result.answer);
  const meta=document.createElement('small');meta.textContent=`${result.provider} · ${result.model} · ${result.evidence_ids.length} cited observations · check what it cites`;$('ai-answer').append(meta);
  $('ai-question').value='';showCited(result);
 });

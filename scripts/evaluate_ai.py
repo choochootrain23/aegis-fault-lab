@@ -35,7 +35,7 @@ def ask(operator, sid):
             return reply, round(time.monotonic() - began, 1)
         except RuntimeError as error:
             # Provider overload and rate limits are not answers; wait and ask again.
-            if not any(s in str(error) for s in ('rate limit', 'temporarily unavailable')) or attempt == 3:
+            if not any(s in str(error) for s in ('rate limit', 'temporarily unavailable', 'took too long')) or attempt == 3:
                 raise
             time.sleep(30 * (attempt + 1))
 
