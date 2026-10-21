@@ -42,6 +42,15 @@ def export(sid):
         return json.load(response)
 
 
+def owned_active(operator):
+    """The id of the investigation still active, if any (callers only start runs when none was active)."""
+    try:
+        session = operator.request('/api/state')['session'] or {}
+    except RuntimeError:
+        return None
+    return session.get('id') if session.get('status') not in (None, 'ended') else None
+
+
 def ensure(condition, message):
     if not condition:
         raise RuntimeError(message)

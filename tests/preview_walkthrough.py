@@ -200,7 +200,7 @@ def main():
             expect(page.locator('#session-status')).to_have_text('investigating', timeout=20000)
             page.click('#node-catalog-b')
             page.click('[data-check="resources"]')
-            expect(page.locator('[data-check="resources"] .check-result')).to_contain_text('CPU 9')
+            expect(page.locator('[data-check="resources"] .check-result')).to_contain_text(re.compile(r'CPU (9\d(\.\d)?|100)%'))
             page.click('[data-help="action"]')
             expect(page.locator('#help-result')).to_contain_text('runaway job')
             page.click('[data-remedy="calm"]')

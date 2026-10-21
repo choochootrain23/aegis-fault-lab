@@ -13,7 +13,7 @@ import subprocess
 import time
 import uuid
 
-from validate_scenarios import KINDS, NODES, Operator, close, diagnose, recover, start
+from validate_scenarios import KINDS, NODES, Operator, close, diagnose, owned_active, recover, start
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -72,6 +72,9 @@ def main():
         report['error'] = f'{type(error).__name__}: {error}'
         print('SOAK FAILED:', report['error'])
     finally:
+        # An interrupt can land after a round starts but before its id is known. This script refuses to start beside
+        # another investigation, so any active one now is its own.
+        sid = sid or owned_active(operator)
         if sid:
             try:
                 operator.action('reset', sid)

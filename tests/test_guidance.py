@@ -166,3 +166,15 @@ def test_netem_queue_supports_removing_the_delay():
     network=observation('catalog-b','network',median_connect_ms=601.2,result={'qdiscs':[{'kind':'netem','dev':'eth0','delay_ms':600.0}]})
     result=explain({('catalog-b','network'):network},'action',now=101)
     assert result['evidence_ids']==[network['id']] and 'removing the traffic delay' in result['message'] and '600 ms' in result['message']
+
+
+def test_simulator_debriefs_match_the_controller():
+    """The browser simulator keeps its own copy of the debriefs; it must not drift from what the real lab says."""
+    from pathlib import Path
+    import json
+    from aegis.controller import DEBRIEFS, DELAY_MS, SLOW_MS
+    source = (Path(__file__).resolve().parents[1] / 'preview' / 'sim.js').read_text()
+    block = source.split('const DEBRIEFS = ', 1)[1].split('\n};', 1)[0].rstrip().rstrip(',') + '\n}'  # JS allows a trailing comma
+    simulated = json.loads(block)
+    expected = {k: v.replace('{slow}', str(SLOW_MS)).replace('{delay}', str(DELAY_MS)) for k, v in DEBRIEFS.items()}
+    assert simulated == expected

@@ -76,14 +76,17 @@ Reports are under ignored `state/validation/`. The app is running at http://loca
 - **Third node.** gateway-c is a second gateway that also calls catalog-b. Comparing the two gateways is now part of the diagnosis: a fault reaching both points at the shared catalogue, one reaching a single gateway is local. Guidance, the live map, the incident report (three series), keyboard shortcuts (A/B/C) and every validator cover all three services.
 - **Fifth fault: network delay.** The broker adds a fixed 600 ms netem delay to one service's network interface through a short-lived helper container that joins only that container's network namespace, with `NET_ADMIN` as its only capability, a read-only root, no new privileges and tight memory and process limits; it refuses to replace a queue it did not create. A new **Network path** check times TCP connects from the controller and lists the service's queue settings. Remedy: **Remove traffic delay**. Guidance points slow requests with normal CPU at the network path.
 - **Optional AI investigator.** A read-only panel asks a model (Gemini by default, or Claude through the Anthropic SDK) about the evidence on screen. It receives only summarised public observations and node health, never the fault record, cannot act, cites observations by id (citations are checked against what was sent) and is limited to 30 questions per investigation; use is recorded as help. Nothing is sent anywhere without `AEGIS_AI_API_KEY` in `.env`.
-- **Hardening.** Storage budget configurable with `AEGIS_STORAGE_LIMIT_MIB` and tested under pressure; `scripts/soak.py` for multi-hour runs (118 passing rounds over about 91 minutes so far, memory flat); an axe-core accessibility audit (contrast, landmark and focus fixes made); simulator walkthrough in Firefox as well as Chromium; a 320 px overflow in the scenario picker fixed.
+- **Hardening.** Storage budget configurable with `AEGIS_STORAGE_LIMIT_MIB` and tested under pressure; `scripts/soak.py` for multi-hour runs (a full two-hour run passed 157 of 157 rounds with flat controller memory); an axe-core accessibility audit (contrast, landmark and focus fixes made); simulator walkthrough in Firefox as well as Chromium; a 320 px overflow in the scenario picker fixed.
 - Validation: see [validation](VALIDATION.md). In a 30-round hidden-fault evaluation on real Docker, the AI investigator named the right remedy and service in every round once all inspections had been run, and gave one premature wrong guess in 30 rounds when only business checks had been run.
+- AI hardening: service-supplied text is clipped before it reaches the model, the prompt treats evidence as data, and a test shows a fully hijacked model still cannot act, reveal the fault or fake citations.
+- Simulator fidelity: the network-delay model is calibrated against about 4,400 real checks from the soak (no failures; about 610 ms through a delayed catalogue and 1,210 ms on a delayed gateway). The debrief text was corrected to match, and a test keeps the simulator's debriefs identical to the controller's.
+- Portfolio: [interview walkthrough](interview-walkthrough.md), two [example incident exports](examples/) from real challenge runs (one with real AI answers), and `scripts/record_demo.py`, which records a captioned simulator demo.
 - Interface motion: the suggested-next card breathes in its tone colour, with a light running down its bar and a comet circling it when an action is suggested; Start investigation carries a rotating ring of the signature colours; failing services ping on the live map; the AI shows a flowing line while it thinks. Everything stops under reduced motion.
 
 ## Next work
 
-1. Screen-reader review and Safari/WebKit coverage.
-2. A full uninterrupted multi-hour soak; AI evaluation with other models and question wording.
+1. Screen-reader review.
+2. Runs measured in days; AI evaluation with other models and question wording.
 
 ## Boundaries preserved
 

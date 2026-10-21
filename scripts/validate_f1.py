@@ -17,14 +17,14 @@ BASE = 'http://localhost:8787'
 
 
 class Operator:
-    def request(self, path, payload=None):
+    def request(self, path, payload=None, timeout=25):
         headers = {}
         if payload is not None:
             snapshot = self.request('/api/state')
             headers = {'Content-Type': 'application/json', 'Origin': BASE, 'X-Aegis-Token': snapshot['token']}
         request = Request(BASE + path, data=json.dumps(payload).encode() if payload is not None else None, headers=headers)
         try:
-            with urlopen(request, timeout=25) as response:
+            with urlopen(request, timeout=timeout) as response:
                 return json.load(response)
         except HTTPError as error:
             try: detail = json.load(error).get('detail', 'Request failed')

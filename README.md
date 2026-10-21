@@ -279,6 +279,8 @@ For a long run, `python3 scripts/soak.py --run --hours 2` repeats random practic
 
 With an AI key configured, `python3 scripts/evaluate_ai.py --run --rounds 30` grades the AI investigator on hidden faults. It runs challenge rounds, so the model never sees the fault, and asks twice in each: after business checks only, where a wrong action counts as overconfidence, and after every inspection, where it should name the right remedy and service. Every question is a real model call.
 
+`scripts/record_demo.py` records a captioned two-minute video of the browser simulator (network delay on the catalogue, from baseline to incident report) to the ignored `state/demo/` folder, plus a compressed copy small enough to drag into a GitHub README. It needs only the Playwright environment, not Docker.
+
 Each `--run` script deliberately interrupts the project's services and refuses to start while an investigation is active.
 
 ### Browser tests
@@ -295,7 +297,7 @@ These need Playwright (validated with 1.64.0) and Chromium, installed separately
 | `.venv/bin/python scripts/validate_browser.py --run` | Challenge secrecy, controller restart mid-investigation, diagnosis and recovery through the UI, against the real Docker lab |
 | `.venv/bin/python tests/browser_review.py` | Desktop and phone layouts, archive, citations and keyboard use, with its own controller and labelled test records (needs port 8787 free) |
 | `.venv/bin/python tests/browser_workflow.py` | The active workflow against two real service processes, with accelerated timing (needs port 8787 free) |
-| `.venv/bin/python tests/preview_walkthrough.py` | The browser simulator: practice, challenge, every fault, report replay, tour and live map. Set `AEGIS_BROWSER=firefox` to run it in Firefox (after `playwright install firefox`) |
+| `.venv/bin/python tests/preview_walkthrough.py` | The browser simulator: practice, challenge, every fault, report replay, tour and live map. Set `AEGIS_BROWSER=firefox` or `AEGIS_BROWSER=webkit` to run it in Firefox or Safari's engine (after `playwright install firefox webkit`; WebKit on Linux also needs `playwright install-deps webkit`) |
 | `.venv/bin/python tests/accessibility_audit.py` | An axe-core audit of the page in six states (welcome, ready, active investigation, shortcuts, report, phone); fails on serious or critical violations. Needs `axe.min.js` (axe-core 4.10.2) saved to `state/ui-tools/axe/` |
 
 `node tests/view-model.mjs` runs the pure UI-logic checks if Node.js is installed. See [validation boundaries](docs/VALIDATION.md) for what each layer does and does not establish.
@@ -315,9 +317,9 @@ The build copies `web/` unchanged apart from relabelling every real-measurement 
 
 - **Scenarios:** five are implemented (stopped service, CPU starvation, disk full, config drift, network delay) on three services.
 - **AI investigator:** optional and off by default. In a 30-round hidden-fault evaluation with `gemini-3.5-flash-lite` it named the correct fix every time once all inspections had been run, but once guessed too early from thin evidence. Other models are unevaluated. Treat answers as suggestions and check what they cite.
-- **Not yet validated:** screen-reader use (the automated axe audit passes, but it cannot judge everything) and Safari. The 15-minute expiry and a controller kill during a Docker action do pass on real Docker (see [validation](docs/VALIDATION.md)).
+- **Not yet validated:** screen-reader use (the automated axe audit passes, but it cannot judge everything). The simulator walkthrough passes automatically in Chromium, Firefox and WebKit, and has been checked by hand in Safari. The 15-minute expiry and a controller kill during a Docker action do pass on real Docker (see [validation](docs/VALIDATION.md)).
 - **Scope:** containers share a kernel, and the business data is synthetic. Nothing here claims physical hardware repair or telemetry.
 
-More detail: [implementation checkpoint](docs/IMPLEMENTATION_STATUS.md), [vision](docs/vision.md), [architecture](docs/architecture.md) and [roadmap](docs/roadmap.md).
+More detail: [implementation checkpoint](docs/IMPLEMENTATION_STATUS.md), [vision](docs/vision.md), [architecture](docs/architecture.md), [roadmap](docs/roadmap.md), two [example incident exports](docs/examples/) from real runs, and an [interview walkthrough](docs/interview-walkthrough.md) of one fault, the privilege trade-off, a restart failure and the AI's uncertainty.
 
 Fonts in `web/fonts/` (Archivo, Inter, Geist Mono, Instrument Serif) are self-hosted under the SIL Open Font License; see `web/fonts/LICENSES.txt`.

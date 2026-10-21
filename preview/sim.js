@@ -30,9 +30,11 @@ const answering = id => fleet[id].running && now() >= fleet[id].readyAt;
 const catalogue = () => ({items: [{sku: 'LAB-001', name: 'Synthetic component', quantity: 12}], generation: fleet['catalog-b'].process});
 const reply = (result, duration) => ({ok: true, http_status: 200, result, duration_ms: duration});
 const log = (node, entry) => { const logs = fleet[node].logs; logs.push({at: now(), generation: fleet[node].process, ...entry}); if (logs.length > 200) logs.shift(); };
-// Network delay: every packet leaving a delayed node waits; a request on a fresh connection pays it twice.
+// Network delay: everything a delayed node sends waits once. Calibrated on the real lab (68 rounds, ~4,400 checks):
+// a delayed catalogue's checks ~606-608 ms, callers ~612 ms, a delayed gateway's requests ~1,210 ms (outbound call
+// and reply), no failures, and fewer than 0.5% of checks paying an extra delay.
 const DELAY = 600;
-const lag = node => (fleet[node].delayed ? DELAY + (Math.random() < 0.3 ? DELAY : 0) + between(0.2, 2) : 0);
+const lag = node => (fleet[node].delayed ? DELAY + (Math.random() < 0.004 ? DELAY : 0) + between(0.5, 2.5) : 0);
 const busyMs = () => Math.round(Math.min(1600, 110 + Math.random() ** 1.6 * 1100) * 10) / 10;
 const diskFull = node => ({ok: false, error: 'OSError', errno: 'ENOSPC', detail: 'No space left on device', path: 'receipt write', generation: fleet[node].process});
 // Runtime settings as aegis/fleet.py reports them; drift overrides one, as a bad hot reload would.
@@ -58,8 +60,9 @@ function trace(node) {
     else if (cat.drifted) ok = span(name, between(2, 6), false, {status: 500});
     else if (cat.full) ok = span(name, between(2, 6), false, {status: 507});
     else {
-      const ms = (cat.busy ? busyMs() : between(1.5, 6)) + lag('catalog-b') + lag(node);
-      ok = ms > 1000 ? span(name, 1000, false, {error: 'ReadTimeout'}) : span(name, ms, true, {status: 200});
+      // httpx applies the 1-second timeout to each wait, so only a slow catalogue handler can exceed it, not the delay.
+      const wait = cat.busy ? busyMs() : between(1.5, 6), ms = Math.round((wait + lag('catalog-b') + lag(node)) * 10) / 10;
+      ok = wait > 1000 ? span(name, 1000, false, {error: 'ReadTimeout'}) : span(name, ms, true, {status: 200});
     }
   } else {
     ok = n.drifted ? span('catalogue load', own(0.1, 0.5), false, {source: DRIFT[node][1], error: 'FileNotFoundError'})
@@ -121,13 +124,14 @@ function answered(node, kind) {
   // Gateway readiness and business requests call the catalogue dependency.
   const correlation = crypto.randomUUID(), cat = fleet['catalog-b'];
   let result, status = 503;
-  const upstream = answering('catalog-b') ? (cat.busy ? busyMs() : between(1.5, 6)) + lag('catalog-b') + lag(node) : between(1, 5);
+  const wait = answering('catalog-b') ? (cat.busy ? busyMs() : between(1.5, 6)) : between(1, 5);
+  const upstream = answering('catalog-b') ? Math.round((wait + lag('catalog-b') + lag(node)) * 10) / 10 : wait;
   if (n.drifted || !answering('catalog-b')) result = {ok: false, dependency: 'catalog-b', correlation, error: 'ConnectError'};
   else if (cat.drifted) { result = {ok: false, dependency: 'catalog-b', correlation, error: 'HTTPStatusError', upstream_status: 500}; log('catalog-b', sourceMissing('catalog-b')); }
   else if (cat.full) { result = {ok: false, dependency: 'catalog-b', correlation, error: 'HTTPStatusError', upstream_status: 507}; log('catalog-b', diskFull('catalog-b')); }
-  else if (upstream > 1000) result = {ok: false, dependency: 'catalog-b', correlation, error: 'ReadTimeout'};
+  else if (wait > 1000) result = {ok: false, dependency: 'catalog-b', correlation, error: 'ReadTimeout'};
   else { result = {ok: true, dependency: 'catalog-b', correlation, catalog: catalogue()}; status = 200; }
-  Object.assign(result, {generation: n.process, duration_ms: Math.min(upstream, 1000)});
+  Object.assign(result, {generation: n.process, duration_ms: wait > 1000 ? 1000 : upstream});
   const {catalog: _, ...logged} = result;
   log(node, logged);
   const total = Math.round((result.duration_ms + (n.busy ? busyMs() : between(2, 9))) * 10) / 10;
@@ -253,7 +257,7 @@ const DEBRIEFS = {
   "cpu-starvation": "The scenario requested a runaway background job inside {target}. When that succeeds, the service keeps running and answering, but slowly: the job uses the container's whole 0.25-CPU limit, the kernel throttles it, and requests queue behind it, crossing the 300 ms threshold. Its log records the job starting. A slow catalogue makes both gateways slow, and sometimes time out, too. Stopping the job returns normal latency.",
   "disk-full": "The scenario requested filling {target}'s 8 MiB /tmp with one large file. When that succeeds, the process stays live, but every business request must write a small receipt, so writes fail with ENOSPC (HTTP 507). A full catalogue fails both gateways' requests too; a full gateway fails only its own. Disk usage shows 100% and the filler as the largest file. Clearing it restores writes.",
   "config-drift": "The scenario requested a bad runtime configuration reload on {target}. When that succeeds, the process stays live and its container keeps running, so liveness, container state, CPU and disk all look normal. On a gateway, the upstream address points at a port nothing listens on, so every business request fails to connect, which looks like a stopped catalogue until the catalogue is checked directly. On the catalogue, the data source points at a dataset that was never deployed, so its business requests fail with HTTP 500 and both gateways' fail with them. The running config shows the drifted setting next to its deployed value, and the log records the reload. Restoring the deployed config fixes it.",
-  "network-delay": "The scenario requested a 600 ms delay on all traffic leaving {target}, applied with a Linux netem queue inside its own network namespace. When that succeeds, the process stays live and its CPU and disk stay normal, but every reply and every new connection waits: its own checks turn slow, and requests that need a fresh connection can exceed the gateways' 1-second upstream timeout. A delayed catalogue slows or fails both gateways; a delayed gateway affects only its own requests. The network path check shows TCP connections taking about 600 ms and the netem queue itself, and a request trace shows a fast handler with the time spent outside it. Removing the delay, or restarting the container, restores normal latency.",
+  "network-delay": "The scenario requested a 600 ms delay on all traffic leaving {target}, applied with a Linux netem queue inside its own network namespace. When that succeeds, the process stays live and its CPU and disk stay normal, but everything it sends waits in the queue: its own checks take about 600 ms longer. A delayed catalogue slows both gateways' requests by the same amount; a delayed gateway pays the delay twice, on its call to the catalogue and on its reply, while the catalogue and the other gateway stay fast. Requests still succeed, because each wait stays under the gateways' 1-second upstream timeout. The network path check shows TCP connections taking about 600 ms and the netem queue itself, and a request trace shows a fast handler with the time spent outside it. Removing the delay, or restarting the container, restores normal latency.",
 };
 const debrief = s => DEBRIEFS[s.fault_kind].replace('{target}', s.fault_target) + ' Injection outcome: ' + (s.fault_action?.status || 'not recorded') + '. The action record explains the exercise but was not evidence available during the investigation. Other evidence-supported investigation orders are valid.';
 

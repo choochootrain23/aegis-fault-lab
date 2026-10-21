@@ -1,9 +1,11 @@
 """Evaluate the AI investigator's answers against hidden faults in the running Docker lab; explicit --run required.
 
 Uses challenge mode, so neither the script's questions nor the model's context name the fault. Each round asks
-twice: after business checks only (the right answer is usually "not yet", and a wrong action is overconfidence),
-then after every inspection on every service (the right answer is the fault's remedy on its target). The fault
-is revealed only after both answers, then the lab is reset. Needs AEGIS_AI_API_KEY configured for the controller;
+up to three times: after business checks only (the right answer is usually "not yet", and a wrong action is
+overconfidence); after every inspection on every service (the right answer is the fault's remedy on its target);
+and, if the model's own recommended action brings verified recovery, once more on the healthy fleet (the right
+answer is "none", and recommending another action is overreach). The fault is revealed only after the answers,
+then the lab is reset. Needs AEGIS_AI_API_KEY configured for the controller;
 every question is a real model call. Reports go to ignored state/validation/.
 """
 import argparse
@@ -15,7 +17,7 @@ import re
 import time
 import uuid
 
-from validate_scenarios import KINDS, NODES, REMEDY, Operator, check, start
+from validate_scenarios import KINDS, NODES, REMEDY, Operator, check, owned_active, start
 
 ROOT = Path(__file__).resolve().parents[1]
 QUESTION = ('What is most likely wrong, and is there one recovery action the evidence clearly supports? '
@@ -28,7 +30,8 @@ def ask(operator, sid):
     for attempt in range(4):
         began = time.monotonic()
         try:
-            reply = operator.request('/api/ai', {'session_id': sid, 'question': QUESTION})
+            # The controller allows a slow provider up to two 40-second attempts, so wait longer than that.
+            reply = operator.request('/api/ai', {'session_id': sid, 'question': QUESTION}, timeout=100)
             return reply, round(time.monotonic() - began, 1)
         except RuntimeError as error:
             # Provider overload and rate limits are not answers; wait and ask again.
@@ -77,21 +80,39 @@ def main():
                 for kind in INSPECTIONS:
                     check(operator, node, kind)
             full, full_s = ask(operator, sid)
+            healthy = healthy_s = None
+            said = ACTION.search(([l for l in full['answer'].splitlines() if 'action:' in l.lower()] or [''])[-1])
+            if said:  # apply the model's own recommendation, never the hidden truth
+                result = operator.action('recover', sid, node=said.group(2).lower(), verb=said.group(1).lower())
+                if result['status'] == 'succeeded':
+                    try:
+                        operator.wait(lambda s: s['session']['status'] == 'recovered', 'verified recovery', sid=sid, timeout=60)
+                        healthy, healthy_s = ask(operator, sid)
+                    except RuntimeError:
+                        pass
             scenario = operator.action('reveal', sid)['scenario']
             operator.action('reset', sid)
             operator.wait(lambda s: s['session']['status'] == 'ended', 'verified reset', sid=sid, timeout=90)
             sid = None
             truth = (REMEDY[scenario['kind']], scenario['target'])
             row = {'kind': scenario['kind'], 'target': scenario['target'], 'expected': f'{truth[0]} on {truth[1]}'}
-            for label, reply, seconds in (('partial', partial, partial_s), ('full', full, full_s)):
+            for label, reply, seconds in (('partial', partial, partial_s), ('full', full, full_s), ('healthy', healthy, healthy_s)):
+                if reply is None:
+                    row[label] = {'verdict': 'skipped'}
+                    continue
                 verdict, said = grade(reply['answer'], truth)
+                if label == 'healthy':
+                    verdict = {'none': 'correct', 'unparsed': 'unparsed'}.get(verdict, 'overreach')
                 row[label] = {'verdict': verdict, 'said': said, 'seconds': seconds, 'cited': len(reply['evidence_ids']),
                               'words': len(reply['answer'].split()), 'answer': reply['answer']}
             report['rounds'].append(row)
             output.write_text(json.dumps(report, indent=2) + '\n')
             print(f"{number:2d} {row['kind']:20} {row['target']:9} partial {row['partial']['verdict']:8} "
-                  f"full {row['full']['verdict']:8} said {row['full']['said']} ({full_s}s, {row['full']['cited']} cited)", flush=True)
+                  f"full {row['full']['verdict']:8} healthy {row['healthy']['verdict']:9} said {row['full']['said']} ({full_s}s, {row['full']['cited']} cited)", flush=True)
     finally:
+        # An interrupt can land after a round starts but before its id is known. This script refuses to start beside
+        # another investigation, so any active one now is its own.
+        sid = sid or owned_active(operator)
         if sid:
             operator.action('reset', sid)
             operator.wait(lambda s: s['session']['status'] == 'ended', 'cleanup reset', sid=sid, timeout=90)
@@ -100,10 +121,11 @@ def main():
             'rounds': len(rounds),
             'full': dict(Counter(r['full']['verdict'] for r in rounds)),
             'partial': dict(Counter(r['partial']['verdict'] for r in rounds)),
+            'healthy': dict(Counter(r['healthy']['verdict'] for r in rounds)),
             'full_correct_by_kind': {k: f"{sum(r['full']['verdict'] == 'correct' for r in rounds if r['kind'] == k)}/"
                                         f"{sum(r['kind'] == k for r in rounds)}" for k in KINDS},
             'combinations_seen': len({(r['kind'], r['target']) for r in rounds}),
-            'uncited_answers': sum(r[p]['cited'] == 0 for r in rounds for p in ('partial', 'full')),
+            'uncited_answers': sum(r[p].get('cited') == 0 for r in rounds for p in ('partial', 'full', 'healthy')),
         }
         report['ended_at'] = datetime.now(timezone.utc).isoformat()
         output.write_text(json.dumps(report, indent=2) + '\n')

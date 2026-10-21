@@ -1,0 +1,3567 @@
+{
+  "session": {
+    "id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+    "mode": "challenge",
+    "status": "ended",
+    "started_at": 1792587231.9141886,
+    "deadline": 1792588131.9141932,
+    "revealed": true,
+    "help": [
+      {
+        "at": 1792587253.6773198,
+        "level": "action",
+        "evidence_ids": [
+          "4b8f1278697d47f18ce083da1bf215b7"
+        ],
+        "message": "The running config on gateway-c differs from its deployed settings: upstream is http://catalog-b:8080 but http://catalog-b:8000 was deployed. You can try restoring the deployed config, then verify business requests succeed again."
+      }
+    ],
+    "notes": [
+      {
+        "at": 1792587253.7022152,
+        "explanation": "config-drift on gateway-c, from inspections.",
+        "uncertainty": "Evidence does not show why it happened.",
+        "evidence_ids": [
+          "4b8f1278697d47f18ce083da1bf215b7",
+          "461b12411213417486908b3315633178"
+        ]
+      }
+    ],
+    "recovery_attempts": [
+      {
+        "key": "065fc40517684bdc88ed77b86e0f93b4",
+        "at": 1792587253.7802546,
+        "status": "unchanged",
+        "node": "gateway-a",
+        "verb": "restore",
+        "result": {
+          "changed": false,
+          "restored": []
+        },
+        "detail": "Running config already matches the deployed settings; nothing changed"
+      },
+      {
+        "key": "cc130f0c87e04b65932bc368e9cced2b",
+        "at": 1792587253.891153,
+        "status": "unchanged",
+        "node": "gateway-c",
+        "verb": "start",
+        "result": {
+          "target": "gateway-c",
+          "generation": "e6c18e677a91f9434cf4fba5789867d5b29614e829d7eaa655f4ac51670d9a91",
+          "running": true,
+          "status": "running",
+          "exit_code": 0,
+          "changed": false
+        },
+        "detail": "Already running; nothing changed"
+      },
+      {
+        "key": "cbee689758314ecba20f7e4d7ee5e40b",
+        "at": 1792587260.946733,
+        "status": "succeeded",
+        "node": "gateway-c",
+        "verb": "restore",
+        "result": {
+          "changed": true,
+          "restored": [
+            "upstream"
+          ]
+        }
+      }
+    ],
+    "verification": "Baseline verified; this is not a targeted recovery",
+    "outcome": "verified_recovery",
+    "detected_at": 1792587237.2843246,
+    "recovery_verified_at": 1792587265.5812204,
+    "recovery_evidence_ids": [
+      "454a757a58b84d9c8ef2b5044e8c55a0",
+      "7f89a3dd76424f54ae68745ffd59957d",
+      "002f0d7315a049498b29ce9abae2b07a",
+      "d29afa2b01f744da9ef524a2364a6a00",
+      "3cb9245c88a54a8ebf41e930995f40e4",
+      "7445e3ee68424fa3a812c0f6ea9716f3",
+      "d9d09150423046f7b61f0867986ad180",
+      "fe9d0da6447245028bfa9365b542a392",
+      "f6560d8de25841db8128671f543f47ee",
+      "6adb0dcb9d5a4ec2b62411a3a7b9274d",
+      "c23e8bbcb443427c9f1211d3c64813c1",
+      "a873e280a13c4bf48a4f7e1a48e8457e",
+      "dbbeab0c3722473c9fc0616d93508e9f",
+      "027bf9811d9c4a32911c43158f6ae492",
+      "e95ccdad8f9b4af3800a87ecba3a0e28",
+      "c8e44d798fcb496c87faa777b660a7ba",
+      "36bd5f687a26468f8d2eb3360e1f08bf",
+      "9005bb0681494e4c8d2d15239345491c"
+    ],
+    "verified_at": 1792587271.6364439,
+    "revealed_at": 1792587266.1430318,
+    "reset": {
+      "automatic": false,
+      "at": 1792587266.1717641,
+      "results": [
+        {
+          "status": "unchanged",
+          "node": "gateway-a",
+          "verb": "start",
+          "result": {
+            "target": "gateway-a",
+            "generation": "8fe85ab27f72bbea2353da0b34c53ce2b097f9f722fa98aa6467b599e86f6357",
+            "running": true,
+            "status": "running",
+            "exit_code": 0,
+            "changed": false
+          },
+          "detail": "Already running; nothing changed"
+        },
+        {
+          "status": "unchanged",
+          "node": "catalog-b",
+          "verb": "start",
+          "result": {
+            "target": "catalog-b",
+            "generation": "b2b1ad3efb7730bac64560ce487158d199a9c0bfb5b998d06fa588619130f4af",
+            "running": true,
+            "status": "running",
+            "exit_code": 0,
+            "changed": false
+          },
+          "detail": "Already running; nothing changed"
+        },
+        {
+          "status": "unchanged",
+          "node": "gateway-c",
+          "verb": "start",
+          "result": {
+            "target": "gateway-c",
+            "generation": "e6c18e677a91f9434cf4fba5789867d5b29614e829d7eaa655f4ac51670d9a91",
+            "running": true,
+            "status": "running",
+            "exit_code": 0,
+            "changed": false
+          },
+          "detail": "Already running; nothing changed"
+        },
+        {
+          "status": "unchanged",
+          "node": "gateway-c",
+          "verb": "restore",
+          "result": {
+            "changed": false,
+            "restored": []
+          },
+          "detail": "Running config already matches the deployed settings; nothing changed"
+        }
+      ]
+    },
+    "ended_at": 1792587271.636437,
+    "closure": "operator_reset",
+    "reset_evidence_ids": [
+      "51c50cdaee314567a413c25c73bbb54e",
+      "a7e01a484a024010a4d88905bff97a0e",
+      "e49ca40ffbce4e4898bdc870cf048ea2",
+      "fa15b4ded4ce4be5b8a4553dda9fec74",
+      "fa006ab5086d4069b3239a89734dff74",
+      "d17463ba4ba64851b7d3ab95ab399a59",
+      "d52445b858a24517bf000415b5d6e4d1",
+      "dcdc1bab05f943acbafdddb5b2a0c9d0",
+      "6e35ceddd858432da1110109d602b003",
+      "5f5321dd058448b59cb2e7ffced2fe88",
+      "9dd7c1f1fabd4a7c93a3c079673e7818",
+      "e0a5fe13a3c2475983d87a1e6c240060",
+      "4b7b579b98814fc7a388b0098bd4c9e1",
+      "a6e27336b72f4bf7b541a43dcf5d1b7e",
+      "3975d2f327054dc1be89e3360b16c787",
+      "425700c69b4c4e87adef0b424d427963",
+      "cd60ee758c2f4c15881e4b718a1a5d78",
+      "90fb1556ade64cae82105b979a9274c4"
+    ],
+    "scenario": {
+      "kind": "config-drift",
+      "target": "gateway-c"
+    },
+    "debrief": "The scenario requested a bad runtime configuration reload on gateway-c. When that succeeds, the process stays live and its container keeps running, so liveness, container state, CPU and disk all look normal. On a gateway, the upstream address points at a port nothing listens on, so every business request fails to connect, which looks like a stopped catalogue until the catalogue is checked directly. On the catalogue, the data source points at a dataset that was never deployed, so its business requests fail with HTTP 500 and both gateways' fail with them. The running config shows the drifted setting next to its deployed value, and the log records the reload. Restoring the deployed config fixes it. Injection outcome: succeeded. The action record explains the exercise but was not evidence available during the investigation. Other evidence-supported investigation orders are valid."
+  },
+  "evidence_summary": {
+    "count": 136,
+    "oldest": 1792587233.244908,
+    "newest": 1792587271.6357522
+  },
+  "missing_citations": [],
+  "report": {
+    "detected_after_s": 5.4,
+    "first_check_after_s": 6.2,
+    "operator_checks": 16,
+    "checks_by_kind": {
+      "business": 1,
+      "config": 3,
+      "disk": 3,
+      "network": 3,
+      "resources": 3,
+      "service": 3
+    },
+    "help_requests": 1,
+    "notes": 1,
+    "recovery_attempts": 3,
+    "ineffective_attempts": 2,
+    "first_effective_action_after_s": 29.0,
+    "effective_actions": 1,
+    "verified_after_s": 33.7,
+    "revealed": true,
+    "outcome": "verified_recovery"
+  },
+  "evidence": [
+    {
+      "id": "90fb1556ade64cae82105b979a9274c4",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587271.6357522,
+      "node": "gateway-c",
+      "kind": "business",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "ok": true,
+          "dependency": "catalog-b",
+          "correlation": "79a8e4b9-29ec-4096-b7d6-f7fd5654285f",
+          "catalog": {
+            "items": [
+              {
+                "sku": "LAB-001",
+                "name": "Synthetic component",
+                "quantity": 12
+              }
+            ],
+            "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+          },
+          "generation": "0f11ee5a-c95e-499f-a13d-099762aacef0",
+          "duration_ms": 2.3
+        },
+        "duration_ms": 9.8,
+        "origin": "collector",
+        "process_generation": "0f11ee5a-c95e-499f-a13d-099762aacef0",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "a6e27336b72f4bf7b541a43dcf5d1b7e",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587271.6345437,
+      "node": "gateway-a",
+      "kind": "business",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "ok": true,
+          "dependency": "catalog-b",
+          "correlation": "ad7dfc6c-1917-4bb9-a6aa-271cfb442462",
+          "catalog": {
+            "items": [
+              {
+                "sku": "LAB-001",
+                "name": "Synthetic component",
+                "quantity": 12
+              }
+            ],
+            "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+          },
+          "generation": "23d2870f-83e3-42a4-b967-3f4e68632607",
+          "duration_ms": 3.1
+        },
+        "duration_ms": 11.5,
+        "origin": "collector",
+        "process_generation": "23d2870f-83e3-42a4-b967-3f4e68632607",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "4b7b579b98814fc7a388b0098bd4c9e1",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587271.6334248,
+      "node": "gateway-a",
+      "kind": "liveness",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "live": true,
+          "role": "gateway",
+          "generation": "23d2870f-83e3-42a4-b967-3f4e68632607"
+        },
+        "duration_ms": 12.1,
+        "origin": "collector",
+        "process_generation": "23d2870f-83e3-42a4-b967-3f4e68632607",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "425700c69b4c4e87adef0b424d427963",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587271.6324482,
+      "node": "catalog-b",
+      "kind": "business",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "items": [
+            {
+              "sku": "LAB-001",
+              "name": "Synthetic component",
+              "quantity": 12
+            }
+          ],
+          "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+        },
+        "duration_ms": 7.7,
+        "origin": "collector",
+        "process_generation": "a374959d-c887-4739-bf2c-e47df83a0fb7",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "cd60ee758c2f4c15881e4b718a1a5d78",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587271.631239,
+      "node": "gateway-c",
+      "kind": "liveness",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "live": true,
+          "role": "gateway",
+          "generation": "0f11ee5a-c95e-499f-a13d-099762aacef0"
+        },
+        "duration_ms": 5.8,
+        "origin": "collector",
+        "process_generation": "0f11ee5a-c95e-499f-a13d-099762aacef0",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "3975d2f327054dc1be89e3360b16c787",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587271.6297762,
+      "node": "catalog-b",
+      "kind": "liveness",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "live": true,
+          "role": "catalog",
+          "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+        },
+        "duration_ms": 5.8,
+        "origin": "collector",
+        "process_generation": "a374959d-c887-4739-bf2c-e47df83a0fb7",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "e0a5fe13a3c2475983d87a1e6c240060",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587269.6183248,
+      "node": "gateway-c",
+      "kind": "business",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "ok": true,
+          "dependency": "catalog-b",
+          "correlation": "b3555d14-5215-496c-9fb3-c8bccc568a82",
+          "catalog": {
+            "items": [
+              {
+                "sku": "LAB-001",
+                "name": "Synthetic component",
+                "quantity": 12
+              }
+            ],
+            "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+          },
+          "generation": "0f11ee5a-c95e-499f-a13d-099762aacef0",
+          "duration_ms": 2.0
+        },
+        "duration_ms": 11.3,
+        "origin": "collector",
+        "process_generation": "0f11ee5a-c95e-499f-a13d-099762aacef0",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "dcdc1bab05f943acbafdddb5b2a0c9d0",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587269.6174393,
+      "node": "gateway-a",
+      "kind": "business",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "ok": true,
+          "dependency": "catalog-b",
+          "correlation": "84271c10-7e21-44b2-9782-c91eb2e47da9",
+          "catalog": {
+            "items": [
+              {
+                "sku": "LAB-001",
+                "name": "Synthetic component",
+                "quantity": 12
+              }
+            ],
+            "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+          },
+          "generation": "23d2870f-83e3-42a4-b967-3f4e68632607",
+          "duration_ms": 2.1
+        },
+        "duration_ms": 13.8,
+        "origin": "collector",
+        "process_generation": "23d2870f-83e3-42a4-b967-3f4e68632607",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "5f5321dd058448b59cb2e7ffced2fe88",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587269.615871,
+      "node": "catalog-b",
+      "kind": "business",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "items": [
+            {
+              "sku": "LAB-001",
+              "name": "Synthetic component",
+              "quantity": 12
+            }
+          ],
+          "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+        },
+        "duration_ms": 10.4,
+        "origin": "collector",
+        "process_generation": "a374959d-c887-4739-bf2c-e47df83a0fb7",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "9dd7c1f1fabd4a7c93a3c079673e7818",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587269.6147444,
+      "node": "gateway-c",
+      "kind": "liveness",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "live": true,
+          "role": "gateway",
+          "generation": "0f11ee5a-c95e-499f-a13d-099762aacef0"
+        },
+        "duration_ms": 8.4,
+        "origin": "collector",
+        "process_generation": "0f11ee5a-c95e-499f-a13d-099762aacef0",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "6e35ceddd858432da1110109d602b003",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587269.6138039,
+      "node": "catalog-b",
+      "kind": "liveness",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "live": true,
+          "role": "catalog",
+          "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+        },
+        "duration_ms": 9.2,
+        "origin": "collector",
+        "process_generation": "a374959d-c887-4739-bf2c-e47df83a0fb7",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "d52445b858a24517bf000415b5d6e4d1",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587269.611527,
+      "node": "gateway-a",
+      "kind": "liveness",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "live": true,
+          "role": "gateway",
+          "generation": "23d2870f-83e3-42a4-b967-3f4e68632607"
+        },
+        "duration_ms": 9.2,
+        "origin": "collector",
+        "process_generation": "23d2870f-83e3-42a4-b967-3f4e68632607",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "a7e01a484a024010a4d88905bff97a0e",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587267.5998974,
+      "node": "gateway-a",
+      "kind": "business",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "ok": true,
+          "dependency": "catalog-b",
+          "correlation": "581052a7-e135-4b5e-85c7-76abc150373a",
+          "catalog": {
+            "items": [
+              {
+                "sku": "LAB-001",
+                "name": "Synthetic component",
+                "quantity": 12
+              }
+            ],
+            "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+          },
+          "generation": "23d2870f-83e3-42a4-b967-3f4e68632607",
+          "duration_ms": 2.8
+        },
+        "duration_ms": 13.7,
+        "origin": "collector",
+        "process_generation": "23d2870f-83e3-42a4-b967-3f4e68632607",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "d17463ba4ba64851b7d3ab95ab399a59",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587267.5988865,
+      "node": "gateway-c",
+      "kind": "business",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "ok": true,
+          "dependency": "catalog-b",
+          "correlation": "f216ea0a-88b5-4944-9d2c-3f9ac24cabfb",
+          "catalog": {
+            "items": [
+              {
+                "sku": "LAB-001",
+                "name": "Synthetic component",
+                "quantity": 12
+              }
+            ],
+            "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+          },
+          "generation": "0f11ee5a-c95e-499f-a13d-099762aacef0",
+          "duration_ms": 1.8
+        },
+        "duration_ms": 9.7,
+        "origin": "collector",
+        "process_generation": "0f11ee5a-c95e-499f-a13d-099762aacef0",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "fa15b4ded4ce4be5b8a4553dda9fec74",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587267.597425,
+      "node": "catalog-b",
+      "kind": "business",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "items": [
+            {
+              "sku": "LAB-001",
+              "name": "Synthetic component",
+              "quantity": 12
+            }
+          ],
+          "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+        },
+        "duration_ms": 9.7,
+        "origin": "collector",
+        "process_generation": "a374959d-c887-4739-bf2c-e47df83a0fb7",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "fa006ab5086d4069b3239a89734dff74",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587267.5959523,
+      "node": "gateway-c",
+      "kind": "liveness",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "live": true,
+          "role": "gateway",
+          "generation": "0f11ee5a-c95e-499f-a13d-099762aacef0"
+        },
+        "duration_ms": 7.5,
+        "origin": "collector",
+        "process_generation": "0f11ee5a-c95e-499f-a13d-099762aacef0",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "e49ca40ffbce4e4898bdc870cf048ea2",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587267.5949137,
+      "node": "catalog-b",
+      "kind": "liveness",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "live": true,
+          "role": "catalog",
+          "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+        },
+        "duration_ms": 8.0,
+        "origin": "collector",
+        "process_generation": "a374959d-c887-4739-bf2c-e47df83a0fb7",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "51c50cdaee314567a413c25c73bbb54e",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587267.5931134,
+      "node": "gateway-a",
+      "kind": "liveness",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "live": true,
+          "role": "gateway",
+          "generation": "23d2870f-83e3-42a4-b967-3f4e68632607"
+        },
+        "duration_ms": 8.2,
+        "origin": "collector",
+        "process_generation": "23d2870f-83e3-42a4-b967-3f4e68632607",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "9005bb0681494e4c8d2d15239345491c",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587265.5806277,
+      "node": "gateway-c",
+      "kind": "business",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "ok": true,
+          "dependency": "catalog-b",
+          "correlation": "fff83027-8628-4412-8bee-2825871f39d2",
+          "catalog": {
+            "items": [
+              {
+                "sku": "LAB-001",
+                "name": "Synthetic component",
+                "quantity": 12
+              }
+            ],
+            "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+          },
+          "generation": "0f11ee5a-c95e-499f-a13d-099762aacef0",
+          "duration_ms": 2.5
+        },
+        "duration_ms": 9.6,
+        "origin": "collector",
+        "process_generation": "0f11ee5a-c95e-499f-a13d-099762aacef0",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "027bf9811d9c4a32911c43158f6ae492",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587265.579695,
+      "node": "gateway-a",
+      "kind": "business",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "ok": true,
+          "dependency": "catalog-b",
+          "correlation": "beb7ae86-2155-4d74-b871-738be7acc6ae",
+          "catalog": {
+            "items": [
+              {
+                "sku": "LAB-001",
+                "name": "Synthetic component",
+                "quantity": 12
+              }
+            ],
+            "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+          },
+          "generation": "23d2870f-83e3-42a4-b967-3f4e68632607",
+          "duration_ms": 2.2
+        },
+        "duration_ms": 11.3,
+        "origin": "collector",
+        "process_generation": "23d2870f-83e3-42a4-b967-3f4e68632607",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "c8e44d798fcb496c87faa777b660a7ba",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587265.5783114,
+      "node": "catalog-b",
+      "kind": "business",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "items": [
+            {
+              "sku": "LAB-001",
+              "name": "Synthetic component",
+              "quantity": 12
+            }
+          ],
+          "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+        },
+        "duration_ms": 8.5,
+        "origin": "collector",
+        "process_generation": "a374959d-c887-4739-bf2c-e47df83a0fb7",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "36bd5f687a26468f8d2eb3360e1f08bf",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587265.5772166,
+      "node": "gateway-c",
+      "kind": "liveness",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "live": true,
+          "role": "gateway",
+          "generation": "0f11ee5a-c95e-499f-a13d-099762aacef0"
+        },
+        "duration_ms": 6.7,
+        "origin": "collector",
+        "process_generation": "0f11ee5a-c95e-499f-a13d-099762aacef0",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "e95ccdad8f9b4af3800a87ecba3a0e28",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587265.5763006,
+      "node": "catalog-b",
+      "kind": "liveness",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "live": true,
+          "role": "catalog",
+          "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+        },
+        "duration_ms": 7.0,
+        "origin": "collector",
+        "process_generation": "a374959d-c887-4739-bf2c-e47df83a0fb7",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "dbbeab0c3722473c9fc0616d93508e9f",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587265.5743656,
+      "node": "gateway-a",
+      "kind": "liveness",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "live": true,
+          "role": "gateway",
+          "generation": "23d2870f-83e3-42a4-b967-3f4e68632607"
+        },
+        "duration_ms": 7.3,
+        "origin": "collector",
+        "process_generation": "23d2870f-83e3-42a4-b967-3f4e68632607",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "a873e280a13c4bf48a4f7e1a48e8457e",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587263.5644557,
+      "node": "gateway-c",
+      "kind": "business",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "ok": true,
+          "dependency": "catalog-b",
+          "correlation": "32940091-58b6-4c6a-a093-5827ea9bd409",
+          "catalog": {
+            "items": [
+              {
+                "sku": "LAB-001",
+                "name": "Synthetic component",
+                "quantity": 12
+              }
+            ],
+            "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+          },
+          "generation": "0f11ee5a-c95e-499f-a13d-099762aacef0",
+          "duration_ms": 1.9
+        },
+        "duration_ms": 11.1,
+        "origin": "collector",
+        "process_generation": "0f11ee5a-c95e-499f-a13d-099762aacef0",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "fe9d0da6447245028bfa9365b542a392",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587263.5636961,
+      "node": "gateway-a",
+      "kind": "business",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "ok": true,
+          "dependency": "catalog-b",
+          "correlation": "19ecce8a-315b-4d7e-9ab2-24c293b3902e",
+          "catalog": {
+            "items": [
+              {
+                "sku": "LAB-001",
+                "name": "Synthetic component",
+                "quantity": 12
+              }
+            ],
+            "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+          },
+          "generation": "23d2870f-83e3-42a4-b967-3f4e68632607",
+          "duration_ms": 2.5
+        },
+        "duration_ms": 13.3,
+        "origin": "collector",
+        "process_generation": "23d2870f-83e3-42a4-b967-3f4e68632607",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "6adb0dcb9d5a4ec2b62411a3a7b9274d",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587263.5623703,
+      "node": "catalog-b",
+      "kind": "business",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "items": [
+            {
+              "sku": "LAB-001",
+              "name": "Synthetic component",
+              "quantity": 12
+            }
+          ],
+          "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+        },
+        "duration_ms": 10.5,
+        "origin": "collector",
+        "process_generation": "a374959d-c887-4739-bf2c-e47df83a0fb7",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "c23e8bbcb443427c9f1211d3c64813c1",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587263.5611749,
+      "node": "gateway-c",
+      "kind": "liveness",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "live": true,
+          "role": "gateway",
+          "generation": "0f11ee5a-c95e-499f-a13d-099762aacef0"
+        },
+        "duration_ms": 8.5,
+        "origin": "collector",
+        "process_generation": "0f11ee5a-c95e-499f-a13d-099762aacef0",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "f6560d8de25841db8128671f543f47ee",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587263.5602038,
+      "node": "catalog-b",
+      "kind": "liveness",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "live": true,
+          "role": "catalog",
+          "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+        },
+        "duration_ms": 9.0,
+        "origin": "collector",
+        "process_generation": "a374959d-c887-4739-bf2c-e47df83a0fb7",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "d9d09150423046f7b61f0867986ad180",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587263.558475,
+      "node": "gateway-a",
+      "kind": "liveness",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "live": true,
+          "role": "gateway",
+          "generation": "23d2870f-83e3-42a4-b967-3f4e68632607"
+        },
+        "duration_ms": 9.6,
+        "origin": "collector",
+        "process_generation": "23d2870f-83e3-42a4-b967-3f4e68632607",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "7445e3ee68424fa3a812c0f6ea9716f3",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587261.5457034,
+      "node": "gateway-c",
+      "kind": "business",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "ok": true,
+          "dependency": "catalog-b",
+          "correlation": "5f57dbb2-8386-4cb3-b243-5ffc3eb995bf",
+          "catalog": {
+            "items": [
+              {
+                "sku": "LAB-001",
+                "name": "Synthetic component",
+                "quantity": 12
+              }
+            ],
+            "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+          },
+          "generation": "0f11ee5a-c95e-499f-a13d-099762aacef0",
+          "duration_ms": 4.1
+        },
+        "duration_ms": 10.3,
+        "origin": "collector",
+        "process_generation": "0f11ee5a-c95e-499f-a13d-099762aacef0",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "7f89a3dd76424f54ae68745ffd59957d",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587261.544477,
+      "node": "gateway-a",
+      "kind": "business",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "ok": true,
+          "dependency": "catalog-b",
+          "correlation": "923d883e-cacd-438a-8bb5-aba419dbb142",
+          "catalog": {
+            "items": [
+              {
+                "sku": "LAB-001",
+                "name": "Synthetic component",
+                "quantity": 12
+              }
+            ],
+            "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+          },
+          "generation": "23d2870f-83e3-42a4-b967-3f4e68632607",
+          "duration_ms": 1.8
+        },
+        "duration_ms": 11.5,
+        "origin": "collector",
+        "process_generation": "23d2870f-83e3-42a4-b967-3f4e68632607",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "d29afa2b01f744da9ef524a2364a6a00",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587261.5434344,
+      "node": "catalog-b",
+      "kind": "business",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "items": [
+            {
+              "sku": "LAB-001",
+              "name": "Synthetic component",
+              "quantity": 12
+            }
+          ],
+          "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+        },
+        "duration_ms": 9.1,
+        "origin": "collector",
+        "process_generation": "a374959d-c887-4739-bf2c-e47df83a0fb7",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "3cb9245c88a54a8ebf41e930995f40e4",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587261.542314,
+      "node": "gateway-c",
+      "kind": "liveness",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "live": true,
+          "role": "gateway",
+          "generation": "0f11ee5a-c95e-499f-a13d-099762aacef0"
+        },
+        "duration_ms": 7.5,
+        "origin": "collector",
+        "process_generation": "0f11ee5a-c95e-499f-a13d-099762aacef0",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "002f0d7315a049498b29ce9abae2b07a",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587261.541377,
+      "node": "catalog-b",
+      "kind": "liveness",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "live": true,
+          "role": "catalog",
+          "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+        },
+        "duration_ms": 7.6,
+        "origin": "collector",
+        "process_generation": "a374959d-c887-4739-bf2c-e47df83a0fb7",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "454a757a58b84d9c8ef2b5044e8c55a0",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587261.538787,
+      "node": "gateway-a",
+      "kind": "liveness",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "live": true,
+          "role": "gateway",
+          "generation": "23d2870f-83e3-42a4-b967-3f4e68632607"
+        },
+        "duration_ms": 6.8,
+        "origin": "collector",
+        "process_generation": "23d2870f-83e3-42a4-b967-3f4e68632607",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "461b12411213417486908b3315633178",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587253.6123135,
+      "node": "gateway-c",
+      "kind": "business",
+      "body": {
+        "ok": false,
+        "http_status": 503,
+        "result": {
+          "ok": false,
+          "dependency": "catalog-b",
+          "correlation": "bfc4fc13-6e80-4851-9a3f-95ef75c60019",
+          "error": "ConnectError",
+          "generation": "0f11ee5a-c95e-499f-a13d-099762aacef0",
+          "duration_ms": 1.9
+        },
+        "duration_ms": 3.8,
+        "origin": "operator",
+        "process_generation": "0f11ee5a-c95e-499f-a13d-099762aacef0",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "4b8f1278697d47f18ce083da1bf215b7",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587243.3128793,
+      "node": "gateway-c",
+      "kind": "config",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "role": "gateway",
+          "settings": [
+            {
+              "key": "upstream",
+              "value": "http://catalog-b:8080",
+              "deployed": "http://catalog-b:8000",
+              "drifted": true
+            },
+            {
+              "key": "upstream_timeout_s",
+              "value": 1.0,
+              "deployed": 1.0,
+              "drifted": false
+            }
+          ],
+          "drifted": [
+            "upstream"
+          ],
+          "generation": "0f11ee5a-c95e-499f-a13d-099762aacef0"
+        },
+        "duration_ms": 2.1,
+        "origin": "operator",
+        "process_generation": "0f11ee5a-c95e-499f-a13d-099762aacef0",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "02627bd8732549168765b7bbdd5f8f5b",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587259.5296254,
+      "node": "gateway-c",
+      "kind": "business",
+      "body": {
+        "ok": false,
+        "http_status": 503,
+        "result": {
+          "ok": false,
+          "dependency": "catalog-b",
+          "correlation": "186233a3-34c6-4294-99ff-b86cd6cf7e8d",
+          "error": "ConnectError",
+          "generation": "0f11ee5a-c95e-499f-a13d-099762aacef0",
+          "duration_ms": 2.3
+        },
+        "duration_ms": 9.1,
+        "origin": "collector",
+        "process_generation": "0f11ee5a-c95e-499f-a13d-099762aacef0",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "f106dd52c9bd4ed4a492c7db3fcca72b",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587259.5283787,
+      "node": "gateway-a",
+      "kind": "business",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "ok": true,
+          "dependency": "catalog-b",
+          "correlation": "9b504f4f-0c46-4f5a-a9f9-8131696cca6a",
+          "catalog": {
+            "items": [
+              {
+                "sku": "LAB-001",
+                "name": "Synthetic component",
+                "quantity": 12
+              }
+            ],
+            "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+          },
+          "generation": "23d2870f-83e3-42a4-b967-3f4e68632607",
+          "duration_ms": 2.7
+        },
+        "duration_ms": 9.1,
+        "origin": "collector",
+        "process_generation": "23d2870f-83e3-42a4-b967-3f4e68632607",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "fab8f2cb2c2a49adaab55e0859455dce",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587259.5272267,
+      "node": "catalog-b",
+      "kind": "business",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "items": [
+            {
+              "sku": "LAB-001",
+              "name": "Synthetic component",
+              "quantity": 12
+            }
+          ],
+          "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+        },
+        "duration_ms": 7.3,
+        "origin": "collector",
+        "process_generation": "a374959d-c887-4739-bf2c-e47df83a0fb7",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "e5a06b61d238417d857d6200c1569b1e",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587259.5261562,
+      "node": "gateway-c",
+      "kind": "liveness",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "live": true,
+          "role": "gateway",
+          "generation": "0f11ee5a-c95e-499f-a13d-099762aacef0"
+        },
+        "duration_ms": 5.9,
+        "origin": "collector",
+        "process_generation": "0f11ee5a-c95e-499f-a13d-099762aacef0",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "e00ddf12b72a4c5ba50e314ce8c61dee",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587259.5249708,
+      "node": "gateway-a",
+      "kind": "liveness",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "live": true,
+          "role": "gateway",
+          "generation": "23d2870f-83e3-42a4-b967-3f4e68632607"
+        },
+        "duration_ms": 6.4,
+        "origin": "collector",
+        "process_generation": "23d2870f-83e3-42a4-b967-3f4e68632607",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "fd484a29b25a491e8b4e6acac67dd4f2",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587259.5234368,
+      "node": "catalog-b",
+      "kind": "liveness",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "live": true,
+          "role": "catalog",
+          "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+        },
+        "duration_ms": 3.8,
+        "origin": "collector",
+        "process_generation": "a374959d-c887-4739-bf2c-e47df83a0fb7",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "2631232d2f7b477cb344142ee2b7de1a",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587257.5164583,
+      "node": "gateway-a",
+      "kind": "business",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "ok": true,
+          "dependency": "catalog-b",
+          "correlation": "2785eb15-68c8-4aec-aa02-33aaea4ef6ee",
+          "catalog": {
+            "items": [
+              {
+                "sku": "LAB-001",
+                "name": "Synthetic component",
+                "quantity": 12
+              }
+            ],
+            "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+          },
+          "generation": "23d2870f-83e3-42a4-b967-3f4e68632607",
+          "duration_ms": 2.2
+        },
+        "duration_ms": 13.1,
+        "origin": "collector",
+        "process_generation": "23d2870f-83e3-42a4-b967-3f4e68632607",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "87437571038444af85a43161151d438b",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587257.5153787,
+      "node": "gateway-c",
+      "kind": "business",
+      "body": {
+        "ok": false,
+        "http_status": 503,
+        "result": {
+          "ok": false,
+          "dependency": "catalog-b",
+          "correlation": "df2aa85e-8036-46d1-baac-2f6f2caab458",
+          "error": "ConnectError",
+          "generation": "0f11ee5a-c95e-499f-a13d-099762aacef0",
+          "duration_ms": 2.1
+        },
+        "duration_ms": 9.8,
+        "origin": "collector",
+        "process_generation": "0f11ee5a-c95e-499f-a13d-099762aacef0",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "8182e60ea09d4d3d8ddec7f18b1a0fdc",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587257.5139005,
+      "node": "catalog-b",
+      "kind": "business",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "items": [
+            {
+              "sku": "LAB-001",
+              "name": "Synthetic component",
+              "quantity": 12
+            }
+          ],
+          "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+        },
+        "duration_ms": 9.5,
+        "origin": "collector",
+        "process_generation": "a374959d-c887-4739-bf2c-e47df83a0fb7",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "5c9857da6b9942298a1b23706ccac894",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587257.5125668,
+      "node": "gateway-c",
+      "kind": "liveness",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "live": true,
+          "role": "gateway",
+          "generation": "0f11ee5a-c95e-499f-a13d-099762aacef0"
+        },
+        "duration_ms": 7.7,
+        "origin": "collector",
+        "process_generation": "0f11ee5a-c95e-499f-a13d-099762aacef0",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "95b4c0a0a2244a5f9c9884649f86ebe0",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587257.5112953,
+      "node": "catalog-b",
+      "kind": "liveness",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "live": true,
+          "role": "catalog",
+          "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+        },
+        "duration_ms": 7.4,
+        "origin": "collector",
+        "process_generation": "a374959d-c887-4739-bf2c-e47df83a0fb7",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "46771406952e4b4f9162598ffc099699",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587257.5094779,
+      "node": "gateway-a",
+      "kind": "liveness",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "live": true,
+          "role": "gateway",
+          "generation": "23d2870f-83e3-42a4-b967-3f4e68632607"
+        },
+        "duration_ms": 7.1,
+        "origin": "collector",
+        "process_generation": "23d2870f-83e3-42a4-b967-3f4e68632607",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "272a63127a5541cdb9943c19991b8515",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587255.4988418,
+      "node": "gateway-a",
+      "kind": "business",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "ok": true,
+          "dependency": "catalog-b",
+          "correlation": "ceb556ce-0e5e-4fc9-8176-3d5b4182c22a",
+          "catalog": {
+            "items": [
+              {
+                "sku": "LAB-001",
+                "name": "Synthetic component",
+                "quantity": 12
+              }
+            ],
+            "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+          },
+          "generation": "23d2870f-83e3-42a4-b967-3f4e68632607",
+          "duration_ms": 2.4
+        },
+        "duration_ms": 14.1,
+        "origin": "collector",
+        "process_generation": "23d2870f-83e3-42a4-b967-3f4e68632607",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "dc8628047ca84c70bc0130f1813d2ab4",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587255.4978056,
+      "node": "gateway-c",
+      "kind": "business",
+      "body": {
+        "ok": false,
+        "http_status": 503,
+        "result": {
+          "ok": false,
+          "dependency": "catalog-b",
+          "correlation": "426a7783-9f3b-4243-ae27-332e7b4a2969",
+          "error": "ConnectError",
+          "generation": "0f11ee5a-c95e-499f-a13d-099762aacef0",
+          "duration_ms": 1.8
+        },
+        "duration_ms": 10.0,
+        "origin": "collector",
+        "process_generation": "0f11ee5a-c95e-499f-a13d-099762aacef0",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "1795d76813ab4576a698d1f36c41ff32",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587255.4964805,
+      "node": "catalog-b",
+      "kind": "business",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "items": [
+            {
+              "sku": "LAB-001",
+              "name": "Synthetic component",
+              "quantity": 12
+            }
+          ],
+          "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+        },
+        "duration_ms": 10.1,
+        "origin": "collector",
+        "process_generation": "a374959d-c887-4739-bf2c-e47df83a0fb7",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "6ae9bb3eab1c42bcbd973bcfb209ccbd",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587255.4952836,
+      "node": "gateway-c",
+      "kind": "liveness",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "live": true,
+          "role": "gateway",
+          "generation": "0f11ee5a-c95e-499f-a13d-099762aacef0"
+        },
+        "duration_ms": 8.2,
+        "origin": "collector",
+        "process_generation": "0f11ee5a-c95e-499f-a13d-099762aacef0",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "b04610b1573849de820f9e3169d2fde2",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587255.4943676,
+      "node": "catalog-b",
+      "kind": "liveness",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "live": true,
+          "role": "catalog",
+          "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+        },
+        "duration_ms": 8.8,
+        "origin": "collector",
+        "process_generation": "a374959d-c887-4739-bf2c-e47df83a0fb7",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "d20502d230654c8ea9357b1129794399",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587255.4921575,
+      "node": "gateway-a",
+      "kind": "liveness",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "live": true,
+          "role": "gateway",
+          "generation": "23d2870f-83e3-42a4-b967-3f4e68632607"
+        },
+        "duration_ms": 8.6,
+        "origin": "collector",
+        "process_generation": "23d2870f-83e3-42a4-b967-3f4e68632607",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "b5f760585cad493f98479c94a00b8e16",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587253.4807353,
+      "node": "gateway-a",
+      "kind": "business",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "ok": true,
+          "dependency": "catalog-b",
+          "correlation": "ea787c02-f39b-41d7-8a28-4460ec0e4066",
+          "catalog": {
+            "items": [
+              {
+                "sku": "LAB-001",
+                "name": "Synthetic component",
+                "quantity": 12
+              }
+            ],
+            "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+          },
+          "generation": "23d2870f-83e3-42a4-b967-3f4e68632607",
+          "duration_ms": 3.1
+        },
+        "duration_ms": 13.2,
+        "origin": "collector",
+        "process_generation": "23d2870f-83e3-42a4-b967-3f4e68632607",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "ffca8a06eb004ae19fd1c99b647856a3",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587253.4797437,
+      "node": "gateway-c",
+      "kind": "business",
+      "body": {
+        "ok": false,
+        "http_status": 503,
+        "result": {
+          "ok": false,
+          "dependency": "catalog-b",
+          "correlation": "9ced3ea8-6ab3-42bc-ba3d-6179dae991eb",
+          "error": "ConnectError",
+          "generation": "0f11ee5a-c95e-499f-a13d-099762aacef0",
+          "duration_ms": 2.2
+        },
+        "duration_ms": 10.0,
+        "origin": "collector",
+        "process_generation": "0f11ee5a-c95e-499f-a13d-099762aacef0",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "2cd17a5328c14d9da2e131617dff5782",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587253.478328,
+      "node": "catalog-b",
+      "kind": "business",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "items": [
+            {
+              "sku": "LAB-001",
+              "name": "Synthetic component",
+              "quantity": 12
+            }
+          ],
+          "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+        },
+        "duration_ms": 9.6,
+        "origin": "collector",
+        "process_generation": "a374959d-c887-4739-bf2c-e47df83a0fb7",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "9f952dc0e7104b9791aa63f9322b9276",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587253.4772425,
+      "node": "gateway-c",
+      "kind": "liveness",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "live": true,
+          "role": "gateway",
+          "generation": "0f11ee5a-c95e-499f-a13d-099762aacef0"
+        },
+        "duration_ms": 8.0,
+        "origin": "collector",
+        "process_generation": "0f11ee5a-c95e-499f-a13d-099762aacef0",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "8c9584dc8bf7473e921e8d55fedef2bb",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587253.4758167,
+      "node": "catalog-b",
+      "kind": "liveness",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "live": true,
+          "role": "catalog",
+          "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+        },
+        "duration_ms": 7.8,
+        "origin": "collector",
+        "process_generation": "a374959d-c887-4739-bf2c-e47df83a0fb7",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "820b346591c24ea68ccf978e3a191bd1",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587253.4739628,
+      "node": "gateway-a",
+      "kind": "liveness",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "live": true,
+          "role": "gateway",
+          "generation": "23d2870f-83e3-42a4-b967-3f4e68632607"
+        },
+        "duration_ms": 7.3,
+        "origin": "collector",
+        "process_generation": "23d2870f-83e3-42a4-b967-3f4e68632607",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "b59f22a274a9470ea097986923fcea3d",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587251.4646823,
+      "node": "gateway-a",
+      "kind": "business",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "ok": true,
+          "dependency": "catalog-b",
+          "correlation": "7af9c18e-4cb4-44c5-95d5-c833e82d6271",
+          "catalog": {
+            "items": [
+              {
+                "sku": "LAB-001",
+                "name": "Synthetic component",
+                "quantity": 12
+              }
+            ],
+            "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+          },
+          "generation": "23d2870f-83e3-42a4-b967-3f4e68632607",
+          "duration_ms": 4.7
+        },
+        "duration_ms": 14.5,
+        "origin": "collector",
+        "process_generation": "23d2870f-83e3-42a4-b967-3f4e68632607",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "3b7bafdd8449406cb189023764d43432",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587251.4632971,
+      "node": "gateway-c",
+      "kind": "business",
+      "body": {
+        "ok": false,
+        "http_status": 503,
+        "result": {
+          "ok": false,
+          "dependency": "catalog-b",
+          "correlation": "2913b7bf-b1ac-4ddf-a012-7a92b0785ae0",
+          "error": "ConnectError",
+          "generation": "0f11ee5a-c95e-499f-a13d-099762aacef0",
+          "duration_ms": 2.6
+        },
+        "duration_ms": 10.9,
+        "origin": "collector",
+        "process_generation": "0f11ee5a-c95e-499f-a13d-099762aacef0",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "e6a78e16e3af4831a93301d6b8d42468",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587251.4621592,
+      "node": "catalog-b",
+      "kind": "business",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "items": [
+            {
+              "sku": "LAB-001",
+              "name": "Synthetic component",
+              "quantity": 12
+            }
+          ],
+          "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+        },
+        "duration_ms": 10.7,
+        "origin": "collector",
+        "process_generation": "a374959d-c887-4739-bf2c-e47df83a0fb7",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "82816e0efde34b898e203da77fbc6b6a",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587251.4609652,
+      "node": "gateway-c",
+      "kind": "liveness",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "live": true,
+          "role": "gateway",
+          "generation": "0f11ee5a-c95e-499f-a13d-099762aacef0"
+        },
+        "duration_ms": 9.1,
+        "origin": "collector",
+        "process_generation": "0f11ee5a-c95e-499f-a13d-099762aacef0",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "443bac77c1c84ff4bacb2a3f741ef3f2",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587251.4589267,
+      "node": "catalog-b",
+      "kind": "liveness",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "live": true,
+          "role": "catalog",
+          "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+        },
+        "duration_ms": 8.2,
+        "origin": "collector",
+        "process_generation": "a374959d-c887-4739-bf2c-e47df83a0fb7",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "e7bb508f235d4e2ba0960de2e190140e",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587251.4568548,
+      "node": "gateway-a",
+      "kind": "liveness",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "live": true,
+          "role": "gateway",
+          "generation": "23d2870f-83e3-42a4-b967-3f4e68632607"
+        },
+        "duration_ms": 8.1,
+        "origin": "collector",
+        "process_generation": "23d2870f-83e3-42a4-b967-3f4e68632607",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "62c0b82b72464cd8865d95d9490aaf94",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587249.446023,
+      "node": "gateway-c",
+      "kind": "business",
+      "body": {
+        "ok": false,
+        "http_status": 503,
+        "result": {
+          "ok": false,
+          "dependency": "catalog-b",
+          "correlation": "76b45eb8-6a44-45c4-af5c-5a829f937e84",
+          "error": "ConnectError",
+          "generation": "0f11ee5a-c95e-499f-a13d-099762aacef0",
+          "duration_ms": 1.8
+        },
+        "duration_ms": 11.6,
+        "origin": "collector",
+        "process_generation": "0f11ee5a-c95e-499f-a13d-099762aacef0",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "cebfbcb90aef46688262abafbe03c225",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587249.4449232,
+      "node": "gateway-a",
+      "kind": "business",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "ok": true,
+          "dependency": "catalog-b",
+          "correlation": "3b006519-9619-4c45-94b7-4a3cb2a6d14e",
+          "catalog": {
+            "items": [
+              {
+                "sku": "LAB-001",
+                "name": "Synthetic component",
+                "quantity": 12
+              }
+            ],
+            "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+          },
+          "generation": "23d2870f-83e3-42a4-b967-3f4e68632607",
+          "duration_ms": 3.0
+        },
+        "duration_ms": 13.5,
+        "origin": "collector",
+        "process_generation": "23d2870f-83e3-42a4-b967-3f4e68632607",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "bbbdf33b0e0841599be12e8568c43790",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587249.4439478,
+      "node": "catalog-b",
+      "kind": "business",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "items": [
+            {
+              "sku": "LAB-001",
+              "name": "Synthetic component",
+              "quantity": 12
+            }
+          ],
+          "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+        },
+        "duration_ms": 11.0,
+        "origin": "collector",
+        "process_generation": "a374959d-c887-4739-bf2c-e47df83a0fb7",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "8638ddec64be474aa938e09aa9afe807",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587249.4431818,
+      "node": "gateway-c",
+      "kind": "liveness",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "live": true,
+          "role": "gateway",
+          "generation": "0f11ee5a-c95e-499f-a13d-099762aacef0"
+        },
+        "duration_ms": 9.5,
+        "origin": "collector",
+        "process_generation": "0f11ee5a-c95e-499f-a13d-099762aacef0",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "7282d911e0424e678ade2df92735120b",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587249.4415798,
+      "node": "gateway-a",
+      "kind": "liveness",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "live": true,
+          "role": "gateway",
+          "generation": "23d2870f-83e3-42a4-b967-3f4e68632607"
+        },
+        "duration_ms": 11.8,
+        "origin": "collector",
+        "process_generation": "23d2870f-83e3-42a4-b967-3f4e68632607",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "8ec33f965c01456290c36ee7bba76e3a",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587249.439216,
+      "node": "catalog-b",
+      "kind": "liveness",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "live": true,
+          "role": "catalog",
+          "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+        },
+        "duration_ms": 7.0,
+        "origin": "collector",
+        "process_generation": "a374959d-c887-4739-bf2c-e47df83a0fb7",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "d444a79219b84c98af254ce04a5a5d5a",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587247.426908,
+      "node": "gateway-c",
+      "kind": "business",
+      "body": {
+        "ok": false,
+        "http_status": 503,
+        "result": {
+          "ok": false,
+          "dependency": "catalog-b",
+          "correlation": "f486c011-e9d0-4909-bcc4-5b8fb8421742",
+          "error": "ConnectError",
+          "generation": "0f11ee5a-c95e-499f-a13d-099762aacef0",
+          "duration_ms": 2.3
+        },
+        "duration_ms": 9.4,
+        "origin": "collector",
+        "process_generation": "0f11ee5a-c95e-499f-a13d-099762aacef0",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "0b1b4ad304534aada831cdb17b07f73e",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587247.4259472,
+      "node": "gateway-a",
+      "kind": "business",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "ok": true,
+          "dependency": "catalog-b",
+          "correlation": "d8a3641f-ff72-4fac-924b-f299ff9ce971",
+          "catalog": {
+            "items": [
+              {
+                "sku": "LAB-001",
+                "name": "Synthetic component",
+                "quantity": 12
+              }
+            ],
+            "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+          },
+          "generation": "23d2870f-83e3-42a4-b967-3f4e68632607",
+          "duration_ms": 2.3
+        },
+        "duration_ms": 10.7,
+        "origin": "collector",
+        "process_generation": "23d2870f-83e3-42a4-b967-3f4e68632607",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "ae4470011d504dd5891a303ddc682000",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587247.424519,
+      "node": "catalog-b",
+      "kind": "business",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "items": [
+            {
+              "sku": "LAB-001",
+              "name": "Synthetic component",
+              "quantity": 12
+            }
+          ],
+          "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+        },
+        "duration_ms": 8.0,
+        "origin": "collector",
+        "process_generation": "a374959d-c887-4739-bf2c-e47df83a0fb7",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "b6f6629006ac4ad8a7c6daf9eb264c35",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587247.4233325,
+      "node": "gateway-c",
+      "kind": "liveness",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "live": true,
+          "role": "gateway",
+          "generation": "0f11ee5a-c95e-499f-a13d-099762aacef0"
+        },
+        "duration_ms": 6.4,
+        "origin": "collector",
+        "process_generation": "0f11ee5a-c95e-499f-a13d-099762aacef0",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "55e4751ec29546a78dc470f3570f5cd6",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587247.422392,
+      "node": "catalog-b",
+      "kind": "liveness",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "live": true,
+          "role": "catalog",
+          "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+        },
+        "duration_ms": 6.5,
+        "origin": "collector",
+        "process_generation": "a374959d-c887-4739-bf2c-e47df83a0fb7",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "7520ecb98a5f42cb96eec038f2b534d5",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587247.420769,
+      "node": "gateway-a",
+      "kind": "liveness",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "live": true,
+          "role": "gateway",
+          "generation": "23d2870f-83e3-42a4-b967-3f4e68632607"
+        },
+        "duration_ms": 6.8,
+        "origin": "collector",
+        "process_generation": "23d2870f-83e3-42a4-b967-3f4e68632607",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "7e4b56fe675a4fb0b9e8712901e5daf1",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587245.4099448,
+      "node": "gateway-c",
+      "kind": "business",
+      "body": {
+        "ok": false,
+        "http_status": 503,
+        "result": {
+          "ok": false,
+          "dependency": "catalog-b",
+          "correlation": "bc0f8a5b-42e7-4859-9596-36495417a5ad",
+          "error": "ConnectError",
+          "generation": "0f11ee5a-c95e-499f-a13d-099762aacef0",
+          "duration_ms": 2.5
+        },
+        "duration_ms": 10.7,
+        "origin": "collector",
+        "process_generation": "0f11ee5a-c95e-499f-a13d-099762aacef0",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "d99e5d68b17745ad9e210d7dfca1d11d",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587245.4088113,
+      "node": "gateway-a",
+      "kind": "business",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "ok": true,
+          "dependency": "catalog-b",
+          "correlation": "11af65b2-2d6c-40d3-b8ca-13ac61588073",
+          "catalog": {
+            "items": [
+              {
+                "sku": "LAB-001",
+                "name": "Synthetic component",
+                "quantity": 12
+              }
+            ],
+            "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+          },
+          "generation": "23d2870f-83e3-42a4-b967-3f4e68632607",
+          "duration_ms": 2.6
+        },
+        "duration_ms": 11.1,
+        "origin": "collector",
+        "process_generation": "23d2870f-83e3-42a4-b967-3f4e68632607",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "5cacff41f18148d5a4ef8dce424b4bed",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587245.4075496,
+      "node": "gateway-c",
+      "kind": "liveness",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "live": true,
+          "role": "gateway",
+          "generation": "0f11ee5a-c95e-499f-a13d-099762aacef0"
+        },
+        "duration_ms": 8.7,
+        "origin": "collector",
+        "process_generation": "0f11ee5a-c95e-499f-a13d-099762aacef0",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "01655e8eeac04499bc83cec3039a6370",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587245.4067807,
+      "node": "catalog-b",
+      "kind": "business",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "items": [
+            {
+              "sku": "LAB-001",
+              "name": "Synthetic component",
+              "quantity": 12
+            }
+          ],
+          "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+        },
+        "duration_ms": 8.2,
+        "origin": "collector",
+        "process_generation": "a374959d-c887-4739-bf2c-e47df83a0fb7",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "5301417b8f9348838ccfa2bb3dfb6cd2",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587245.4054375,
+      "node": "catalog-b",
+      "kind": "liveness",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "live": true,
+          "role": "catalog",
+          "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+        },
+        "duration_ms": 7.3,
+        "origin": "collector",
+        "process_generation": "a374959d-c887-4739-bf2c-e47df83a0fb7",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "14e368a129204e35a8dbb6e4ce8c3dfe",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587245.401977,
+      "node": "gateway-a",
+      "kind": "liveness",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "live": true,
+          "role": "gateway",
+          "generation": "23d2870f-83e3-42a4-b967-3f4e68632607"
+        },
+        "duration_ms": 5.1,
+        "origin": "collector",
+        "process_generation": "23d2870f-83e3-42a4-b967-3f4e68632607",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "b392b045461945ec95a7ab48c25f82c3",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587243.4056456,
+      "node": "gateway-c",
+      "kind": "network",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "connect_ms": [
+          1.3,
+          1.5,
+          1.2
+        ],
+        "median_connect_ms": 1.3,
+        "result": {
+          "available": true,
+          "qdiscs": [
+            {
+              "kind": "noqueue",
+              "dev": "eth0",
+              "root": true,
+              "delay_ms": null,
+              "line": "qdisc noqueue 0: dev eth0 root refcnt 2"
+            }
+          ],
+          "generation": "0f11ee5a-c95e-499f-a13d-099762aacef0"
+        },
+        "duration_ms": 10.1,
+        "origin": "operator",
+        "process_generation": "0f11ee5a-c95e-499f-a13d-099762aacef0",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "3c4fdaf574aa45f68a329220a24b9b1d",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587243.3945935,
+      "node": "gateway-a",
+      "kind": "business",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "ok": true,
+          "dependency": "catalog-b",
+          "correlation": "50e42c08-bc11-449a-ac84-1ddd7cfaa8a1",
+          "catalog": {
+            "items": [
+              {
+                "sku": "LAB-001",
+                "name": "Synthetic component",
+                "quantity": 12
+              }
+            ],
+            "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+          },
+          "generation": "23d2870f-83e3-42a4-b967-3f4e68632607",
+          "duration_ms": 2.8
+        },
+        "duration_ms": 11.3,
+        "origin": "collector",
+        "process_generation": "23d2870f-83e3-42a4-b967-3f4e68632607",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "73cfcb412f744b2992df5465740a5ad2",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587243.393222,
+      "node": "gateway-c",
+      "kind": "business",
+      "body": {
+        "ok": false,
+        "http_status": 503,
+        "result": {
+          "ok": false,
+          "dependency": "catalog-b",
+          "correlation": "233af750-9d0b-465d-bb74-3cde7dd549fe",
+          "error": "ConnectError",
+          "generation": "0f11ee5a-c95e-499f-a13d-099762aacef0",
+          "duration_ms": 1.7
+        },
+        "duration_ms": 8.7,
+        "origin": "collector",
+        "process_generation": "0f11ee5a-c95e-499f-a13d-099762aacef0",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "074ddf82cddb47c3b68cc06d25eb9a2b",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587243.3922954,
+      "node": "catalog-b",
+      "kind": "business",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "items": [
+            {
+              "sku": "LAB-001",
+              "name": "Synthetic component",
+              "quantity": 12
+            }
+          ],
+          "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+        },
+        "duration_ms": 8.4,
+        "origin": "collector",
+        "process_generation": "a374959d-c887-4739-bf2c-e47df83a0fb7",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "f7a14dafcba64438867cd00e6a5e3bc4",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587243.3907151,
+      "node": "gateway-c",
+      "kind": "liveness",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "live": true,
+          "role": "gateway",
+          "generation": "0f11ee5a-c95e-499f-a13d-099762aacef0"
+        },
+        "duration_ms": 6.5,
+        "origin": "collector",
+        "process_generation": "0f11ee5a-c95e-499f-a13d-099762aacef0",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "ef33bce455214cfca159033bcfd543e2",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587243.3892555,
+      "node": "catalog-b",
+      "kind": "liveness",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "live": true,
+          "role": "catalog",
+          "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+        },
+        "duration_ms": 5.7,
+        "origin": "collector",
+        "process_generation": "a374959d-c887-4739-bf2c-e47df83a0fb7",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "03256633c54642a2bdc3ba9b06b91eda",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587243.3876405,
+      "node": "gateway-a",
+      "kind": "liveness",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "live": true,
+          "role": "gateway",
+          "generation": "23d2870f-83e3-42a4-b967-3f4e68632607"
+        },
+        "duration_ms": 4.9,
+        "origin": "collector",
+        "process_generation": "23d2870f-83e3-42a4-b967-3f4e68632607",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "f48f52d7761d422bb2dbe255856ea11d",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587243.2858884,
+      "node": "gateway-c",
+      "kind": "disk",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "mount": "/tmp",
+          "total_bytes": 8388608,
+          "free_bytes": 8359936,
+          "used_pct": 0.3,
+          "largest": [
+            {
+              "path": "receipts/0f11ee5a-00000007.json",
+              "bytes": 270
+            },
+            {
+              "path": "receipts/0f11ee5a-00000006.json",
+              "bytes": 270
+            },
+            {
+              "path": "receipts/0f11ee5a-00000005.json",
+              "bytes": 270
+            },
+            {
+              "path": "receipts/0f11ee5a-00000004.json",
+              "bytes": 270
+            },
+            {
+              "path": "receipts/0f11ee5a-00000003.json",
+              "bytes": 270
+            }
+          ],
+          "file_count": 7,
+          "generation": "0f11ee5a-c95e-499f-a13d-099762aacef0"
+        },
+        "duration_ms": 3.0,
+        "origin": "operator",
+        "process_generation": "0f11ee5a-c95e-499f-a13d-099762aacef0",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "8935efce189544b4b6c84fe1b2a986ae",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587243.2563019,
+      "node": "gateway-c",
+      "kind": "resources",
+      "body": {
+        "ok": true,
+        "target": "gateway-c",
+        "generation": "e6c18e677a91f9434cf4fba5789867d5b29614e829d7eaa655f4ac51670d9a91",
+        "running": true,
+        "status": "running",
+        "exit_code": 0,
+        "cpu_limit": 0.25,
+        "cpu_cores": 0.005,
+        "cpu_pct_of_limit": 2.0,
+        "periods": 169,
+        "throttled_periods": 19,
+        "throttled_ms": 1281.9,
+        "memory_mib": 43.1,
+        "memory_limit_mib": 192.0,
+        "duration_ms": 1787.4,
+        "origin": "operator",
+        "generation_scope": "container"
+      }
+    },
+    {
+      "id": "da61bf1ca3d9449eafe1f866b370a68c",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587241.4282787,
+      "node": "gateway-c",
+      "kind": "service",
+      "body": {
+        "ok": true,
+        "target": "gateway-c",
+        "generation": "e6c18e677a91f9434cf4fba5789867d5b29614e829d7eaa655f4ac51670d9a91",
+        "running": true,
+        "status": "running",
+        "exit_code": 0,
+        "duration_ms": 23.3,
+        "origin": "operator",
+        "generation_scope": "container"
+      }
+    },
+    {
+      "id": "a8dc012c08b9492f82510ce85d8a40d7",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587241.377945,
+      "node": "catalog-b",
+      "kind": "network",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "connect_ms": [
+          1.4,
+          1.3,
+          1.2
+        ],
+        "median_connect_ms": 1.3,
+        "result": {
+          "available": true,
+          "qdiscs": [
+            {
+              "kind": "noqueue",
+              "dev": "eth0",
+              "root": true,
+              "delay_ms": null,
+              "line": "qdisc noqueue 0: dev eth0 root refcnt 2"
+            }
+          ],
+          "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+        },
+        "duration_ms": 10.0,
+        "origin": "operator",
+        "process_generation": "a374959d-c887-4739-bf2c-e47df83a0fb7",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "21dbdbd777964278b8e1ff0d8c198e09",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587241.3669505,
+      "node": "gateway-c",
+      "kind": "business",
+      "body": {
+        "ok": false,
+        "http_status": 503,
+        "result": {
+          "ok": false,
+          "dependency": "catalog-b",
+          "correlation": "86d033eb-9995-448d-bf19-26ad73f09596",
+          "error": "ConnectError",
+          "generation": "0f11ee5a-c95e-499f-a13d-099762aacef0",
+          "duration_ms": 5.0
+        },
+        "duration_ms": 52.5,
+        "origin": "collector",
+        "process_generation": "0f11ee5a-c95e-499f-a13d-099762aacef0",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "4cb73ebe72984530be3a4d7a97c3fa9b",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587241.3658125,
+      "node": "gateway-a",
+      "kind": "business",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "ok": true,
+          "dependency": "catalog-b",
+          "correlation": "6734d41b-1a38-46b3-8af9-f3681ca96117",
+          "catalog": {
+            "items": [
+              {
+                "sku": "LAB-001",
+                "name": "Synthetic component",
+                "quantity": 12
+              }
+            ],
+            "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+          },
+          "generation": "23d2870f-83e3-42a4-b967-3f4e68632607",
+          "duration_ms": 5.6
+        },
+        "duration_ms": 52.6,
+        "origin": "collector",
+        "process_generation": "23d2870f-83e3-42a4-b967-3f4e68632607",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "8b0f155596244b4b8c76b44674d92393",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587241.3645165,
+      "node": "catalog-b",
+      "kind": "business",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "items": [
+            {
+              "sku": "LAB-001",
+              "name": "Synthetic component",
+              "quantity": 12
+            }
+          ],
+          "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+        },
+        "duration_ms": 50.7,
+        "origin": "collector",
+        "process_generation": "a374959d-c887-4739-bf2c-e47df83a0fb7",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "2cf9e2ee46824cdca6fb617e73d0bcae",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587241.3628297,
+      "node": "gateway-c",
+      "kind": "liveness",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "live": true,
+          "role": "gateway",
+          "generation": "0f11ee5a-c95e-499f-a13d-099762aacef0"
+        },
+        "duration_ms": 48.6,
+        "origin": "collector",
+        "process_generation": "0f11ee5a-c95e-499f-a13d-099762aacef0",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "22be325f8fe34de39a8a27b6bf102009",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587241.3613358,
+      "node": "catalog-b",
+      "kind": "liveness",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "live": true,
+          "role": "catalog",
+          "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+        },
+        "duration_ms": 47.8,
+        "origin": "collector",
+        "process_generation": "a374959d-c887-4739-bf2c-e47df83a0fb7",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "c8d1a9a3e1dc4535ba24a606418e3b77",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587241.3587387,
+      "node": "gateway-a",
+      "kind": "liveness",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "live": true,
+          "role": "gateway",
+          "generation": "23d2870f-83e3-42a4-b967-3f4e68632607"
+        },
+        "duration_ms": 45.9,
+        "origin": "collector",
+        "process_generation": "23d2870f-83e3-42a4-b967-3f4e68632607",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "eba41005c28240bb839f3b5589bc03d4",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587241.291169,
+      "node": "catalog-b",
+      "kind": "config",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "role": "catalog",
+          "settings": [
+            {
+              "key": "catalogue_source",
+              "value": "builtin:lab-v1",
+              "deployed": "builtin:lab-v1",
+              "drifted": false
+            },
+            {
+              "key": "receipt_ring",
+              "value": 40,
+              "deployed": 40,
+              "drifted": false
+            }
+          ],
+          "drifted": [],
+          "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+        },
+        "duration_ms": 2.0,
+        "origin": "operator",
+        "process_generation": "a374959d-c887-4739-bf2c-e47df83a0fb7",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "5af9e14fd26145da85293c0f6097a420",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587241.2637403,
+      "node": "catalog-b",
+      "kind": "disk",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "mount": "/tmp",
+          "total_bytes": 8388608,
+          "free_bytes": 8224768,
+          "used_pct": 2.0,
+          "largest": [
+            {
+              "path": "receipts/a374959d-00001211.json",
+              "bytes": 270
+            },
+            {
+              "path": "receipts/a374959d-00001210.json",
+              "bytes": 270
+            },
+            {
+              "path": "receipts/a374959d-00001209.json",
+              "bytes": 270
+            },
+            {
+              "path": "receipts/a374959d-00001208.json",
+              "bytes": 270
+            },
+            {
+              "path": "receipts/a374959d-00001206.json",
+              "bytes": 270
+            }
+          ],
+          "file_count": 40,
+          "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+        },
+        "duration_ms": 3.3,
+        "origin": "operator",
+        "process_generation": "a374959d-c887-4739-bf2c-e47df83a0fb7",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "9ad4e39f7bbf4871bb737c03dee4ea33",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587241.2356212,
+      "node": "catalog-b",
+      "kind": "resources",
+      "body": {
+        "ok": true,
+        "target": "catalog-b",
+        "generation": "b2b1ad3efb7730bac64560ce487158d199a9c0bfb5b998d06fa588619130f4af",
+        "running": true,
+        "status": "running",
+        "exit_code": 0,
+        "cpu_limit": 0.25,
+        "cpu_cores": 0.004,
+        "cpu_pct_of_limit": 1.5,
+        "periods": 6671,
+        "throttled_periods": 19,
+        "throttled_ms": 1322.5,
+        "memory_mib": 42.4,
+        "memory_limit_mib": 192.0,
+        "duration_ms": 1808.9,
+        "origin": "operator",
+        "generation_scope": "container"
+      }
+    },
+    {
+      "id": "866d3eeeb0c54bd5ac4068d3e1da8eb6",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587239.4022179,
+      "node": "catalog-b",
+      "kind": "service",
+      "body": {
+        "ok": true,
+        "target": "catalog-b",
+        "generation": "b2b1ad3efb7730bac64560ce487158d199a9c0bfb5b998d06fa588619130f4af",
+        "running": true,
+        "status": "running",
+        "exit_code": 0,
+        "duration_ms": 27.7,
+        "origin": "operator",
+        "generation_scope": "container"
+      }
+    },
+    {
+      "id": "4037e0f7d8b84aaea2fa5938ab76d0f9",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587239.3117075,
+      "node": "gateway-a",
+      "kind": "network",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "connect_ms": [
+          1.2,
+          1.2,
+          1.1
+        ],
+        "median_connect_ms": 1.2,
+        "result": {
+          "available": true,
+          "qdiscs": [
+            {
+              "kind": "noqueue",
+              "dev": "eth0",
+              "root": true,
+              "delay_ms": null,
+              "line": "qdisc noqueue 0: dev eth0 root refcnt 2"
+            }
+          ],
+          "generation": "23d2870f-83e3-42a4-b967-3f4e68632607"
+        },
+        "duration_ms": 9.1,
+        "origin": "operator",
+        "process_generation": "23d2870f-83e3-42a4-b967-3f4e68632607",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "50ba25980f38461399f8777c577713e9",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587239.3017378,
+      "node": "gateway-a",
+      "kind": "business",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "ok": true,
+          "dependency": "catalog-b",
+          "correlation": "fc1f298c-22cf-4d0b-9cb9-c887814fc954",
+          "catalog": {
+            "items": [
+              {
+                "sku": "LAB-001",
+                "name": "Synthetic component",
+                "quantity": 12
+              }
+            ],
+            "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+          },
+          "generation": "23d2870f-83e3-42a4-b967-3f4e68632607",
+          "duration_ms": 1.8
+        },
+        "duration_ms": 10.4,
+        "origin": "collector",
+        "process_generation": "23d2870f-83e3-42a4-b967-3f4e68632607",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "8e30518535214ea09e7f6dbb38b875d5",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587239.3009067,
+      "node": "gateway-c",
+      "kind": "business",
+      "body": {
+        "ok": false,
+        "http_status": 503,
+        "result": {
+          "ok": false,
+          "dependency": "catalog-b",
+          "correlation": "6126177f-6645-4296-a375-20849330c9ba",
+          "error": "ConnectError",
+          "generation": "0f11ee5a-c95e-499f-a13d-099762aacef0",
+          "duration_ms": 2.1
+        },
+        "duration_ms": 8.3,
+        "origin": "collector",
+        "process_generation": "0f11ee5a-c95e-499f-a13d-099762aacef0",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "f604dd2e1a494b3a9c00feb907c7e4c0",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587239.2993615,
+      "node": "catalog-b",
+      "kind": "business",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "items": [
+            {
+              "sku": "LAB-001",
+              "name": "Synthetic component",
+              "quantity": 12
+            }
+          ],
+          "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+        },
+        "duration_ms": 7.4,
+        "origin": "collector",
+        "process_generation": "a374959d-c887-4739-bf2c-e47df83a0fb7",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "ebdae46e6b984cdfb10c6f5f07ff6096",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587239.2984629,
+      "node": "catalog-b",
+      "kind": "liveness",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "live": true,
+          "role": "catalog",
+          "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+        },
+        "duration_ms": 6.8,
+        "origin": "collector",
+        "process_generation": "a374959d-c887-4739-bf2c-e47df83a0fb7",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "627a5fc28fb54b85ac6720572c666f4c",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587239.297227,
+      "node": "gateway-c",
+      "kind": "liveness",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "live": true,
+          "role": "gateway",
+          "generation": "0f11ee5a-c95e-499f-a13d-099762aacef0"
+        },
+        "duration_ms": 4.9,
+        "origin": "collector",
+        "process_generation": "0f11ee5a-c95e-499f-a13d-099762aacef0",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "4150d75f16fa46feb833303fa5b11db2",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587239.2955282,
+      "node": "gateway-a",
+      "kind": "liveness",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "live": true,
+          "role": "gateway",
+          "generation": "23d2870f-83e3-42a4-b967-3f4e68632607"
+        },
+        "duration_ms": 4.6,
+        "origin": "collector",
+        "process_generation": "23d2870f-83e3-42a4-b967-3f4e68632607",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "b6e5895406e3491d930e2adbea60d4cc",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587239.269563,
+      "node": "gateway-a",
+      "kind": "config",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "role": "gateway",
+          "settings": [
+            {
+              "key": "upstream",
+              "value": "http://catalog-b:8000",
+              "deployed": "http://catalog-b:8000",
+              "drifted": false
+            },
+            {
+              "key": "upstream_timeout_s",
+              "value": 1.0,
+              "deployed": 1.0,
+              "drifted": false
+            }
+          ],
+          "drifted": [],
+          "generation": "23d2870f-83e3-42a4-b967-3f4e68632607"
+        },
+        "duration_ms": 1.9,
+        "origin": "operator",
+        "process_generation": "23d2870f-83e3-42a4-b967-3f4e68632607",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "844c7c9fe3d1420fac8a3879f4622f53",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587239.244157,
+      "node": "gateway-a",
+      "kind": "disk",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "mount": "/tmp",
+          "total_bytes": 8388608,
+          "free_bytes": 8224768,
+          "used_pct": 2.0,
+          "largest": [
+            {
+              "path": "receipts/23d2870f-00000086.json",
+              "bytes": 270
+            },
+            {
+              "path": "receipts/23d2870f-00000085.json",
+              "bytes": 270
+            },
+            {
+              "path": "receipts/23d2870f-00000084.json",
+              "bytes": 270
+            },
+            {
+              "path": "receipts/23d2870f-00000083.json",
+              "bytes": 270
+            },
+            {
+              "path": "receipts/23d2870f-00000082.json",
+              "bytes": 270
+            }
+          ],
+          "file_count": 40,
+          "generation": "23d2870f-83e3-42a4-b967-3f4e68632607"
+        },
+        "duration_ms": 2.9,
+        "origin": "operator",
+        "process_generation": "23d2870f-83e3-42a4-b967-3f4e68632607",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "445b4ecf937c4514bc60dfbf5c8c57a4",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587239.21601,
+      "node": "gateway-a",
+      "kind": "resources",
+      "body": {
+        "ok": true,
+        "target": "gateway-a",
+        "generation": "8fe85ab27f72bbea2353da0b34c53ce2b097f9f722fa98aa6467b599e86f6357",
+        "running": true,
+        "status": "running",
+        "exit_code": 0,
+        "cpu_limit": 0.25,
+        "cpu_cores": 0.005,
+        "cpu_pct_of_limit": 2.0,
+        "periods": 1378,
+        "throttled_periods": 22,
+        "throttled_ms": 1477.2,
+        "memory_mib": 52.0,
+        "memory_limit_mib": 192.0,
+        "duration_ms": 1039.6,
+        "origin": "operator",
+        "generation_scope": "container"
+      }
+    },
+    {
+      "id": "6fbf54899f82472d9be4749b2e44c196",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587238.139008,
+      "node": "gateway-a",
+      "kind": "service",
+      "body": {
+        "ok": true,
+        "target": "gateway-a",
+        "generation": "8fe85ab27f72bbea2353da0b34c53ce2b097f9f722fa98aa6467b599e86f6357",
+        "running": true,
+        "status": "running",
+        "exit_code": 0,
+        "duration_ms": 25.3,
+        "origin": "operator",
+        "generation_scope": "container"
+      }
+    },
+    {
+      "id": "aec7386ef5a644ad93b98cf5f507c711",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587237.2834678,
+      "node": "gateway-c",
+      "kind": "business",
+      "body": {
+        "ok": false,
+        "http_status": 503,
+        "result": {
+          "ok": false,
+          "dependency": "catalog-b",
+          "correlation": "d51c526c-450e-4670-a27e-4c2ea5054bb9",
+          "error": "ConnectError",
+          "generation": "0f11ee5a-c95e-499f-a13d-099762aacef0",
+          "duration_ms": 1.9
+        },
+        "duration_ms": 10.0,
+        "origin": "collector",
+        "process_generation": "0f11ee5a-c95e-499f-a13d-099762aacef0",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "d3c08791d13741f99b6259be13c9c4b1",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587237.2822173,
+      "node": "gateway-a",
+      "kind": "business",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "ok": true,
+          "dependency": "catalog-b",
+          "correlation": "82f41df4-e79f-4655-bcbb-101d28b80e8d",
+          "catalog": {
+            "items": [
+              {
+                "sku": "LAB-001",
+                "name": "Synthetic component",
+                "quantity": 12
+              }
+            ],
+            "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+          },
+          "generation": "23d2870f-83e3-42a4-b967-3f4e68632607",
+          "duration_ms": 2.1
+        },
+        "duration_ms": 10.6,
+        "origin": "collector",
+        "process_generation": "23d2870f-83e3-42a4-b967-3f4e68632607",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "747f20365f8145e791c3879639f2a63a",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587237.2811952,
+      "node": "catalog-b",
+      "kind": "business",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "items": [
+            {
+              "sku": "LAB-001",
+              "name": "Synthetic component",
+              "quantity": 12
+            }
+          ],
+          "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+        },
+        "duration_ms": 8.5,
+        "origin": "collector",
+        "process_generation": "a374959d-c887-4739-bf2c-e47df83a0fb7",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "c24bbded91b245c4a5e680dfb8c9c3b8",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587237.2803793,
+      "node": "gateway-c",
+      "kind": "liveness",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "live": true,
+          "role": "gateway",
+          "generation": "0f11ee5a-c95e-499f-a13d-099762aacef0"
+        },
+        "duration_ms": 7.3,
+        "origin": "collector",
+        "process_generation": "0f11ee5a-c95e-499f-a13d-099762aacef0",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "756a862b8a2045d69ccad389388f00dc",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587237.2787592,
+      "node": "gateway-a",
+      "kind": "liveness",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "live": true,
+          "role": "gateway",
+          "generation": "23d2870f-83e3-42a4-b967-3f4e68632607"
+        },
+        "duration_ms": 8.2,
+        "origin": "collector",
+        "process_generation": "23d2870f-83e3-42a4-b967-3f4e68632607",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "2f82dc4f90154ed5bc910e7b3bd2880d",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587237.276379,
+      "node": "catalog-b",
+      "kind": "liveness",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "live": true,
+          "role": "catalog",
+          "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+        },
+        "duration_ms": 4.1,
+        "origin": "collector",
+        "process_generation": "a374959d-c887-4739-bf2c-e47df83a0fb7",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "6afdf24a57bd4f0eaa47ef726ba9d8fd",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587235.2678826,
+      "node": "gateway-a",
+      "kind": "business",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "ok": true,
+          "dependency": "catalog-b",
+          "correlation": "c13209af-d79b-4604-a018-5ed0db802e74",
+          "catalog": {
+            "items": [
+              {
+                "sku": "LAB-001",
+                "name": "Synthetic component",
+                "quantity": 12
+              }
+            ],
+            "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+          },
+          "generation": "23d2870f-83e3-42a4-b967-3f4e68632607",
+          "duration_ms": 4.5
+        },
+        "duration_ms": 12.6,
+        "origin": "collector",
+        "process_generation": "23d2870f-83e3-42a4-b967-3f4e68632607",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "e37fd14ccd684adea364d67bbe304130",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587235.2670202,
+      "node": "gateway-c",
+      "kind": "business",
+      "body": {
+        "ok": false,
+        "http_status": 503,
+        "result": {
+          "ok": false,
+          "dependency": "catalog-b",
+          "correlation": "c5a54cb3-f6eb-4606-b281-5c42da122e45",
+          "error": "ConnectError",
+          "generation": "0f11ee5a-c95e-499f-a13d-099762aacef0",
+          "duration_ms": 2.8
+        },
+        "duration_ms": 9.9,
+        "origin": "collector",
+        "process_generation": "0f11ee5a-c95e-499f-a13d-099762aacef0",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "6cee004ab3b5431f8f8f0d49467ced24",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587235.2654343,
+      "node": "catalog-b",
+      "kind": "business",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "items": [
+            {
+              "sku": "LAB-001",
+              "name": "Synthetic component",
+              "quantity": 12
+            }
+          ],
+          "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+        },
+        "duration_ms": 9.1,
+        "origin": "collector",
+        "process_generation": "a374959d-c887-4739-bf2c-e47df83a0fb7",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "a8c32bc8f6f94cbcb73df2ebd8f5fe77",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587235.264099,
+      "node": "gateway-c",
+      "kind": "liveness",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "live": true,
+          "role": "gateway",
+          "generation": "0f11ee5a-c95e-499f-a13d-099762aacef0"
+        },
+        "duration_ms": 7.3,
+        "origin": "collector",
+        "process_generation": "0f11ee5a-c95e-499f-a13d-099762aacef0",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "227f1a8d12c44dad9734dfaddf97c3a8",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587235.262941,
+      "node": "catalog-b",
+      "kind": "liveness",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "live": true,
+          "role": "catalog",
+          "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+        },
+        "duration_ms": 7.1,
+        "origin": "collector",
+        "process_generation": "a374959d-c887-4739-bf2c-e47df83a0fb7",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "b98023e5cb544f359b58f09a038e8e81",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587235.2609138,
+      "node": "gateway-a",
+      "kind": "liveness",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "live": true,
+          "role": "gateway",
+          "generation": "23d2870f-83e3-42a4-b967-3f4e68632607"
+        },
+        "duration_ms": 6.5,
+        "origin": "collector",
+        "process_generation": "23d2870f-83e3-42a4-b967-3f4e68632607",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "a07a4d4d554145ab8d4bfa1b9a668677",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587233.2526565,
+      "node": "gateway-c",
+      "kind": "business",
+      "body": {
+        "ok": false,
+        "http_status": 503,
+        "result": {
+          "ok": false,
+          "dependency": "catalog-b",
+          "correlation": "bad6787d-1996-44a5-98f9-7270dd328342",
+          "error": "ConnectError",
+          "generation": "0f11ee5a-c95e-499f-a13d-099762aacef0",
+          "duration_ms": 2.4
+        },
+        "duration_ms": 10.4,
+        "origin": "collector",
+        "process_generation": "0f11ee5a-c95e-499f-a13d-099762aacef0",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "bce2dcf6c2a64b24a8fe03a55ca56b4b",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587233.2515116,
+      "node": "gateway-a",
+      "kind": "business",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "ok": true,
+          "dependency": "catalog-b",
+          "correlation": "119d8539-b503-406f-a448-3d73a7449cb0",
+          "catalog": {
+            "items": [
+              {
+                "sku": "LAB-001",
+                "name": "Synthetic component",
+                "quantity": 12
+              }
+            ],
+            "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+          },
+          "generation": "23d2870f-83e3-42a4-b967-3f4e68632607",
+          "duration_ms": 1.9
+        },
+        "duration_ms": 10.6,
+        "origin": "collector",
+        "process_generation": "23d2870f-83e3-42a4-b967-3f4e68632607",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "3fac1a2dac70401ba563ceb26eb5253f",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587233.250703,
+      "node": "catalog-b",
+      "kind": "business",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "items": [
+            {
+              "sku": "LAB-001",
+              "name": "Synthetic component",
+              "quantity": 12
+            }
+          ],
+          "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+        },
+        "duration_ms": 9.1,
+        "origin": "collector",
+        "process_generation": "a374959d-c887-4739-bf2c-e47df83a0fb7",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "334872a8e5a74880a7e39c1fe20022fb",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587233.2489874,
+      "node": "gateway-c",
+      "kind": "liveness",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "live": true,
+          "role": "gateway",
+          "generation": "0f11ee5a-c95e-499f-a13d-099762aacef0"
+        },
+        "duration_ms": 7.0,
+        "origin": "collector",
+        "process_generation": "0f11ee5a-c95e-499f-a13d-099762aacef0",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "80c6087bf79c44329e12ea26194081e2",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587233.2480521,
+      "node": "catalog-b",
+      "kind": "liveness",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "live": true,
+          "role": "catalog",
+          "generation": "a374959d-c887-4739-bf2c-e47df83a0fb7"
+        },
+        "duration_ms": 6.7,
+        "origin": "collector",
+        "process_generation": "a374959d-c887-4739-bf2c-e47df83a0fb7",
+        "generation_scope": "process"
+      }
+    },
+    {
+      "id": "9dbee60581d14cb99091e979c650161a",
+      "session_id": "5e7f2e73f7954c0fb7ced7d937d49e51",
+      "at": 1792587233.244908,
+      "node": "gateway-a",
+      "kind": "liveness",
+      "body": {
+        "ok": true,
+        "http_status": 200,
+        "result": {
+          "live": true,
+          "role": "gateway",
+          "generation": "23d2870f-83e3-42a4-b967-3f4e68632607"
+        },
+        "duration_ms": 4.5,
+        "origin": "collector",
+        "process_generation": "23d2870f-83e3-42a4-b967-3f4e68632607",
+        "generation_scope": "process"
+      }
+    }
+  ],
+  "omitted_evidence_count": 0,
+  "export_note": "Cited observations plus up to 500 recent records, bounded to 8 MiB. Missing citations have expired; omitted records may still be browsed. Ground truth withheld until reveal/end."
+}

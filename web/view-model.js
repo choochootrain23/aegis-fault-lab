@@ -71,7 +71,7 @@ globalThis.AegisView = Object.freeze({
       'config-drift':{title:['When config ','drifts',''], text:'A bad reload changes one setting. Liveness, CPU and disk look normal, yet requests fail.'},
       'network-delay':{title:['When the network ','lags',''], text:'Every packet leaving it waits 600 ms. It stays up with idle CPU, yet everything it sends arrives late.'},
     }[kind]||{title:['A ','fault',''], text:''};
-    const scope=target==='catalog-b'?'On the shared catalogue: see whether both gateways fail with it.':`On ${target}, a local failure: see whether the catalogue and the other gateway stay healthy.`;
+    const scope=target==='catalog-b'?'On the shared catalogue: see whether both gateways are affected too.':`On ${target}, a local fault: see whether the catalogue and the other gateway stay healthy.`;
     return {number:String(kinds.indexOf(kind)+1).padStart(2,'0'), eyebrow:`Scenario ${String(kinds.indexOf(kind)+1).padStart(2,'0')} · ${this.faultLabel(kind)} · ${target}`,
       title:copy.title, text:`${copy.text} ${scope}`};
   },
