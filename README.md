@@ -37,7 +37,7 @@ Try this: start a practice investigation on the shared catalogue, compare the ga
 | Operating system | **Linux** (tested on Ubuntu). **Windows**: use WSL2 with Ubuntu and run every command inside the Ubuntu terminal. macOS is untested. |
 | Docker | Docker Engine with the Compose v2 plugin (`docker compose version` should print a version) |
 | Python | Python 3.10 or newer, for the small setup scripts (standard library only) |
-| Resources | About 2 GiB free memory and 10 GiB free disk |
+| Resources | About 2 GiB free memory, and 10 GiB free disk where Docker stores its data (usually `/var/lib/docker`) |
 | Tools | `git` |
 
 On Ubuntu, install Docker by following [Docker's official guide](https://docs.docker.com/engine/install/ubuntu/). Your user needs permission to run `docker` without `sudo`: Docker's [post-installation step](https://docs.docker.com/engine/install/linux-postinstall/) adds you to the `docker` group (log out and back in afterwards). Note that `docker` group membership is equivalent to administrator access on that machine.
@@ -56,7 +56,7 @@ cd aegis-fault-lab
 python3 scripts/preflight.py
 ```
 
-`preflight.py` only reads: it checks free memory and disk, and that Docker supports the resource limits the lab relies on. It should end with `Preflight passed`.
+`preflight.py` only reads: it checks free memory, free disk for Docker's storage and the project folder, and that Docker supports the resource limits the lab relies on. It should end with `Preflight passed`.
 
 ### 3. Create the local secrets
 

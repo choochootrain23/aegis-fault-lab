@@ -6,11 +6,14 @@ They come from automated validation runs, not from a person. The notes and guida
 
 ## `challenge-network-delay-with-ai.json`
 
-A hidden 600 ms network delay on catalog-b, the catalogue both gateways depend on. Detected after 7.2 s; recovery verified 64.8 s after the start.
+A hidden 600 ms network delay on catalog-b, the catalogue both gateways depend on. Detected after 7.3 s; recovery verified 33.3 s after the start.
 
-- **AI answers** in `session.help`, three of them. The first came after business checks only, the second after every inspection on every service, and the third after recovery was verified, when the right answer was "no action". Each lists the observation ids it cited.
+- **AI answers** in `session.help`, three of them, each listing the observation ids it cited.
+  - After business checks only, it held back: `Action: none yet`.
+  - After every inspection on every service, it named the fault: `Action: undelay on catalog-b`.
+  - After recovery was verified, it correctly recommended nothing more: `Action: none yet`.
 - **Recovery** in `session.recovery_attempts`: one action, *undelay* on catalog-b. That was the model's own recommendation, applied by the script.
-- **Evidence:** 258 observations. Look for the `network` records: catalog-b's shows a `netem` queue with a 600 ms delay. Compare the `business` durations of both gateways (about 610 ms) with their fast `liveness`.
+- **Evidence:** 120 observations. Look for the `network` records: catalog-b's shows a `netem` queue with a 600 ms delay. Compare the `business` durations of both gateways (about 610 ms) with their fast `liveness`.
 
 ## `challenge-config-drift-local.json`
 

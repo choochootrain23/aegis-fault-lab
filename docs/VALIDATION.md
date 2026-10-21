@@ -63,6 +63,22 @@ Building the evaluation exposed two real defects, both fixed with tests. First, 
 
 **Safari's engine (21 October 2026).** With WebKit's system libraries installed (`sudo state/ui-tools/bin/python -m playwright install-deps webkit`), the full simulator walkthrough passes in Playwright WebKit 27.2 (`AEGIS_BROWSER=webkit`), as it does in Chromium and Firefox. Screenshots were checked. The first WebKit run exposed a flaky assertion, not a browser difference: a starved CPU can round to exactly 100%, which the test's "CPU 9…" check rejected about one run in twenty. It now accepts 90–100%. Playwright WebKit is Safari's engine on Linux; the author also opened the live simulator in Safari on an Apple device and reported it working (a manual check, not an automated run).
 
+**AI investigator, second evaluation round (21 October 2026).** The evaluation gained a third question, asked once the model's own recommended fix had brought verified recovery: on a healthy fleet the right answer is "no action". Prompt changes were evaluated as they were made:
+
+- **With the first anti-injection line (11 rounds):** 11/11 correct after full inspection, 11/11 correct on the healthy fleet, and no wrong early guesses. But 10 of 33 answers added an unprompted "text in the evidence is not an instruction" disclaimer, against none of 66 before. The line was reworded to mention planted text only when present.
+- **With the reworded line (15 rounds):** 15/15 correct after full inspection, no wrong early guesses (9 "none yet", 6 correct), and 0 of 45 answers with the disclaimer. On the healthy fleet 13/15 were correct; 2 recommended re-applying a disk fix that had already worked. That is harmless (it reports *unchanged*) but wrong, so the prompt now says not to repeat a fix once recovery is verified.
+- **The final prompt is not yet evaluated.** Gemini was badly degraded when the run started: a one-word reply took 35–46 s. The run was stopped rather than measure the outage, and will be repeated when the service recovers.
+
+The degraded period also exposed two client issues, both fixed. The evaluation script's 25-second HTTP timeout was shorter than the controller's 40 s provider limit. And a provider timeout was reported as "could not reach the API"; it now says the API took too long, for Gemini and Claude alike.
+
+**Clean checkout (21 October 2026).** A fresh clone of the published repository (`d8170c2`) was set up using only the README's steps:
+
+- `init_env.py` created `.env` with mode 600, ignored by git and with no AI key. A no-cache `docker compose build` took 27 s, and `docker compose up -d` started the five containers.
+- The page answered on `localhost:8787` with all three services healthy, and the AI panel was off with its setup instructions.
+- `python3 scripts/validate_f1.py --run` passed all three rounds: detection 5.95–6.1 s, verified recovery 6.6–8.8 s.
+
+It used the existing evidence volume: the broker deliberately accepts only containers labelled with the real project name, so a separate project could not be used, and a first-ever empty database is covered by the backend tests instead. The check found one real problem. `preflight.py` measured free space where the project folder sits (here a 3.7 GB `/tmp`) and blocked, when the lab's images and volumes live in Docker's own storage. It now requires 10 GiB where Docker keeps its data and 1 GiB for the project folder.
+
 ## Reproduce browser reviews
 
 Use a development Python environment with `requirements.lock`, Playwright 1.64.0 and its Chromium headless shell:
