@@ -21,12 +21,13 @@ ROOT = Path(__file__).resolve().parents[1]
 NODES = ('gateway-a', 'catalog-b', 'gateway-c')
 # A different node to try a wrong remedy on.
 OTHER = {'gateway-a': 'catalog-b', 'catalog-b': 'gateway-c', 'gateway-c': 'gateway-a'}
-KINDS = ('service-unavailable', 'cpu-starvation', 'disk-full', 'config-drift', 'network-delay', 'packet-loss', 'quota-zero', 'bad-release', 'memory-leak')
+KINDS = ('service-unavailable', 'cpu-starvation', 'disk-full', 'config-drift', 'network-delay', 'packet-loss', 'quota-zero', 'bad-release', 'memory-leak',
+         'traffic-flood')
 REMEDY = {'service-unavailable': 'start', 'cpu-starvation': 'calm', 'disk-full': 'clear', 'config-drift': 'restore', 'network-delay': 'undelay',
-          'packet-loss': 'undrop', 'quota-zero': 'requota', 'bad-release': 'rollback', 'memory-leak': 'rollback'}
-TARGETS = {'quota-zero': ('catalog-b',)}  # faults that only exist on some services
+          'packet-loss': 'undrop', 'quota-zero': 'requota', 'bad-release': 'rollback', 'memory-leak': 'rollback', 'traffic-flood': 'ratelimit'}
+TARGETS = {'quota-zero': ('catalog-b',), 'traffic-flood': ('catalog-b',)}  # faults that only exist on some services
 # The fix for the fault each one is most easily mistaken for: it must change nothing.
-LOOKALIKE = {'packet-loss': 'undelay', 'network-delay': 'undrop', 'quota-zero': 'restore', 'bad-release': 'restore'}
+LOOKALIKE = {'packet-loss': 'undelay', 'network-delay': 'undrop', 'quota-zero': 'restore', 'bad-release': 'restore', 'traffic-flood': 'calm'}
 INTERMITTENT = ('cpu-starvation', 'packet-loss', 'bad-release', 'memory-leak')
 RELEASE_FAULTS = {'v1.5.0': 'bad-release', 'v1.5.1': 'memory-leak'}  # effects that come and go from one cycle to the next
 
@@ -88,8 +89,12 @@ def anomalies(operator):
         queues = network['body']['result'].get('qdiscs', []) if network['body'].get('ok') else []
         running_release = (releases['body'].get('result') or {}).get('running') if releases['body'].get('ok') else None
         growth = ((memory['body'].get('result') or {}).get('growth_mib_s') or 0) if memory['body'].get('ok') else 0
+        heavy = [c for c in (traffic['body'].get('result') or {}).get('clients', []) if (c.get('recent_rps') or 0) > 20 and c['client'] not in
+                 {q['client'] for q in (traffic['body'].get('result') or {}).get('quotas', [])} and c['client'] != 'controller'] if traffic['body'].get('ok') else []
         if memory['body'].get('oom_killed') or growth >= 4:
             found.append(('memory-leak', node, memory))
+        elif heavy:
+            found.append(('traffic-flood', node, traffic))
         elif running_release in RELEASE_FAULTS:
             found.append((RELEASE_FAULTS[running_release], node, releases))
         elif service['body'].get('running') is False:

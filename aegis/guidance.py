@@ -56,7 +56,7 @@ def explain(latest, level, now=None):
         elif live['body']['ok'] and not business['body']['ok'] and slow_catalogue(fresh):
             catalogue = slow_catalogue(fresh)
             ids.append(catalogue['id'])
-            message = f"{g} is live but its business request fails, and the catalogue it depends on answers slowly ({catalogue['body'].get('duration_ms')} ms). Slow upstream replies make the gateway's requests time out; compare the catalogue's resource use and network path."
+            message = f"{g} is live but its business request fails, and the catalogue it depends on answers slowly ({catalogue['body'].get('duration_ms')} ms). Slow upstream replies make the gateway's requests time out; compare the catalogue's resource use, traffic and network path."
             suggested = {'node':'catalog-b','kind':'resources'}
         elif live['body']['ok'] and not business['body']['ok']:
             message = f'{g} responds to liveness checks but its business request fails. Its own process is reachable; inspect the catalogue dependency before concluding the gateway is down.'
@@ -68,7 +68,7 @@ def explain(latest, level, now=None):
             slow_node = g if live['body'].get('slow') else 'catalog-b'
             message = (f"{g}'s requests succeed but slowly ({business['body'].get('duration_ms')} ms, above {SLOW_MS} ms). "
                        + ('It is slow even to liveness checks, so look at its own resources.' if slow_node == g
-                          else 'Its liveness is quick, so the delay is probably in the catalogue it depends on; compare the catalogue\'s latency and resource usage.'))
+                          else 'Its liveness is quick, so the delay is probably in the catalogue it depends on; compare the catalogue\'s latency, resource usage and traffic.'))
             suggested = {'node':slow_node,'kind':'resources'}
             cpu = fresh.get((slow_node, 'resources'))
             if cpu and cpu['body'].get('ok') and (cpu['body'].get('cpu_pct_of_limit') or 0) < 50:
@@ -108,6 +108,17 @@ def started_seconds_before(body, at):
     return at - started
 
 
+HEAVY_RPS = 20  # a caller without a quota sending more than this a second, now, is flooding a service this small
+
+
+def heavy_callers(record):
+    """Callers in a traffic observation sending heavily with no quota of any kind, busiest first."""
+    result = (record or {}).get('body', {}).get('result') or {}
+    limited = {q.get('client') for q in result.get('quotas', [])}
+    return sorted((c for c in result.get('clients', []) if (c.get('recent_rps') or 0) > HEAVY_RPS and c.get('client') not in limited and c.get('client') != 'controller'),
+                  key=lambda c: -(c.get('requests') or 0))
+
+
 def catalogue_healthy(fresh):
     record = fresh.get(('catalog-b', 'business'))
     return bool(record and record['body'].get('ok') and not record['body'].get('slow'))
@@ -140,7 +151,11 @@ def remedy(fresh):
             action = f"The resource check shows {node} at {body['cpu_pct_of_limit']:g}% of its CPU limit, but its container started only seconds earlier, and a process uses its whole limit while it boots. That alone is not starvation: check resources again in a few seconds, and its container state and memory to see why it restarted."
             suggest = 'memory'
         elif kind == 'resources' and (body.get('cpu_pct_of_limit') or 0) >= 80:
-            action = f"The resource check shows {node} using {body['cpu_pct_of_limit']:g}% of its {body.get('cpu_limit', 0):g}-CPU limit, so the kernel is throttling it. Its logs may show what started; you can try stopping the runaway job, then verify latency returns below {SLOW_MS} ms."
+            if heavy_callers(fresh.get((node, 'traffic'))):
+                continue  # the traffic check explains the CPU better; its own rule recommends the fix
+            action = (f"The resource check shows {node} using {body['cpu_pct_of_limit']:g}% of its {body.get('cpu_limit', 0):g}-CPU limit, so the kernel is throttling it. "
+                      f"Something is using that CPU: if its logs show a background job starting, you can try stopping the runaway job; if its traffic shows one caller sending most requests, rate-limit that client instead. Then verify latency returns below {SLOW_MS} ms.")
+            suggest = None if (node, 'traffic') in fresh else 'traffic'
         elif kind == 'disk' and (body.get('result') or {}).get('free_bytes') is not None and body['result']['free_bytes'] < 64 * 1024:
             largest = (body['result'].get('largest') or [{}])[0].get('path', 'one file')
             action = f"Disk usage shows {node}'s /tmp full, mostly {largest}. You can try clearing its temporary files, then verify business requests write receipts again."
@@ -152,6 +167,10 @@ def remedy(fresh):
             tcp = body['result'].get('tcp') or {}
             resent = f", and {tcp['retrans_pct']:g}% of the TCP segments it sent had to be resent" if tcp.get('retrans_pct') is not None else ''
             action = f"Traffic leaving {node} passes a netem queue that drops {queue['loss_pct']:g}% of packets{resent}. You can try removing the packet loss, then verify requests succeed reliably, not just once."
+        elif kind == 'traffic' and heavy_callers(record):
+            top = heavy_callers(record)[0]
+            action = (f"{node} received {top['requests']} requests in the last minute from {top['client']}, about {top['recent_rps']:g} a second right now, from a caller with no quota: "
+                      "one client is using most of its capacity. You can try rate-limiting the top client, then verify the other callers' requests are fast again.")
         elif kind == 'traffic' and any(q.get('limit_rps') == 0 for q in (body.get('result') or {}).get('quotas', [])):
             zero = [q['client'] for q in body['result']['quotas'] if q.get('limit_rps') == 0]
             rejected = sum(c.get('rejected', 0) for c in body['result'].get('clients', []))

@@ -70,20 +70,20 @@ globalThis.AegisView = Object.freeze({
     return value>=1048576?`${(value/1048576).toFixed(1)} MiB`:value>=1024?`${Math.round(value/1024)} KiB`:`${value} B`;
   },
   remedyLabel(verb) {
-    return ({start:'Start service',calm:'Stop runaway job',clear:'Clear temp files',restore:'Restore config',undelay:'Remove traffic delay',undrop:'Remove packet loss',requota:'Reset client quotas',rollback:'Roll back release'})[verb]||verb;
+    return ({start:'Start service',calm:'Stop runaway job',clear:'Clear temp files',restore:'Restore config',undelay:'Remove traffic delay',undrop:'Remove packet loss',requota:'Reset client quotas',rollback:'Roll back release',ratelimit:'Rate-limit top client'})[verb]||verb;
   },
   faultLabel(kind) {
-    return ({'service-unavailable':'Stopped service','cpu-starvation':'CPU starvation','disk-full':'Disk full','config-drift':'Config drift','network-delay':'Network delay','packet-loss':'Packet loss','quota-zero':'Quota set to zero','bad-release':'Bad release','memory-leak':'Memory leak'})[kind]||kind;
+    return ({'service-unavailable':'Stopped service','cpu-starvation':'CPU starvation','disk-full':'Disk full','config-drift':'Config drift','network-delay':'Network delay','packet-loss':'Packet loss','quota-zero':'Quota set to zero','bad-release':'Bad release','memory-leak':'Memory leak','traffic-flood':'Traffic flood'})[kind]||kind;
   },
   // The services a fault can target, when it cannot target all three.
   faultTargets(kind) {
-    return ({'quota-zero':['catalog-b']})[kind]||null;
+    return ({'quota-zero':['catalog-b'],'traffic-flood':['catalog-b']})[kind]||null;
   },
   // Scenario heading: the selected fault and target, the running practice scenario, or a hidden challenge.
   scenarioCopy(kind, target, mode) {
     if (mode==='challenge') return {number:'??', eyebrow:'Challenge · hidden fault', title:['A ','hidden',' fault'],
-      text:'One of nine faults on one of the three services, picked at random and kept secret. Find it from the evidence, fix it, then reveal it to check.'};
-    const kinds=['service-unavailable','cpu-starvation','disk-full','config-drift','network-delay','packet-loss','quota-zero','bad-release','memory-leak'];
+      text:'One of ten faults on one of the three services, picked at random and kept secret. Find it from the evidence, fix it, then reveal it to check.'};
+    const kinds=['service-unavailable','cpu-starvation','disk-full','config-drift','network-delay','packet-loss','quota-zero','bad-release','memory-leak','traffic-flood'];
     const copy={
       'service-unavailable':{title:['When a service ','stops',''], text:'Its container is stopped, so its own checks fail.'},
       'cpu-starvation':{title:['When a service is ','starved',' of CPU'], text:'A runaway job uses its whole CPU limit. It still answers, just slowly.'},
@@ -93,9 +93,11 @@ globalThis.AegisView = Object.freeze({
       'packet-loss':{title:['When packets ','go missing',''], text:'Half the packets it sends are dropped. Requests sometimes work, sometimes stall, sometimes time out.'},
       'quota-zero':{title:['When the quota ','hits zero',''], text:'A quota push lets the gateways make zero requests. The catalogue is up, fast and green to its own probes.'},
       'bad-release':{title:['When a release ','ships a bug',''], text:'A new version fails about half its requests. The machine is fine and the config unchanged; only the code moved.'},
+      'traffic-flood':{title:['When one client ','floods',' the catalogue'], text:'A report export job sends hundreds of requests a second. Nothing is broken; there is simply too much traffic for one small service.'},
       'memory-leak':{title:['When memory ','leaks',''], text:'A new version never frees what it loads. It runs fine until the kernel kills it, then the rollout restarts it, again and again.'},
     }[kind]||{title:['A ','fault',''], text:''};
     const scope=kind==='quota-zero'?'Enforced by the shared catalogue: compare what its callers see with what its own checks say.'
+      :kind==='traffic-flood'?'Aimed at the shared catalogue: both gateways feel it. Find out who is calling.'
       :target==='catalog-b'?'On the shared catalogue: see whether both gateways are affected too.':`On ${target}, a local fault: see whether the catalogue and the other gateway stay healthy.`;
     return {number:String(kinds.indexOf(kind)+1).padStart(2,'0'), eyebrow:`Scenario ${String(kinds.indexOf(kind)+1).padStart(2,'0')} · ${this.faultLabel(kind)} · ${target}`,
       title:copy.title, text:`${copy.text} ${scope}`};

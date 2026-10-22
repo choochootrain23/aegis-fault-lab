@@ -266,3 +266,27 @@ def test_cpu_at_the_limit_just_after_a_restart_is_not_called_starvation():
     assert 'stopping the runaway job' not in result['message'] and 'boots' in result['message']
     long_running=observation('gateway-a','resources',cpu_pct_of_limit=100.0,cpu_limit=0.25,started_at='0001-01-01T00:00:00Z')
     assert 'stopping the runaway job' in explain({('gateway-a','resources'):long_running},'action',now=101)['message']
+
+
+def test_a_heavy_caller_without_a_quota_supports_rate_limiting():
+    traffic=observation('catalog-b','traffic',result={'clients':[{'client':'report-exporter','requests':21000,'rps':350.0,'recent_rps':355.0},{'client':'gateway-a','requests':30,'rps':0.5}],
+                                                     'quotas':[{'client':'gateway-a','limit_rps':20,'deployed_rps':20}]})
+    result=explain({('catalog-b','traffic'):traffic},'action',now=101)
+    assert 'rate-limiting the top client' in result['message'] and 'report-exporter' in result['message']
+    limited=observation('catalog-b','traffic',result={'clients':[{'client':'report-exporter','requests':400,'rps':6.7}],
+                                                     'quotas':[{'client':'report-exporter','limit_rps':2,'deployed_rps':None}]})
+    assert 'No fresh inspection yet supports' in explain({('catalog-b','traffic'):limited},'action',now=101)['message']
+
+
+def test_cpu_at_the_limit_defers_to_a_flood_and_otherwise_names_both_causes():
+    cpu=observation('catalog-b','resources',cpu_pct_of_limit=99.0,cpu_limit=0.25)
+    alone=explain({('catalog-b','resources'):cpu},'action',now=101)
+    assert 'stopping the runaway job' in alone['message'] and 'rate-limit that client' in alone['message'] and alone['suggested_check']['kind']=='traffic'
+    traffic=observation('catalog-b','traffic',result={'clients':[{'client':'report-exporter','requests':21000,'rps':350.0,'recent_rps':355.0}],'quotas':[]})
+    both=explain({('catalog-b','resources'):cpu,('catalog-b','traffic'):traffic},'action',now=101)
+    assert both['evidence_ids']==[traffic['id']] and 'runaway job' not in both['message']
+
+
+def test_a_caller_that_flooded_a_minute_ago_but_is_quiet_now_is_not_flagged():
+    traffic=observation('catalog-b','traffic',result={'clients':[{'client':'report-exporter','requests':21000,'rps':350.0,'recent_rps':0.0}],'quotas':[]})
+    assert 'No fresh inspection yet supports' in explain({('catalog-b','traffic'):traffic},'action',now=101)['message']

@@ -16,6 +16,7 @@ def service(tmp_path, monkeypatch):
     monkeypatch.setattr(fleet, 'FLEET_TOKEN', 'fleet-token')
     fleet.LOGS.clear()
     fleet.config.update(fleet.DEPLOYED)
+    fleet.quota.clear()
     fleet.quota.update(fleet.QUOTA_DEPLOYED)
     fleet.TRAFFIC.clear()
     fleet.leak_stop.set()
@@ -137,6 +138,7 @@ def test_zero_quota_refuses_gateways_but_not_unlimited_callers(service):
 
 
 def test_quota_limits_accepted_requests_per_second(service, monkeypatch):
+    monkeypatch.setattr(fleet.time, 'time', lambda: 1000.5)  # all four requests in the same second
     monkeypatch.setitem(fleet.quota, 'gateway-c', 2)
     codes = [service('GET', '/catalog', headers={'X-Aegis-Client': 'gateway-c'}).status_code for _ in range(4)]
     assert codes == [200, 200, 429, 429]
@@ -199,3 +201,26 @@ def test_leaky_release_grows_memory_and_rollback_frees_it(service, monkeypatch):
 def test_unknown_deployers_are_recorded_as_the_release_pipeline(service):
     service('POST', '/maintenance/ship', headers={**TOKEN, 'X-Aegis-Actor': 'someone; rm -rf /'})
     assert service('GET', '/diagnostics/releases').json()['history'][-1]['by'] == 'release-bot'
+
+
+def test_rate_limit_targets_heavy_unknown_callers_and_asks_them_to_back_off(service, monkeypatch):
+    monkeypatch.setattr(fleet.time, 'time', lambda: 2000.5)
+    for _ in range(250):
+        fleet.tally('report-exporter', 200)
+    for _ in range(30):
+        fleet.tally('gateway-a', 200)
+        fleet.tally('controller', 200)
+    limited = service('POST', '/maintenance/ratelimit', headers=TOKEN).json()
+    assert limited == {'changed': True, 'limited': ['report-exporter']}  # gateways and probes are never limited by it
+    assert service('POST', '/maintenance/ratelimit', headers=TOKEN).json()['changed'] is False
+    refused = service('GET', '/catalog', headers={'X-Aegis-Client': 'report-exporter'})
+    assert refused.status_code == 429 and refused.headers['retry-after'] == '10'
+    assert fleet.quota['gateway-a'] == 20 and 'controller' not in fleet.quota
+    quotas = {q['client']: q for q in service('GET', '/diagnostics/traffic').json()['quotas']}
+    assert quotas['report-exporter']['limit_rps'] == 2 and quotas['report-exporter']['deployed_rps'] is None
+    assert service('POST', '/maintenance/requota', headers=TOKEN).json() == {'changed': True, 'restored': ['report-exporter']}
+    assert 'report-exporter' not in fleet.quota
+
+
+def test_only_the_reports_service_runs_the_exporter(service):
+    assert service('POST', '/maintenance/flood', headers=TOKEN).json() == {'changed': False}

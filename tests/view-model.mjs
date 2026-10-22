@@ -97,7 +97,10 @@ export function run(){
   });
   check('Release faults have readable labels',()=>{
     assert.equal(view.remedyLabel('rollback'),'Roll back release');assert.equal(view.scenarioCopy('memory-leak','catalog-b','practice').number,'09');
-    assert.match(view.scenarioCopy('x','catalog-b','challenge').text,/nine faults/);
+  });
+  check('Traffic flood is catalogue-only and has a readable fix',()=>{
+    assert.deepEqual([...view.faultTargets('traffic-flood')],['catalog-b']);assert.equal(view.remedyLabel('ratelimit'),'Rate-limit top client');
+    assert.equal(view.scenarioCopy('traffic-flood','catalog-b','practice').number,'10');assert.match(view.scenarioCopy('x','catalog-b','challenge').text,/ten faults/);
   });
   return {passed,scope:'Pure UI state and timer decisions; frontend JavaScript parsed. No visual/browser validation.'};
 }

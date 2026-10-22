@@ -28,6 +28,8 @@ class Fleet:
         self.deployers = []  # (node, version, actor) for every release deployed
         self.release_tick = 0
         self.booting = set()
+        self.flooding = False      # the report exporter in the reports service
+        self.rate_limited = False  # the catalogue limits it
         self.mutations = []
         self.broker_available = True
         self.log_entries = None  # set to plant entries in /diagnostics/logs
@@ -52,7 +54,8 @@ class Fleet:
         return httpx.Response(200, json={'target': node, 'generation': node + '-generation', 'running': self.running[node],
                                          'status': 'running' if self.running[node] else 'exited', 'changed': changed,
                                          'exit_code': 137 if self.oom_killed[node] else 0, 'oom_killed': self.oom_killed[node],
-                                         **({'cpu_limit': 0.25, 'cpu_pct_of_limit': 100.0 if self.busy[node] else 4.0} if verb == 'resources' else {})})
+                                         **({'cpu_limit': 0.25, 'cpu_pct_of_limit': 100.0 if self.busy[node] or (node == 'catalog-b' and self.flooding and not self.rate_limited) else 4.0}
+                                            if verb == 'resources' else {})})
 
     def handle(self, request):
         if request.url.host == 'broker':
@@ -60,6 +63,13 @@ class Fleet:
                 return httpx.Response(503)
             return self.broker(json.loads(request.content))
         node, path = request.url.host, request.url.path
+        if node == 'reports':
+            verb = path.rsplit('/', 1)[1]
+            changed = self.flooding != (verb == 'flood')
+            self.flooding = verb == 'flood'
+            if changed:
+                self.mutations.append(('reports', verb))
+            return httpx.Response(200, json={'changed': changed})
         if not self.running[node]:
             raise httpx.ConnectError('Process stopped', request=request)
         if path.startswith('/maintenance/'):
@@ -69,6 +79,12 @@ class Fleet:
             if request.headers.get('x-aegis-fleet-token') != 'fleet-token':
                 return httpx.Response(403)
             verb = path.rsplit('/', 1)[1]
+            if verb in ('ratelimit', 'requota') and node == 'catalog-b' and self.rate_limited != (verb == 'ratelimit') and (self.flooding or verb == 'requota'):
+                self.rate_limited = verb == 'ratelimit'
+                if verb == 'ratelimit':
+                    return httpx.Response(200, json={'changed': True, 'limited': ['report-exporter']})
+            if verb == 'ratelimit':
+                return httpx.Response(200, json={'changed': False})
             if verb in ('ship', 'leak', 'rollback'):
                 version = {'ship': 'v1.5.0', 'leak': 'v1.5.1', 'rollback': 'v1.4.2'}[verb]
                 changed = self.version[node] != version
@@ -119,14 +135,21 @@ class Fleet:
         if path == '/diagnostics/traffic':
             quotas = [{'client': g, 'limit_rps': 0 if self.squeezed[node] else 20, 'deployed_rps': 20, 'changed': self.squeezed[node]}
                       for g in ('gateway-a', 'gateway-c')] if node == 'catalog-b' else []
-            clients = [{'client': g, 'requests': 30, 'rejected': 30 if self.squeezed[node] else 0, 'errors': 0} for g in ('gateway-a', 'gateway-c')]
+            clients = [{'client': g, 'requests': 30, 'rps': 0.5, 'rejected': 30 if self.squeezed[node] else 0, 'errors': 0} for g in ('gateway-a', 'gateway-c')]
+            if self.flooding and node == 'catalog-b':
+                clients.insert(0, {'client': 'report-exporter', 'requests': 2 if self.rate_limited else 21000, 'rps': 0.03 if self.rate_limited else 350.0, 'recent_rps': 0.2 if self.rate_limited else 355.0,
+                                   'rejected': 2 if self.rate_limited else 0, 'errors': 0})
+                if self.rate_limited:
+                    quotas.append({'client': 'report-exporter', 'limit_rps': 2, 'deployed_rps': None, 'changed': True})
             return httpx.Response(200, json={'window_s': 60, 'clients': clients if node == 'catalog-b' else [], 'quotas': quotas,
                                              'quota_source': {'pushed_by': 'quota-manager' if self.squeezed[node] else 'deployment'} if node == 'catalog-b' else None})
         if path == '/summary' and node.startswith('gateway') and (self.lossy['catalog-b'] or self.lossy[node]):
             self.loss_tick += 1
             if (self.loss_tick - 1) // 2 % 5 < 3:  # two gateway requests a cycle
                 return httpx.Response(503, json={'ok': False, 'error': 'ReadTimeout'})
-        slow = self.delayed[node] or self.busy[node] or (node.startswith('gateway') and path == '/summary' and (self.busy['catalog-b'] or self.delayed['catalog-b']))
+        flooded = self.flooding and not self.rate_limited
+        slow = (self.delayed[node] or self.busy[node] or (node == 'catalog-b' and flooded)
+                or (node.startswith('gateway') and path == '/summary' and (self.busy['catalog-b'] or self.delayed['catalog-b'] or flooded)))
         if slow and path in ('/live', '/summary'):
             time.sleep(0.06)  # above the test SLOW_MS
         if path == '/live':
@@ -532,10 +555,10 @@ def test_challenge_hides_fault_kind_and_target(lab):
             await controller.reset_locked(f'reset-kind-{attempt:03d}')
             for _ in range(3):
                 await controller.cycle()
-            if len(seen) == 9:
+            if len(seen) == 10:
                 break
         assert seen == {'service-unavailable', 'cpu-starvation', 'disk-full', 'config-drift', 'network-delay', 'packet-loss', 'quota-zero',
-                        'bad-release', 'memory-leak'}
+                        'bad-release', 'memory-leak', 'traffic-flood'}
     run(scenario())
 
 
@@ -903,4 +926,26 @@ def test_rollback_keeps_trying_while_the_target_boots(lab, monkeypatch):
         fleet.booting.add('gateway-c')
         result = await controller.mutate('rollback-boot', 'gateway-c', 'rollback')
         assert result['status'] == 'succeeded' and fleet.version['gateway-c'] == 'v1.4.2' and 'rollout' not in controller.session
+    run(scenario())
+
+
+def test_traffic_flood_needs_a_rate_limit_not_a_stopped_job(lab):
+    async def scenario():
+        controller, fleet = lab
+        await baseline(controller)
+        with pytest.raises(HTTPException):
+            await controller.start(Start(mode='practice', kind='traffic-flood', target='gateway-a', key='start-flood-gw'))
+        await controller.start(Start(mode='practice', kind='traffic-flood', target='catalog-b', key='start-flood'))
+        assert fleet.flooding and ('reports', 'flood') in fleet.mutations
+        assert await investigate(controller) == {'gateway-a': 'degraded', 'catalog-b': 'degraded', 'gateway-c': 'degraded'}
+        traffic = await controller.check('catalog-b', 'traffic')
+        assert traffic['body']['result']['clients'][0]['client'] == 'report-exporter'
+        for node, verb in (('catalog-b', 'calm'), ('gateway-a', 'ratelimit'), ('catalog-b', 'start')):
+            assert (await controller.mutate(f'wrong-flood-{node}-{verb}', node, verb))['status'] == 'unchanged'
+        await verify(controller, 'ratelimit', 'catalog-b', 'ratelimit')
+        assert controller.session['status'] == 'recovered' and fleet.rate_limited
+        assert 'report-exporter' in controller.public_session(controller.session | {'revealed': True})['debrief']
+        await controller.reset_locked('reset-flood')
+        assert [(r['node'], r['verb']) for r in controller.session['reset']['results']][-2:] == [('catalog-b', 'unflood'), ('catalog-b', 'requota')]
+        assert not fleet.flooding and not fleet.rate_limited
     run(scenario())

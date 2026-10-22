@@ -31,6 +31,11 @@ services:
     command: [uvicorn, aegis.fleet:app, --host, 0.0.0.0, --port, '8000', --no-access-log]
     environment: {AEGIS_ROLE: gateway, AEGIS_NAME: gateway-c, AEGIS_UPSTREAM: 'http://catalog-b:8000', AEGIS_FLEET_TOKEN: '${AEGIS_FLEET_TOKEN:?Run scripts/init_env.py first}'}
     networks: [fleet]
+  reports:
+    <<: *common
+    command: [uvicorn, aegis.fleet:app, --host, 0.0.0.0, --port, '8000', --no-access-log]
+    environment: {AEGIS_ROLE: reports, AEGIS_NAME: report-exporter, AEGIS_FLEET_TOKEN: '${AEGIS_FLEET_TOKEN:?Run scripts/init_env.py first}'}
+    networks: [fleet]
   broker:
     <<: *common
     user: '0:0'

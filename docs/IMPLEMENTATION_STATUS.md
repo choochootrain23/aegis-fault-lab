@@ -101,9 +101,14 @@ Reports are under ignored `state/validation/`. The app is running at http://loca
 - **Verification refinement.** Ten healthy cycles are required once a failure has come and gone on its own; the first recovery after a fix no longer counts, so steady faults keep three cycles and a crash loop restarted by hand cannot pass on a short run.
 - Guidance: a service's own HTTP 500 `TypeError` points at its release history; a catalogue code error points at releases rather than config; an out-of-memory stop advises checking memory instead of starting; a growing memory trend or a post-boot release supports rolling back. The simulator models both faults and the deploy controller from real measurements.
 
+## Twelfth checkpoint (22 October 2026)
+
+- **Tenth fault: traffic flood.** A new `reports` service (hardened like the others, internal network only, never touched by the broker) runs a report export job that floods the catalogue over 160 keep-alive connections. The catalogue's CPU sits at its limit with no job to stop. The traffic check now reports each caller's current rate, and **Rate-limit top client** limits heavy callers without a quota, answering them with HTTP 429 and `Retry-After`; the exporter backs off with jitter. Traffic accounting moved to one-second buckets so a flood cannot push other callers out of the window.
+- Guidance: CPU at the limit names both possible causes (a job, or one heavy caller) and defers to the traffic check when it shows a flood.
+
 ## Next work
 
-1. Roadmap step 3: a traffic flood from one client and a retry storm.
+1. Roadmap step 3, continued: a retry storm (a brief slowdown amplified by client retries into a self-sustaining overload), fixed by load shedding.
 2. AI evaluation covering the four newest faults, and with other models.
 3. Screen-reader review; runs measured in days.
 

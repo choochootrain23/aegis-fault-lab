@@ -97,6 +97,16 @@ It used the existing evidence volume: the broker deliberately accepts only conta
   - *Stale evidence in the validator.* With eight checks per service, a full sweep plus sampling took longer than the 30 seconds for which guidance treats an inspection as fresh. The validator now repeats the telling inspection before asking for action guidance, as a learner would.
 - **A sharper flapping rule.** A crash loop restarted by hand would otherwise pass three healthy cycles before the next out-of-memory kill. Ten cycles are now required once a failure has come and gone on its own, and the first recovery after a fix no longer counts as that, so steady faults keep the three-cycle rule.
 
+**Traffic flood (22 October 2026).** A tenth fault floods the catalogue from a separate `reports` service.
+
+- **Measured behaviour.** About 360 requests a second from report-exporter held the catalogue's CPU at its limit, using about 2.5% of a CPU on the client side. The catalogue's checks took a median of 420 ms, and both gateways' requests 456 ms, with no failures. Detection took 7–12 s. Rate-limiting dropped the catalogue's CPU to 1–9%, and recovery was verified in about 21 s, since the flood's flicker meant the ten-cycle run applied.
+- **Scenario matrix.** The flood passed in practice. Then 26 challenge rounds passed, covering all ten faults on all three services, followed by a reset without recovery. *Stop runaway job* under the flood, and rate-limiting a gateway, both reported *unchanged*.
+- **Three real defects found and fixed.**
+  - *A thundering herd.* All 160 rate-limited connections slept exactly the 10-second `Retry-After` and woke together, so a third of cycles stayed slow after the fix. The exporter now adds random jitter, as well-behaved clients do.
+  - *Floods overlapping between rounds.* Stopping the exporter did not interrupt connections sleeping in their backoff, so a flood started straight after a reset found the old job still alive and did nothing. Backoff sleeps now wake within a quarter of a second, and a new job waits for the old one.
+  - *A finished flood still looked like one.* The traffic check's one-minute totals still showed the previous round's flood after reset, and the validator reported two faults. Each caller's current rate over the last 10 seconds is now reported, and guidance, the simulator and the validator judge floods by it.
+- **Measurement lesson.** Early attempts to size the flood were misleading. An `httpx` client spent its own CPU before loading the catalogue, and a probe run inside a throttled container timed its own throttling (a constant 100 ms, the scheduler period). The figures above come from a lean raw-socket client and the lab's own business checks.
+
 ## Reproduce browser reviews
 
 Use a development Python environment with `requirements.lock`, Playwright 1.64.0 and its Chromium headless shell:

@@ -17,7 +17,7 @@ New faults modelled on the kinds of incident that public data-centre reports des
 | 12 | **Quota set to zero**: the catalogue refuses both gateways with HTTP 429 while its own probes stay green | Config drift; traffic flood | Reset client quotas | **Done** (F7) |
 | 5 | **Bad release**: a new version fails about half of requests | Config drift | Roll back release | **Done** (F8) |
 | 4 | **Memory leak and repeated OOM kills**: the service crash-loops as the kernel kills it and the deploy controller restarts it | Stopped service ("start" seems to work, then it fails again) | Roll back release | **Done** (F9) |
-| 1 | **Traffic flood from one client**: high CPU from serving requests, rejections | CPU starvation (no runaway job to stop) | Rate-limit the top client | Planned: reuses **Traffic & quotas** plus a bounded load-generator helper |
+| 1 | **Traffic flood from one client**: high CPU from serving requests | CPU starvation (no runaway job to stop) | Rate-limit top client | **Done** (F10) |
 | 2 | **Retry storm**: a brief catalogue failure is kept alive by gateways retrying without backoff | A catalogue that is still broken | Enable retry backoff on the gateways | Planned |
 | 6 | **Thermal throttling / power capping**: everything slower at once, CPU throttled but usage low | CPU starvation on every node | Shed load, then lift the cap once cooling recovers | Planned: needs facility telemetry and a reversible "power cap" broker operation |
 | 7 | **Rack power loss**: two services on one PDU stop together | Two separate faults | Reset the breaker, start in dependency order | Planned: facility telemetry |

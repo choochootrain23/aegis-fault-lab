@@ -1,4 +1,5 @@
 """Real synthetic services. Each instance is an independent Linux process."""
+import asyncio
 import errno
 import hmac
 import os
@@ -46,8 +47,14 @@ config = dict(DEPLOYED)
 QUOTA_DEPLOYED = {'gateway-a': 20, 'gateway-c': 20} if ROLE == 'catalog' else {}
 quota = dict(QUOTA_DEPLOYED)
 quota_source = {'pushed_by': 'deployment', 'at': time.time()}
-TRAFFIC = deque(maxlen=4000)  # (at, client, status) for business requests, newest last
 TRAFFIC_WINDOW_S = 60
+# Business requests per caller in one-second buckets, newest last: [second, {client: [requests, rejected, errors, accepted]}].
+# Buckets rather than single requests, so a flood of hundreds a second cannot push everyone else out of the window.
+TRAFFIC = deque(maxlen=TRAFFIC_WINDOW_S + 1)
+HEAVY_RPS = 20        # a caller without a deployed quota above this is limited by the rate-limit remedy
+RECENT_S = 10         # the window for a caller's current rate
+RATE_LIMIT_RPS = 2    # what it is limited to
+RETRY_AFTER_S = 10    # how long a limited caller is asked to wait
 tcp_last = None  # TCP counters at the previous network check, so retransmissions are reported per interval
 # Releases. Every process boots on the stable build; the release faults deploy a newer one in place, as a rollout
 # would, and rollback returns to the stable build. Only these fixed versions exist.
@@ -98,8 +105,19 @@ app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None)
 async def count_traffic(request, call_next):
     response = await call_next(request)
     if request.url.path in ('/summary', '/catalog', '/ready'):
-        TRAFFIC.append((time.time(), request.headers.get('x-aegis-client', 'unidentified')[:40], response.status_code))
+        tally(request.headers.get('x-aegis-client', 'unidentified')[:40], response.status_code)
     return response
+
+
+def tally(client, status):
+    second = int(time.time())
+    if not TRAFFIC or TRAFFIC[-1][0] != second:
+        TRAFFIC.append([second, {}])
+    counts = TRAFFIC[-1][1].setdefault(client, [0, 0, 0, 0])
+    counts[0] += 1
+    counts[1] += status == 429
+    counts[2] += status >= 500
+    counts[3] += status < 400
 
 
 def write_receipt(kind):
@@ -150,12 +168,11 @@ def load_catalogue():
 
 
 def over_quota(client):
-    """True when this caller has already used its quota of accepted requests in the past second."""
+    """True when this caller has already used its quota of accepted requests in the current second."""
     limit = quota.get(client)
     if limit is None:
         return False
-    now = time.time()
-    return sum(1 for at, who, status in reversed(TRAFFIC) if now - at <= 1 and who == client and status < 400) >= limit
+    return bool(TRAFFIC) and TRAFFIC[-1][0] == int(time.time()) and TRAFFIC[-1][1].get(client, [0, 0, 0, 0])[3] >= limit
 
 
 @app.get('/catalog')
@@ -165,7 +182,7 @@ async def catalog(x_aegis_client: str = Header(default='unidentified')):
         result = {'ok': False, 'error': 'QuotaExceeded', 'client': x_aegis_client[:40], 'limit_rps': quota[x_aegis_client],
                   'detail': 'per-client request quota exhausted', 'generation': BOOT, 'duration_ms': round((time.monotonic() - started) * 1000, 1)}
         LOGS.append({'at': time.time(), **result})
-        return JSONResponse(result, status_code=429)
+        return JSONResponse(result, status_code=429, headers={'Retry-After': str(RETRY_AFTER_S)})
     if (failure := release_failure(started)):
         return failure
     try:
@@ -327,22 +344,29 @@ async def memory():
             'oom_kills': oom_kills, 'uptime_s': round(now - release['history'][0]['at'], 1), 'version': release['version'], 'generation': BOOT}
 
 
+def traffic_since(start):
+    return [(second, counts) for second, counts in TRAFFIC if second >= int(start)]
+
+
 @app.get('/diagnostics/traffic')
 async def traffic():
     """Business requests per caller over the last minute, and the quotas this service enforces."""
-    now = time.time()
     callers = {}
-    for at, client, status in TRAFFIC:
-        if now - at > TRAFFIC_WINDOW_S:
-            continue
-        entry = callers.setdefault(client, {'client': client, 'requests': 0, 'rejected': 0, 'errors': 0})
-        entry['requests'] += 1
-        entry['rejected'] += status == 429
-        entry['errors'] += status >= 500
+    for second, counts in traffic_since(time.time() - TRAFFIC_WINDOW_S):
+        for client, (requests, rejected, errors, _) in counts.items():
+            entry = callers.setdefault(client, {'client': client, 'requests': 0, 'rejected': 0, 'errors': 0})
+            entry['requests'] += requests
+            entry['rejected'] += rejected
+            entry['errors'] += errors
+    recent = {}
+    for second, counts in traffic_since(time.time() - RECENT_S):
+        for client, (requests, *_) in counts.items():
+            recent[client] = recent.get(client, 0) + requests
     for entry in callers.values():
         entry['rps'] = round(entry['requests'] / TRAFFIC_WINDOW_S, 2)
-    quotas = [{'client': client, 'limit_rps': quota[client], 'deployed_rps': deployed, 'changed': quota[client] != deployed}
-              for client, deployed in QUOTA_DEPLOYED.items()]
+        entry['recent_rps'] = round(recent.get(entry['client'], 0) / RECENT_S, 2)  # what it is sending now, not a minute ago
+    quotas = [{'client': client, 'limit_rps': limit, 'deployed_rps': QUOTA_DEPLOYED.get(client), 'changed': limit != QUOTA_DEPLOYED.get(client)}
+              for client, limit in quota.items()]
     return {'window_s': TRAFFIC_WINDOW_S, 'clients': sorted(callers.values(), key=lambda e: -e['requests']), 'quotas': quotas,
             'quota_source': quota_source if QUOTA_DEPLOYED else None, 'generation': BOOT}
 
@@ -480,14 +504,34 @@ async def squeeze(x_aegis_fleet_token: str = Header(default='')):
     return {'changed': True}
 
 
+@app.post('/maintenance/ratelimit')
+async def ratelimit(x_aegis_fleet_token: str = Header(default='')):
+    """Recovery: limit every heavy caller that has no deployed quota, and ask it to back off. Only the catalogue limits callers."""
+    authorize(x_aegis_fleet_token)
+    if ROLE != 'catalog':
+        return {'changed': False}
+    recent = {}
+    for second, counts in traffic_since(time.time() - RECENT_S):
+        for client, (requests, *_) in counts.items():
+            recent[client] = recent.get(client, 0) + requests
+    heavy = sorted(client for client, requests in recent.items()
+                   if requests / RECENT_S > HEAVY_RPS and client not in QUOTA_DEPLOYED and client != 'controller' and client not in quota)
+    for client in heavy:
+        quota[client] = RATE_LIMIT_RPS
+    if heavy:
+        LOGS.append({'at': time.time(), 'ok': True, 'event': 'rate limit applied', 'clients': heavy, 'limit_rps': RATE_LIMIT_RPS, 'generation': BOOT})
+    return {'changed': bool(heavy), 'limited': heavy}
+
+
 @app.post('/maintenance/requota')
 async def requota(x_aegis_fleet_token: str = Header(default='')):
     """Recovery: reapply the deployed per-caller quotas."""
     global quota_source
     authorize(x_aegis_fleet_token)
-    changed = sorted(client for client, limit in QUOTA_DEPLOYED.items() if quota[client] != limit)
+    changed = sorted({client for client, limit in QUOTA_DEPLOYED.items() if quota.get(client) != limit} | (set(quota) - set(QUOTA_DEPLOYED)))
     if not changed:
         return {'changed': False}
+    quota.clear()
     quota.update(QUOTA_DEPLOYED)
     quota_source = {'pushed_by': 'deployment', 'at': time.time()}
     LOGS.append({'at': time.time(), 'ok': True, 'event': 'quota policy restored', 'clients': changed, 'generation': BOOT})
@@ -542,6 +586,78 @@ async def rollback(x_aegis_fleet_token: str = Header(default='')):
     leak_store.clear()
     previous = release['version']
     return {'changed': deploy(STABLE, 'rollback'), 'from': previous}
+
+
+# The report exporter: a batch client that, when started, pulls the catalogue as fast as it can over many keep-alive
+# connections, as a misconfigured export job would. It only ever calls the catalogue on the internal network, stops
+# itself after JOB_MAX_S, and honours Retry-After like a well-behaved client, so rate-limiting it works.
+FLOOD_CONNECTIONS = 160
+FLOOD_REQUEST = b'GET /catalog HTTP/1.1\r\nHost: catalog-b\r\nX-Aegis-Client: report-exporter\r\n\r\n'
+flood_stop = threading.Event()
+flood_threads = []
+flood_stats = {'sent': 0, 'rejected': 0, 'errors': 0}
+
+
+async def pause(seconds):
+    """Sleep, but wake within a quarter of a second when the job is told to stop."""
+    until = time.monotonic() + seconds
+    while not flood_stop.is_set() and time.monotonic() < until:
+        await asyncio.sleep(0.25)
+
+
+async def flood_worker(deadline):
+    while not flood_stop.is_set() and time.monotonic() < deadline:
+        try:
+            reader, writer = await asyncio.wait_for(asyncio.open_connection('catalog-b', 8000), 5)
+            try:
+                while not flood_stop.is_set() and time.monotonic() < deadline:
+                    writer.write(FLOOD_REQUEST)
+                    head = (await asyncio.wait_for(reader.readuntil(b'\r\n\r\n'), 15)).decode('latin-1').split('\r\n')
+                    fields = {k.strip().lower(): v.strip() for k, _, v in (line.partition(':') for line in head[1:] if line)}
+                    await reader.readexactly(int(fields.get('content-length', '0')))
+                    flood_stats['sent'] += 1
+                    if head[0].split()[1] == '429':
+                        flood_stats['rejected'] += 1
+                        # Waiting a random extra share spreads the retries: 160 connections waking together would
+                        # arrive as one burst every Retry-After seconds (measured: a third of cycles turned slow).
+                        await pause(min(int(fields.get('retry-after', '1')), 30) * random.uniform(1, 2))
+            finally:
+                writer.close()
+        except (OSError, ValueError, IndexError, asyncio.TimeoutError, asyncio.IncompleteReadError, asyncio.LimitOverrunError):
+            flood_stats['errors'] += 1
+            await pause(0.5)
+
+
+def run_flood(deadline):
+    async def main():
+        await asyncio.gather(*(flood_worker(deadline) for _ in range(FLOOD_CONNECTIONS)))
+    asyncio.run(main())
+
+
+@app.post('/maintenance/flood')
+async def flood(x_aegis_fleet_token: str = Header(default='')):
+    """Fault injection: start the report exporter. Only the reports service runs it."""
+    authorize(x_aegis_fleet_token)
+    if ROLE != 'reports' or (any(t.is_alive() for t in flood_threads) and not flood_stop.is_set()):
+        return {'changed': False}
+    for worker in flood_threads:  # a job told to stop finishes first, so two never overlap
+        worker.join(timeout=5)
+    flood_stop.clear()
+    flood_threads[:] = [threading.Thread(target=run_flood, args=(time.monotonic() + JOB_MAX_S,), name='report-exporter', daemon=True)]
+    flood_threads[0].start()
+    LOGS.append({'at': time.time(), 'ok': True, 'event': 'export job started', 'connections': FLOOD_CONNECTIONS, 'generation': BOOT})
+    return {'changed': True, 'connections': FLOOD_CONNECTIONS}
+
+
+@app.post('/maintenance/unflood')
+async def unflood(x_aegis_fleet_token: str = Header(default='')):
+    """Clean-up for reset: stop the report exporter."""
+    authorize(x_aegis_fleet_token)
+    running = [t for t in flood_threads if t.is_alive()]
+    flood_stop.set()
+    for worker in running:
+        worker.join(timeout=5)
+    return {'changed': bool(running), **flood_stats}
 
 
 @app.post('/maintenance/restore')

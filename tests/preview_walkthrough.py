@@ -207,7 +207,8 @@ def main():
             page.click('[data-help="action"]')
             expect(page.locator('#help-result')).to_contain_text('runaway job')
             page.click('[data-remedy="calm"]')
-            expect(page.locator('#session-status')).to_have_text('recovered', timeout=20000)
+            # Starvation flickers, so recovery usually needs the ten-cycle run.
+            expect(page.locator('#session-status')).to_have_text('recovered', timeout=40000)
             page.click('#reset')
             expect(page.locator('#session-status')).to_have_text('ended', timeout=15000)
 
@@ -339,7 +340,7 @@ def main():
             expect(page.locator('#scenario-title')).to_have_text('When a release ships a bug')
             expect(page.locator('#start')).to_be_enabled(timeout=20000)
             page.click('#start')
-            expect(page.locator('#session-status')).to_have_text('investigating', timeout=40000)
+            expect(page.locator('#session-status')).to_have_text('investigating', timeout=90000)
             page.click('#node-gateway-c')
             page.click('[data-check="releases"]')
             expect(page.locator('[data-check="releases"] .check-result')).to_contain_text('v1.5.0')
@@ -378,6 +379,31 @@ def main():
             page.click('#reset')
             expect(page.locator('#session-status')).to_have_text('ended', timeout=15000)
 
+            # A traffic flood on the catalogue: CPU at its limit like starvation, but no job to stop; the traffic
+            # check names one heavy caller, and rate-limiting it recovers.
+            page.select_option('#practice-kind', 'traffic-flood')
+            expect(page.locator('#practice-target')).to_have_value('catalog-b')
+            expect(page.locator('#scenario-title')).to_have_text('When one client floods the catalogue')
+            expect(page.locator('#start')).to_be_enabled(timeout=20000)
+            page.click('#start')
+            expect(page.locator('#session-status')).to_have_text('investigating', timeout=20000)
+            page.click('#node-catalog-b')
+            page.click('[data-check="resources"]')
+            expect(page.locator('[data-check="resources"] .check-result')).to_contain_text('CPU 9')
+            page.click('[data-help="action"]')
+            expect(page.locator('#help-result')).to_contain_text('rate-limit that client')
+            page.click('[data-remedy="calm"]')
+            expect(page.locator('#toast')).to_contain_text('No background job running')
+            page.click('[data-check="traffic"]')
+            expect(page.locator('[data-check="traffic"] .check-result')).to_contain_text(re.compile(r'rejections|rejected'))
+            page.click('[data-help="action"]')
+            expect(page.locator('#help-result')).to_contain_text('rate-limiting the top client')
+            page.click('[data-remedy="ratelimit"]')
+            expect(page.locator('#session-status')).to_have_text('recovered', timeout=30000)
+            page.click('#reset')
+            expect(page.locator('#session-status')).to_have_text('ended', timeout=15000)
+            page.select_option('#practice-kind', 'service-unavailable')
+
             # A stopped gateway-c is local: gateway-a and the catalogue stay healthy, and guidance says so.
             page.select_option('#practice-kind', 'service-unavailable')
             page.select_option('#practice-target', 'gateway-c')
@@ -401,7 +427,8 @@ def main():
             expect(page.locator('#scenario-title')).to_have_text('A hidden fault')
             expect(page.locator('#start')).to_be_enabled(timeout=20000)
             page.click('#start')
-            expect(page.locator('#session-status')).to_have_text('investigating', timeout=15000)
+            # The hidden fault may be one that takes a while to show, such as a leak that has yet to crash.
+            expect(page.locator('#session-status')).to_have_text('investigating', timeout=45000)
             state = page.evaluate("fetch('api/state').then(r=>r.json())")
             assert 'scenario' not in state['session'] and 'fault_target' not in state['session']
             heading = page.locator('.scenario-strip').inner_text()
@@ -418,7 +445,7 @@ def main():
             expect(page.locator('#scenario-reveal')).to_contain_text('Known scenario:')
             page.click('#reset')
             expect(page.locator('#session-status')).to_have_text('ended', timeout=15000)
-            expect(page.locator('#history .history-item')).to_have_count(11)
+            expect(page.locator('#history .history-item')).to_have_count(12)
 
             mobile = browser.new_page(viewport={'width': 390, 'height': 844})
             mobile.on('pageerror', lambda error: errors.append(str(error)))

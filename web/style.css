@@ -672,3 +672,4 @@ kbd{display:inline-block;min-width:24px;padding:4px 6px;border:1px solid var(--l
 .memory-trend{display:block;width:100%;height:64px;margin:6px 0 2px;background:var(--well)}
 .memory-trend polyline{fill:none;stroke:var(--bad);stroke-width:1.6;vector-effect:non-scaling-stroke}
 .memory-trend .memory-limit{stroke:var(--ink);stroke-width:1;stroke-dasharray:3 3;vector-effect:non-scaling-stroke}
+.remedies .remedy-ratelimit:not(:disabled){background:#6d4c41;border-color:#6d4c41;box-shadow:5px 5px 0 rgba(109,76,65,.22)}
