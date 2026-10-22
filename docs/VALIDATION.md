@@ -116,6 +116,14 @@ It used the existing evidence volume: the broker deliberately accepts only conta
   - *A slow drain (open).* Even with both fixes, the gateways held thousands of abandoned connections in `CLOSE_WAIT` and stayed pinned at their CPU limit for minutes after the load stopped. A uvicorn concurrency cap made it worse.
 - **Decision.** A fault the learner's correct fix cannot recover, and reset cannot clear, would break the lab, so the retry storm is not shipped. Making it safe needs server-side request deadlines, or a different server stack, so abandoned work is dropped rather than drained. That is recorded in the [roadmap](scenario-roadmap.md). The ten shipped faults still pass with both fixes (quota, flood and stopped-service rounds re-run on real Docker).
 
+**Retry storm, shipped (22 October 2026).** The paused fault became safe once every request carried a deadline and gateways bounded their upstream calls.
+
+- **Deadlines change the physics.** With deadline propagation alone, the first storm healed itself about 10 seconds after the compaction ended: dropping work for callers who had given up removed what sustained it. Real systems show the same, and it is why deadlines matter. A self-sustaining storm then needed users near capacity. At 35 a second on each gateway it healed; at 50 a second on each, the gateways sat at their CPU limit while the catalogue idled at 7.5%. So shedding at the catalogue did nothing (it turned nothing away), and the bottleneck is the gateway the users call. The shipped fault puts 60 users a second on one gateway.
+- **Measured behaviour.** The storm on gateway-a sustained for more than 70 seconds with the gateway at its CPU limit and the catalogue at 3%. Most of its requests were retries. Enabling load shedding turned away 944 requests in its first seconds, and recovery was verified about 10 seconds later.
+- **Scenario matrix.** The storm passed in practice on both gateways, detected in 18–20 s and recovered in about 7 s after shedding. Then 21 challenge rounds passed, covering all eleven faults on all three services, followed by a reset without recovery. Rate-limiting, and shedding on the wrong service, both reported *unchanged*.
+- **Connection-pool leak, second cause.** After the middleware fix, a timed-out wait inside the HTTP client's own pool still leaked connections under the storm. Gateways now wait in their own bulkhead of 80 slots, below the pool's 100, so a deadline ends the wait safely.
+- **An experiment's own artefact.** One trial left the catalogue starved after the storm because the trigger's *stop runaway job* had timed out under the overload and was honestly recorded as *unknown*: the job kept running. The shipped trigger is a compaction that stops itself.
+
 ## Reproduce browser reviews
 
 Use a development Python environment with `requirements.lock`, Playwright 1.64.0 and its Chromium headless shell:

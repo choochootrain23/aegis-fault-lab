@@ -1,5 +1,6 @@
 """Real synthetic services. Each instance is an independent Linux process."""
 import asyncio
+import contextlib
 import errno
 import hmac
 import os
@@ -44,11 +45,11 @@ config = dict(DEPLOYED)
 # Per-caller request quotas, enforced by the catalogue on its business endpoint. They come from a separate quota
 # system rather than the service's own config, so a bad quota push leaves the running config untouched. Callers
 # without a quota, such as the controller's health probes, are not limited.
-QUOTA_DEPLOYED = {'gateway-a': 20, 'gateway-c': 20} if ROLE == 'catalog' else {}
+QUOTA_DEPLOYED = {'gateway-a': 300, 'gateway-c': 300} if ROLE == 'catalog' else {}  # room for real user traffic through each gateway
 quota = dict(QUOTA_DEPLOYED)
 quota_source = {'pushed_by': 'deployment', 'at': time.time()}
 TRAFFIC_WINDOW_S = 60
-# Business requests per caller in one-second buckets, newest last: [second, {client: [requests, rejected, errors, accepted]}].
+# Business requests per caller in one-second buckets, newest last: [second, {client: [requests, rejected, errors, accepted, retries]}].
 # Buckets rather than single requests, so a flood of hundreds a second cannot push everyone else out of the window.
 TRAFFIC = deque(maxlen=TRAFFIC_WINDOW_S + 1)
 HEAVY_RPS = 20        # a caller without a deployed quota above this is limited by the rate-limit remedy
@@ -93,7 +94,7 @@ def sample_memory():
 @asynccontextmanager
 async def lifespan(app):
     threading.Thread(target=sample_memory, name='memory-sampler', daemon=True).start()
-    async with httpx.AsyncClient(timeout=1, trust_env=False) as client:
+    async with httpx.AsyncClient(timeout=1, trust_env=False, limits=httpx.Limits(max_connections=100, max_keepalive_connections=100)) as client:
         app.state.client = client
         yield
 
@@ -111,27 +112,83 @@ class CountTraffic:
     async def __call__(self, scope, receive, send):
         if scope['type'] != 'http' or scope['path'] not in ('/summary', '/catalog', '/ready'):
             return await self.app(scope, receive, send)
-        client = dict(scope['headers']).get(b'x-aegis-client', b'unidentified').decode('latin-1')[:40]
+        headers = dict(scope['headers'])
+        client = headers.get(b'x-aegis-client', b'unidentified').decode('latin-1')[:40]
+        retry = headers.get(b'x-aegis-attempt', b'1') not in (b'1', b'')
 
         async def counted(message):
             if message['type'] == 'http.response.start':
-                tally(client, message['status'])
+                tally(client, message['status'], retry)
             await send(message)
         await self.app(scope, receive, counted)
 
 
+class DeadlineGuard:
+    """Drops work whose caller has already given up. Callers send X-Aegis-Deadline (seconds since the epoch, on the
+    shared host clock); a request reached after it is answered 504 at once, without doing the work or calling
+    upstream. Without this, an overloaded service kept processing thousands of abandoned requests for minutes
+    after the load stopped. Requests without the header are unaffected."""
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope['type'] == 'http' and (deadline := request_deadline(dict(scope['headers']).get(DEADLINE_HEADER))) and time.time() > deadline:
+            EXPIRED['count'] += 1
+            await send({'type': 'http.response.start', 'status': 504, 'headers': [(b'content-type', b'application/json')]})
+            await send({'type': 'http.response.body', 'body': b'{"ok": false, "error": "DeadlineExceeded", "detail": "the caller had already given up"}'})
+            return
+        await self.app(scope, receive, send)
+
+
+def request_deadline(raw):
+    try:
+        return float(raw) if raw else None
+    except ValueError:
+        return None
+
+
+class LoadShedder:
+    """Counts business requests in flight and, when enabled, caps them, turning the rest away at once with 503 so the
+    work the service does accept finishes quickly. Off by default; the remedy for a retry storm turns it on."""
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope['type'] != 'http' or scope['path'] not in ('/summary', '/catalog', '/ready'):
+            return await self.app(scope, receive, send)
+        if shedding['in_flight'] > SHED_LIMIT:
+            shedding['overloaded_at'] = time.time()  # more queued work than a shedding service would keep
+        if shedding['limit'] is not None and shedding['in_flight'] >= shedding['limit']:
+            shedding['shed'] += 1
+            await send({'type': 'http.response.start', 'status': 503, 'headers': [(b'content-type', b'application/json')]})
+            await send({'type': 'http.response.body', 'body': b'{"ok": false, "error": "Overloaded", "detail": "load shed: too many requests in flight"}'})
+            return
+        shedding['in_flight'] += 1
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            shedding['in_flight'] -= 1
+
+
+SHED_LIMIT = 12  # business requests a shedding catalogue keeps in flight: enough to stay busy, few enough to stay fast
+shedding = {'limit': None, 'shed': 0, 'in_flight': 0, 'overloaded_at': 0.0}
+DEADLINE_HEADER = b'x-aegis-deadline'
+EXPIRED = {'count': 0}  # requests dropped because their caller had already given up
+app.add_middleware(LoadShedder)
+app.add_middleware(DeadlineGuard)
 app.add_middleware(CountTraffic)
 
 
-def tally(client, status):
+def tally(client, status, retry=False):
     second = int(time.time())
     if not TRAFFIC or TRAFFIC[-1][0] != second:
         TRAFFIC.append([second, {}])
-    counts = TRAFFIC[-1][1].setdefault(client, [0, 0, 0, 0])
+    counts = TRAFFIC[-1][1].setdefault(client, [0, 0, 0, 0, 0])
     counts[0] += 1
     counts[1] += status == 429
     counts[2] += status >= 500
     counts[3] += status < 400
+    counts[4] += retry
 
 
 def write_receipt(kind):
@@ -186,7 +243,7 @@ def over_quota(client):
     limit = quota.get(client)
     if limit is None:
         return False
-    return bool(TRAFFIC) and TRAFFIC[-1][0] == int(time.time()) and TRAFFIC[-1][1].get(client, [0, 0, 0, 0])[3] >= limit
+    return bool(TRAFFIC) and TRAFFIC[-1][0] == int(time.time()) and TRAFFIC[-1][1].get(client, [0, 0, 0, 0, 0])[3] >= limit
 
 
 @app.get('/catalog')
@@ -213,24 +270,42 @@ async def catalog(x_aegis_client: str = Header(default='unidentified')):
     return {'items': items, 'generation': BOOT}
 
 
-async def dependency():
+# A bulkhead for calls to the catalogue: fewer slots than the HTTP client's pool, so requests wait here, where a
+# deadline can safely end the wait, and never inside the client's pool, where a timed-out wait leaked connections
+# for good under a retry storm (measured: every gateway stuck on PoolTimeout after the load stopped).
+UPSTREAM_SLOTS = asyncio.Semaphore(80)
+
+
+async def call_catalogue(correlation, upstream_deadline):
+    try:
+        response = await app.state.client.get(config['upstream'] + '/catalog', headers={'X-Correlation-ID': correlation, 'X-Aegis-Client': NAME,
+                                                                                         'X-Aegis-Deadline': f'{upstream_deadline:.3f}'},
+                                              timeout=config['upstream_timeout_s'])
+        response.raise_for_status()
+        return {'ok': True, 'dependency': 'catalog-b', 'correlation': correlation, 'catalog': response.json()}, 200
+    except httpx.HTTPStatusError as error:
+        return {'ok': False, 'dependency': 'catalog-b', 'correlation': correlation, 'error': 'HTTPStatusError',
+                'upstream_status': error.response.status_code, 'upstream_error': upstream_error(error.response)}, 503
+    except (httpx.HTTPError, ValueError) as error:
+        return {'ok': False, 'dependency': 'catalog-b', 'correlation': correlation, 'error': type(error).__name__}, 503
+
+
+async def dependency(deadline=None):
     started = time.monotonic()
     if (failure := release_failure(started)):
         return failure
     correlation = str(uuid.uuid4())
+    # Pass on the tighter of our caller's deadline and our own timeout, so the catalogue can drop what we abandon.
+    upstream_deadline = min(deadline or float('inf'), time.time() + config['upstream_timeout_s'])
     try:
-        response = await app.state.client.get(config['upstream'] + '/catalog', headers={'X-Correlation-ID': correlation, 'X-Aegis-Client': NAME},
-                                              timeout=config['upstream_timeout_s'])
-        response.raise_for_status()
-        result = {'ok': True, 'dependency': 'catalog-b', 'correlation': correlation, 'catalog': response.json()}
-        status = 200
-    except httpx.HTTPStatusError as error:
-        result = {'ok': False, 'dependency': 'catalog-b', 'correlation': correlation, 'error': 'HTTPStatusError',
-                  'upstream_status': error.response.status_code, 'upstream_error': upstream_error(error.response)}
-        status = 503
-    except (httpx.HTTPError, ValueError) as error:
-        result = {'ok': False, 'dependency': 'catalog-b', 'correlation': correlation, 'error': type(error).__name__}
-        status = 503
+        await asyncio.wait_for(UPSTREAM_SLOTS.acquire(), max(0.0, upstream_deadline - time.time()))
+    except TimeoutError:
+        result, status = {'ok': False, 'dependency': 'catalog-b', 'correlation': correlation, 'error': 'UpstreamBusy'}, 503
+    else:
+        try:
+            result, status = await call_catalogue(correlation, upstream_deadline)
+        finally:
+            UPSTREAM_SLOTS.release()
     result['generation'] = BOOT
     result['duration_ms'] = round((time.monotonic() - started) * 1000, 1)
     LOGS.append({'at': time.time(), **{k: v for k, v in result.items() if k != 'catalog'}})
@@ -250,16 +325,16 @@ def upstream_error(response):
 
 
 @app.get('/ready')
-async def ready():
+async def ready(x_aegis_deadline: str = Header(default='')):
     if ROLE == 'gateway':
-        return await dependency()
+        return await dependency(request_deadline(x_aegis_deadline))
     return {'ok': True, 'generation': BOOT}
 
 
 @app.get('/summary')
-async def summary(x_aegis_client: str = Header(default='unidentified')):
+async def summary(x_aegis_client: str = Header(default='unidentified'), x_aegis_deadline: str = Header(default='')):
     if ROLE == 'gateway':
-        return await dependency()
+        return await dependency(request_deadline(x_aegis_deadline))
     return await catalog(x_aegis_client)
 
 
@@ -367,11 +442,12 @@ async def traffic():
     """Business requests per caller over the last minute, and the quotas this service enforces."""
     callers = {}
     for second, counts in traffic_since(time.time() - TRAFFIC_WINDOW_S):
-        for client, (requests, rejected, errors, _) in counts.items():
-            entry = callers.setdefault(client, {'client': client, 'requests': 0, 'rejected': 0, 'errors': 0})
+        for client, (requests, rejected, errors, _, retries) in counts.items():
+            entry = callers.setdefault(client, {'client': client, 'requests': 0, 'rejected': 0, 'errors': 0, 'retries': 0})
             entry['requests'] += requests
             entry['rejected'] += rejected
             entry['errors'] += errors
+            entry['retries'] += retries
     recent = {}
     for second, counts in traffic_since(time.time() - RECENT_S):
         for client, (requests, *_) in counts.items():
@@ -382,6 +458,7 @@ async def traffic():
     quotas = [{'client': client, 'limit_rps': limit, 'deployed_rps': QUOTA_DEPLOYED.get(client), 'changed': limit != QUOTA_DEPLOYED.get(client)}
               for client, limit in quota.items()]
     return {'window_s': TRAFFIC_WINDOW_S, 'clients': sorted(callers.values(), key=lambda e: -e['requests']), 'quotas': quotas,
+            'shedding': {'enabled': shedding['limit'] is not None, 'max_in_flight': shedding['limit'], 'shed': shedding['shed'], 'in_flight': shedding['in_flight']},
             'quota_source': quota_source if QUOTA_DEPLOYED else None, 'generation': BOOT}
 
 
@@ -672,6 +749,136 @@ async def unflood(x_aegis_fleet_token: str = Header(default='')):
     for worker in running:
         worker.join(timeout=5)
     return {'changed': bool(running), **flood_stats}
+
+
+@app.post('/maintenance/hiccup')
+async def hiccup(x_aegis_fleet_token: str = Header(default='')):
+    """A short index compaction that uses the whole CPU for HICCUP_S and then stops by itself: the trigger of a retry storm."""
+    authorize(x_aegis_fleet_token)
+    if any(t.is_alive() for t in job_threads):
+        return {'changed': False}
+    job_stop.clear()
+    job_threads.clear()
+    deadline = time.monotonic() + HICCUP_S
+    for index in range(JOB_THREADS):
+        worker = threading.Thread(target=busy, args=(deadline,), name=f'compaction-{index}', daemon=True)
+        worker.start()
+        job_threads.append(worker)
+    LOGS.append({'at': time.time(), 'ok': True, 'event': 'background job started', 'job': 'index compaction', 'expected_s': HICCUP_S, 'generation': BOOT})
+    return {'changed': True, 'seconds': HICCUP_S}
+
+
+@app.post('/maintenance/shed')
+async def shed(x_aegis_fleet_token: str = Header(default='')):
+    """Recovery: turn on load shedding at a gateway, where user traffic arrives. It only takes effect on a gateway that
+    has had more work queued than it would keep in the last 30 seconds; anywhere else nothing changes."""
+    authorize(x_aegis_fleet_token)
+    if ROLE != 'gateway' or shedding['limit'] is not None or time.time() - shedding['overloaded_at'] > 30:
+        return {'changed': False}
+    shedding.update(limit=SHED_LIMIT, shed=0)
+    LOGS.append({'at': time.time(), 'ok': True, 'event': 'load shedding enabled', 'max_in_flight': SHED_LIMIT, 'generation': BOOT})
+    return {'changed': True, 'max_in_flight': SHED_LIMIT}
+
+
+@app.post('/maintenance/unshed')
+async def unshed(x_aegis_fleet_token: str = Header(default='')):
+    """Clean-up for reset: turn load shedding off again."""
+    authorize(x_aegis_fleet_token)
+    if shedding['limit'] is None:
+        return {'changed': False}
+    shedding.update(limit=None)
+    return {'changed': True, 'shed': shedding['shed']}
+
+
+# App users, run by the reports service for the retry-storm fault: open-loop arrivals (they keep coming however slow the
+# service gets) through both gateways, each retrying a failure at once up to USER_RETRIES times with no backoff, the
+# client flaw that turns a short slowdown into an overload. Every attempt carries a deadline and its attempt number.
+USER_RPS = 60          # new users a second, all through the target gateway: about 40% of what it can serve
+USER_RETRIES = 3
+USER_DEADLINE_S = 2
+HICCUP_S = 8           # how long the catalogue's compaction job runs
+HICCUP_AFTER_S = 6     # how long the users run normally before it
+users_stop = threading.Event()
+users_threads = []
+users_stats = {'users': 0, 'succeeded': 0, 'gave_up': 0, 'attempts': 0}
+
+
+async def user_attempt(host, attempt):
+    users_stats['attempts'] += 1
+    try:
+        reader, writer = await asyncio.wait_for(asyncio.open_connection(host, 8000), USER_DEADLINE_S)
+        try:
+            writer.write((f'GET /summary HTTP/1.1\r\nHost: {host}\r\nX-Aegis-Client: mobile-app\r\nX-Aegis-Attempt: {attempt}\r\n'
+                          f'X-Aegis-Deadline: {time.time() + USER_DEADLINE_S:.3f}\r\nConnection: close\r\n\r\n').encode())
+            head = await asyncio.wait_for(reader.readuntil(b'\r\n\r\n'), USER_DEADLINE_S)
+            return head.split(b' ')[1] == b'200'
+        finally:
+            writer.close()
+    except (OSError, ValueError, IndexError, asyncio.TimeoutError, asyncio.IncompleteReadError, asyncio.LimitOverrunError):
+        return False
+
+
+STORM_TARGETS = ('gateway-a', 'gateway-c')
+
+
+async def app_user(host):
+    users_stats['users'] += 1
+    for attempt in range(1, USER_RETRIES + 2):
+        if await user_attempt(host, attempt):
+            users_stats['succeeded'] += 1
+            return
+    users_stats['gave_up'] += 1
+
+
+def run_users(deadline, host):
+    async def main():
+        tasks, began, sent = set(), time.monotonic(), 0
+        while not users_stop.is_set() and time.monotonic() < deadline:
+            if len(tasks) < 2000:  # a hard ceiling, whatever happens downstream
+                task = asyncio.create_task(app_user(host))
+                tasks.add(task)
+                task.add_done_callback(tasks.discard)
+            sent += 1
+            await asyncio.sleep(max(0.0, began + sent / USER_RPS - time.monotonic()))
+        for task in list(tasks):
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+    asyncio.run(main())
+
+
+@app.post('/maintenance/storm')
+async def storm(x_aegis_fleet_token: str = Header(default=''), x_aegis_target: str = Header(default='')):
+    """Fault injection: start the app users on one gateway, then ask the catalogue for its short compaction job.
+    Reports service only; the target must be one of the two gateways."""
+    authorize(x_aegis_fleet_token)
+    if x_aegis_target not in STORM_TARGETS:
+        raise HTTPException(422, 'The app users only call a gateway')
+    if ROLE != 'reports' or (any(t.is_alive() for t in users_threads) and not users_stop.is_set()):
+        return {'changed': False}
+    for worker in users_threads:
+        worker.join(timeout=5)
+    users_stop.clear()
+    users_threads[:] = [threading.Thread(target=run_users, args=(time.monotonic() + JOB_MAX_S, x_aegis_target), name='app-users', daemon=True)]
+    users_threads[0].start()
+    asyncio.get_running_loop().call_later(HICCUP_AFTER_S, lambda: asyncio.ensure_future(trigger_hiccup()))
+    LOGS.append({'at': time.time(), 'ok': True, 'event': 'app users started', 'gateway': x_aegis_target, 'rps': USER_RPS, 'retries': USER_RETRIES, 'generation': BOOT})
+    return {'changed': True}
+
+
+async def trigger_hiccup():
+    with contextlib.suppress(httpx.HTTPError):
+        await app.state.client.post('http://catalog-b:8000/maintenance/hiccup', headers={'X-Aegis-Fleet-Token': FLEET_TOKEN}, timeout=5)
+
+
+@app.post('/maintenance/unstorm')
+async def unstorm(x_aegis_fleet_token: str = Header(default='')):
+    """Clean-up for reset: stop the app users."""
+    authorize(x_aegis_fleet_token)
+    running = [t for t in users_threads if t.is_alive()]
+    users_stop.set()
+    for worker in running:
+        worker.join(timeout=10)
+    return {'changed': bool(running), **users_stats}
 
 
 @app.post('/maintenance/restore')

@@ -210,7 +210,7 @@ def test_netem_loss_supports_removing_packet_loss():
 
 
 def test_zero_quota_supports_resetting_client_quotas():
-    traffic=observation('catalog-b','traffic',result={'quotas':[{'client':'gateway-a','limit_rps':0,'deployed_rps':20},{'client':'gateway-c','limit_rps':0,'deployed_rps':20}],
+    traffic=observation('catalog-b','traffic',result={'quotas':[{'client':'gateway-a','limit_rps':0,'deployed_rps':100},{'client':'gateway-c','limit_rps':0,'deployed_rps':100}],
                                                      'clients':[{'client':'gateway-a','rejected':29},{'client':'gateway-c','rejected':31}],'quota_source':{'pushed_by':'quota-manager'}})
     result=explain({('catalog-b','traffic'):traffic},'action',now=101)
     assert result['suggested_check']=={'node':'catalog-b','kind':'traffic'} and 'resetting the client quotas' in result['message']
@@ -218,7 +218,7 @@ def test_zero_quota_supports_resetting_client_quotas():
 
 
 def test_healthy_traffic_supports_no_quota_action():
-    traffic=observation('catalog-b','traffic',result={'quotas':[{'client':'gateway-a','limit_rps':20,'deployed_rps':20}],'clients':[]})
+    traffic=observation('catalog-b','traffic',result={'quotas':[{'client':'gateway-a','limit_rps':100,'deployed_rps':100}],'clients':[]})
     assert 'No fresh inspection yet supports' in explain({('catalog-b','traffic'):traffic},'action',now=101)['message']
 
 
@@ -270,7 +270,7 @@ def test_cpu_at_the_limit_just_after_a_restart_is_not_called_starvation():
 
 def test_a_heavy_caller_without_a_quota_supports_rate_limiting():
     traffic=observation('catalog-b','traffic',result={'clients':[{'client':'report-exporter','requests':21000,'rps':350.0,'recent_rps':355.0},{'client':'gateway-a','requests':30,'rps':0.5}],
-                                                     'quotas':[{'client':'gateway-a','limit_rps':20,'deployed_rps':20}]})
+                                                     'quotas':[{'client':'gateway-a','limit_rps':100,'deployed_rps':100}]})
     result=explain({('catalog-b','traffic'):traffic},'action',now=101)
     assert 'rate-limiting the top client' in result['message'] and 'report-exporter' in result['message']
     limited=observation('catalog-b','traffic',result={'clients':[{'client':'report-exporter','requests':400,'rps':6.7}],
@@ -290,3 +290,12 @@ def test_cpu_at_the_limit_defers_to_a_flood_and_otherwise_names_both_causes():
 def test_a_caller_that_flooded_a_minute_ago_but_is_quiet_now_is_not_flagged():
     traffic=observation('catalog-b','traffic',result={'clients':[{'client':'report-exporter','requests':21000,'rps':350.0,'recent_rps':0.0}],'quotas':[]})
     assert 'No fresh inspection yet supports' in explain({('catalog-b','traffic'):traffic},'action',now=101)['message']
+
+
+def test_mostly_retries_means_a_retry_storm_and_supports_load_shedding():
+    traffic=observation('gateway-a','traffic',result={'clients':[{'client':'mobile-app','requests':9000,'rps':150.0,'recent_rps':160.0,'retries':6600}],'quotas':[]})
+    result=explain({('gateway-a','traffic'):traffic},'action',now=101)
+    assert 'enabling load shedding on gateway-a' in result['message'] and '73%' in result['message']
+    assert 'rate-limiting' not in result['message']
+    flood=observation('catalog-b','traffic',result={'clients':[{'client':'report-exporter','requests':21000,'rps':350.0,'recent_rps':355.0,'retries':0}],'quotas':[]})
+    assert 'rate-limiting the top client' in explain({('catalog-b','traffic'):flood},'action',now=101)['message']

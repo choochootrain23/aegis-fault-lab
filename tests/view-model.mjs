@@ -100,7 +100,12 @@ export function run(){
   });
   check('Traffic flood is catalogue-only and has a readable fix',()=>{
     assert.deepEqual([...view.faultTargets('traffic-flood')],['catalog-b']);assert.equal(view.remedyLabel('ratelimit'),'Rate-limit top client');
-    assert.equal(view.scenarioCopy('traffic-flood','catalog-b','practice').number,'10');assert.match(view.scenarioCopy('x','catalog-b','challenge').text,/ten faults/);
+    assert.equal(view.scenarioCopy('traffic-flood','catalog-b','practice').number,'10');assert.match(view.scenarioCopy('x','catalog-b','challenge').text,/eleven faults/);
+  });
+  check('A traffic record that is mostly retries reads as a failure',()=>{
+    const storm=view.evidenceResult({kind:'traffic',body:{ok:true,result:{window_s:60,clients:[{client:'mobile-app',requests:9000,retries:6600,rejected:0}],quotas:[]}}});
+    assert.equal(storm.tone,'red');assert.match(storm.text,/73% retries/);
+    assert.deepEqual([...view.faultTargets('retry-storm')],['gateway-a','gateway-c']);assert.equal(view.remedyLabel('shed'),'Enable load shedding');
   });
   return {passed,scope:'Pure UI state and timer decisions; frontend JavaScript parsed. No visual/browser validation.'};
 }

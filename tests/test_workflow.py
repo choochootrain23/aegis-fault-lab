@@ -28,6 +28,8 @@ class Fleet:
         self.deployers = []  # (node, version, actor) for every release deployed
         self.release_tick = 0
         self.booting = set()
+        self.storming = None       # the gateway the app users overload, if any
+        self.shedding = {'gateway-a': False, 'catalog-b': False, 'gateway-c': False}
         self.flooding = False      # the report exporter in the reports service
         self.rate_limited = False  # the catalogue limits it
         self.mutations = []
@@ -54,7 +56,8 @@ class Fleet:
         return httpx.Response(200, json={'target': node, 'generation': node + '-generation', 'running': self.running[node],
                                          'status': 'running' if self.running[node] else 'exited', 'changed': changed,
                                          'exit_code': 137 if self.oom_killed[node] else 0, 'oom_killed': self.oom_killed[node],
-                                         **({'cpu_limit': 0.25, 'cpu_pct_of_limit': 100.0 if self.busy[node] or (node == 'catalog-b' and self.flooding and not self.rate_limited) else 4.0}
+                                         **({'cpu_limit': 0.25, 'cpu_pct_of_limit': 100.0 if self.busy[node] or (node == 'catalog-b' and self.flooding and not self.rate_limited)
+                                                or (self.storming == node and not self.shedding[node]) else 4.0}
                                             if verb == 'resources' else {})})
 
     def handle(self, request):
@@ -63,6 +66,14 @@ class Fleet:
                 return httpx.Response(503)
             return self.broker(json.loads(request.content))
         node, path = request.url.host, request.url.path
+        if node == 'reports' and path.rsplit('/', 1)[1] in ('storm', 'unstorm'):
+            verb = path.rsplit('/', 1)[1]
+            target = request.headers.get('x-aegis-target') if verb == 'storm' else None
+            changed = self.storming != target
+            self.storming = target
+            if changed:
+                self.mutations.append(('reports', verb))
+            return httpx.Response(200, json={'changed': changed})
         if node == 'reports':
             verb = path.rsplit('/', 1)[1]
             changed = self.flooding != (verb == 'flood')
@@ -85,6 +96,12 @@ class Fleet:
                     return httpx.Response(200, json={'changed': True, 'limited': ['report-exporter']})
             if verb == 'ratelimit':
                 return httpx.Response(200, json={'changed': False})
+            if verb in ('shed', 'unshed'):  # shedding only takes on a gateway that is actually overloaded
+                on = verb == 'shed'
+                changed = self.shedding[node] != on and (not on or self.storming == node)
+                if changed:
+                    self.shedding[node] = on
+                return httpx.Response(200, json={'changed': changed})
             if verb in ('ship', 'leak', 'rollback'):
                 version = {'ship': 'v1.5.0', 'leak': 'v1.5.1', 'rollback': 'v1.4.2'}[verb]
                 changed = self.version[node] != version
@@ -133,21 +150,25 @@ class Fleet:
                      {'kind': 'noqueue', 'dev': 'eth0', 'root': True, 'delay_ms': None, 'loss_pct': None})
             return httpx.Response(200, json={'available': True, 'qdiscs': [queue], 'tcp': {'available': True, 'retrans_pct': 25.0 if self.lossy[node] else 0.0}})
         if path == '/diagnostics/traffic':
-            quotas = [{'client': g, 'limit_rps': 0 if self.squeezed[node] else 20, 'deployed_rps': 20, 'changed': self.squeezed[node]}
+            quotas = [{'client': g, 'limit_rps': 0 if self.squeezed[node] else 100, 'deployed_rps': 100, 'changed': self.squeezed[node]}
                       for g in ('gateway-a', 'gateway-c')] if node == 'catalog-b' else []
             clients = [{'client': g, 'requests': 30, 'rps': 0.5, 'rejected': 30 if self.squeezed[node] else 0, 'errors': 0} for g in ('gateway-a', 'gateway-c')]
+            if self.storming == node:
+                clients = [{'client': 'mobile-app', 'requests': 9000, 'rps': 150.0, 'recent_rps': 160.0, 'rejected': 0, 'errors': 8600, 'retries': 6600}]
             if self.flooding and node == 'catalog-b':
                 clients.insert(0, {'client': 'report-exporter', 'requests': 2 if self.rate_limited else 21000, 'rps': 0.03 if self.rate_limited else 350.0, 'recent_rps': 0.2 if self.rate_limited else 355.0,
                                    'rejected': 2 if self.rate_limited else 0, 'errors': 0})
                 if self.rate_limited:
                     quotas.append({'client': 'report-exporter', 'limit_rps': 2, 'deployed_rps': None, 'changed': True})
-            return httpx.Response(200, json={'window_s': 60, 'clients': clients if node == 'catalog-b' else [], 'quotas': quotas,
+            return httpx.Response(200, json={'window_s': 60, 'clients': clients if node == 'catalog-b' or self.storming == node else [], 'quotas': quotas,
                                              'quota_source': {'pushed_by': 'quota-manager' if self.squeezed[node] else 'deployment'} if node == 'catalog-b' else None})
         if path == '/summary' and node.startswith('gateway') and (self.lossy['catalog-b'] or self.lossy[node]):
             self.loss_tick += 1
             if (self.loss_tick - 1) // 2 % 5 < 3:  # two gateway requests a cycle
                 return httpx.Response(503, json={'ok': False, 'error': 'ReadTimeout'})
         flooded = self.flooding and not self.rate_limited
+        if self.storming == node and not self.shedding[node] and path == '/summary':
+            return httpx.Response(503, json={'ok': False, 'error': 'ReadTimeout'})
         slow = (self.delayed[node] or self.busy[node] or (node == 'catalog-b' and flooded)
                 or (node.startswith('gateway') and path == '/summary' and (self.busy['catalog-b'] or self.delayed['catalog-b'] or flooded)))
         if slow and path in ('/live', '/summary'):
@@ -555,10 +576,10 @@ def test_challenge_hides_fault_kind_and_target(lab):
             await controller.reset_locked(f'reset-kind-{attempt:03d}')
             for _ in range(3):
                 await controller.cycle()
-            if len(seen) == 10:
+            if len(seen) == 11:
                 break
         assert seen == {'service-unavailable', 'cpu-starvation', 'disk-full', 'config-drift', 'network-delay', 'packet-loss', 'quota-zero',
-                        'bad-release', 'memory-leak', 'traffic-flood'}
+                        'bad-release', 'memory-leak', 'traffic-flood', 'retry-storm'}
     run(scenario())
 
 
@@ -948,4 +969,26 @@ def test_traffic_flood_needs_a_rate_limit_not_a_stopped_job(lab):
         await controller.reset_locked('reset-flood')
         assert [(r['node'], r['verb']) for r in controller.session['reset']['results']][-2:] == [('catalog-b', 'unflood'), ('catalog-b', 'requota')]
         assert not fleet.flooding and not fleet.rate_limited
+    run(scenario())
+
+
+def test_retry_storm_is_local_to_one_gateway_and_needs_load_shedding(lab):
+    async def scenario():
+        controller, fleet = lab
+        await baseline(controller)
+        with pytest.raises(HTTPException):
+            await controller.start(Start(mode='practice', kind='retry-storm', target='catalog-b', key='start-storm-cat'))
+        await controller.start(Start(mode='practice', kind='retry-storm', target='gateway-a', key='start-storm'))
+        assert fleet.storming == 'gateway-a'
+        assert await investigate(controller) == {'gateway-a': 'degraded', 'catalog-b': 'healthy', 'gateway-c': 'healthy'}
+        traffic = await controller.check('gateway-a', 'traffic')
+        assert traffic['body']['result']['clients'][0]['retries'] > 0
+        for node, verb in (('gateway-a', 'calm'), ('gateway-a', 'ratelimit'), ('gateway-c', 'shed'), ('catalog-b', 'shed'), ('gateway-a', 'start')):
+            assert (await controller.mutate(f'wrong-storm-{node}-{verb}', node, verb))['status'] == 'unchanged'
+        await verify(controller, 'shed', 'gateway-a', 'shed')
+        assert controller.session['status'] == 'recovered' and fleet.shedding['gateway-a']
+        assert 'metastable' in controller.public_session(controller.session | {'revealed': True})['debrief']
+        await controller.reset_locked('reset-storm')
+        assert [(r['node'], r['verb']) for r in controller.session['reset']['results']][-2:] == [('gateway-a', 'unstorm'), ('gateway-a', 'unshed')]
+        assert fleet.storming is None and not fleet.shedding['gateway-a']
     run(scenario())

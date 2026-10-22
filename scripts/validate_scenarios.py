@@ -22,12 +22,12 @@ NODES = ('gateway-a', 'catalog-b', 'gateway-c')
 # A different node to try a wrong remedy on.
 OTHER = {'gateway-a': 'catalog-b', 'catalog-b': 'gateway-c', 'gateway-c': 'gateway-a'}
 KINDS = ('service-unavailable', 'cpu-starvation', 'disk-full', 'config-drift', 'network-delay', 'packet-loss', 'quota-zero', 'bad-release', 'memory-leak',
-         'traffic-flood')
+         'traffic-flood', 'retry-storm')
 REMEDY = {'service-unavailable': 'start', 'cpu-starvation': 'calm', 'disk-full': 'clear', 'config-drift': 'restore', 'network-delay': 'undelay',
-          'packet-loss': 'undrop', 'quota-zero': 'requota', 'bad-release': 'rollback', 'memory-leak': 'rollback', 'traffic-flood': 'ratelimit'}
-TARGETS = {'quota-zero': ('catalog-b',), 'traffic-flood': ('catalog-b',)}  # faults that only exist on some services
+          'packet-loss': 'undrop', 'quota-zero': 'requota', 'bad-release': 'rollback', 'memory-leak': 'rollback', 'traffic-flood': 'ratelimit', 'retry-storm': 'shed'}
+TARGETS = {'quota-zero': ('catalog-b',), 'traffic-flood': ('catalog-b',), 'retry-storm': ('gateway-a', 'gateway-c')}  # faults that only exist on some services
 # The fix for the fault each one is most easily mistaken for: it must change nothing.
-LOOKALIKE = {'packet-loss': 'undelay', 'network-delay': 'undrop', 'quota-zero': 'restore', 'bad-release': 'restore', 'traffic-flood': 'calm'}
+LOOKALIKE = {'packet-loss': 'undelay', 'network-delay': 'undrop', 'quota-zero': 'restore', 'bad-release': 'restore', 'traffic-flood': 'calm', 'retry-storm': 'ratelimit'}
 INTERMITTENT = ('cpu-starvation', 'packet-loss', 'bad-release', 'memory-leak')
 RELEASE_FAULTS = {'v1.5.0': 'bad-release', 'v1.5.1': 'memory-leak'}  # effects that come and go from one cycle to the next
 
@@ -91,8 +91,13 @@ def anomalies(operator):
         growth = ((memory['body'].get('result') or {}).get('growth_mib_s') or 0) if memory['body'].get('ok') else 0
         heavy = [c for c in (traffic['body'].get('result') or {}).get('clients', []) if (c.get('recent_rps') or 0) > 20 and c['client'] not in
                  {q['client'] for q in (traffic['body'].get('result') or {}).get('quotas', [])} and c['client'] != 'controller'] if traffic['body'].get('ok') else []
+        clients = (traffic['body'].get('result') or {}).get('clients', []) if traffic['body'].get('ok') else []
+        stormy = [c for c in clients if (c.get('recent_rps') or 0) > 20 and c.get('requests') and (c.get('retries') or 0) / c['requests'] > 0.5]
+        heavy = [c for c in heavy if c not in stormy]
         if memory['body'].get('oom_killed') or growth >= 4:
             found.append(('memory-leak', node, memory))
+        elif stormy:
+            found.append(('retry-storm', node, traffic))
         elif heavy:
             found.append(('traffic-flood', node, traffic))
         elif running_release in RELEASE_FAULTS:

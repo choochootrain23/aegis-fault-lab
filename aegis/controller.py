@@ -27,6 +27,11 @@ from aegis.ownership import controller_ownership
 
 CONNECT_LIMIT_S = 3  # how long one network-path connection attempt may take
 PROBE = {'X-Aegis-Client': 'controller'}  # how the controller's checks identify themselves to the services
+
+
+def probe_headers(timeout_s):
+    """Identity, and the moment this check stops waiting, so a service never does work for a check that gave up."""
+    return {**PROBE, 'X-Aegis-Deadline': f'{time.time() + timeout_s:.3f}'}
 NODES = {'gateway-a': 'http://gateway-a:8000', 'catalog-b': 'http://catalog-b:8000', 'gateway-c': 'http://gateway-c:8000'}
 CHECKS = {'liveness': '/live', 'readiness': '/ready', 'business': '/summary', 'logs': '/diagnostics/logs', 'disk': '/diagnostics/disk',
           'config': '/diagnostics/config', 'trace': '/diagnostics/trace', 'traffic': '/diagnostics/traffic', 'releases': '/diagnostics/releases'}
@@ -36,21 +41,21 @@ TERMINAL = {'ended'}
 FAULTS = {'service-unavailable': ('stop', 'start'), 'cpu-starvation': ('burn', 'calm'), 'disk-full': ('fill', 'clear'),
           'config-drift': ('drift', 'restore'), 'network-delay': ('delay', 'undelay'), 'packet-loss': ('drop', 'undrop'),
           'quota-zero': ('squeeze', 'requota'), 'bad-release': ('ship', 'rollback'), 'memory-leak': ('leak', 'rollback'),
-          'traffic-flood': ('flood', 'ratelimit')}
+          'traffic-flood': ('flood', 'ratelimit'), 'retry-storm': ('storm', 'shed')}
 # The report exporter that floods the catalogue runs in its own small service, outside the three inspected ones.
 REPORTS_URL = 'http://reports:8000'
-CLIENT_VERBS = {'flood', 'unflood'}
+CLIENT_VERBS = {'flood', 'unflood', 'storm', 'unstorm'}
 # Reset normally reapplies the fault's remedy; a flood is undone instead by stopping its source and removing any limit.
-RESET_CLEANUP = {'traffic-flood': (('unflood',), ('requota',))}
+RESET_CLEANUP = {'traffic-flood': (('unflood',), ('requota',)), 'retry-storm': (('unstorm',), ('unshed',))}
 # Release faults start a rollout: a deploy controller keeps the new version running, restarting the service and
 # re-applying the release after a crash, until someone rolls back. This is how an orchestrator behaves.
 ROLLOUTS = {'bad-release': ('ship', 'v1.5.0'), 'memory-leak': ('leak', 'v1.5.1')}
 ROLLBACK_ATTEMPTS = 6  # one-second tries to roll back a target that is booting or being killed
 ROLLOUT_BACKOFF_CYCLES = 3  # health cycles (6 s) a crashed service stays down before the deploy controller restarts it
 # Faults that only exist on some services; every other fault can target any of the three.
-FAULT_TARGETS = {'quota-zero': ('catalog-b',), 'traffic-flood': ('catalog-b',)}
+FAULT_TARGETS = {'quota-zero': ('catalog-b',), 'traffic-flood': ('catalog-b',), 'retry-storm': ('gateway-a', 'gateway-c')}
 REMEDIES = {remedy for _, remedy in FAULTS.values()}
-NODE_VERBS = {'fill', 'clear', 'burn', 'calm', 'drift', 'restore', 'squeeze', 'requota', 'ship', 'leak', 'ratelimit'}  # applied through the service's token-protected maintenance endpoint
+NODE_VERBS = {'fill', 'clear', 'burn', 'calm', 'drift', 'restore', 'squeeze', 'requota', 'ship', 'leak', 'ratelimit', 'shed', 'unshed'}  # applied through the service's token-protected maintenance endpoint
 DETECT_FAILING = 3     # failing cycles among the last DETECT_WINDOW that open an investigation
 DETECT_WINDOW = 5
 VERIFY_STREAK = 3      # consecutive healthy cycles that verify recovery or reset
@@ -65,7 +70,9 @@ UNCHANGED = {'start': 'Already running; nothing changed', 'stop': 'Already stopp
              'rollback': 'Already running the stable release; nothing changed', 'ship': 'Release already deployed; nothing changed',
              'leak': 'Release already deployed; nothing changed',
              'ratelimit': 'No heavy caller without a quota to limit; nothing changed', 'flood': 'Export job already running; nothing changed',
-             'unflood': 'No export job running; nothing changed'}
+             'unflood': 'No export job running; nothing changed', 'shed': 'Load shedding already on, or not available here; nothing changed',
+             'unshed': 'Load shedding already off; nothing changed', 'storm': 'App users already running; nothing changed',
+             'unstorm': 'No app users running; nothing changed'}
 DEBRIEFS = {
     'service-unavailable': 'The scenario requested stopping {target}. When that succeeds, its container state reads stopped and its own probes fail. When the catalogue stops, both gateways stay live but their business requests fail, so the failure spreads; when one gateway stops, the catalogue and the other gateway stay healthy, so it does not. Starting the stopped service restores the request path.',
     'cpu-starvation': 'The scenario requested a runaway background job inside {target}. When that succeeds, the service keeps running and answering, but slowly: the job uses the container\'s whole 0.25-CPU limit, the kernel throttles it, and requests queue behind it, crossing the {slow} ms threshold. Its log records the job starting. A slow catalogue makes both gateways slow, and sometimes time out, too. Stopping the job returns normal latency.',
@@ -76,6 +83,7 @@ DEBRIEFS = {
     'bad-release': 'The scenario requested a rollout of release v1.5.0 to {target}, whose new price-conversion code fails about half of business requests with a TypeError (HTTP 500). The process stays live and its container, CPU, disk, network and running config all look normal: nothing about the machine changed, only the code. A bad catalogue release fails about half of both gateways\' requests with an upstream 500, which looks like a drifted catalogue config until the config is found unchanged; a bad gateway release affects only that gateway. Because failures come and go, recovery has to hold for ten healthy cycles. Release history shows v1.5.0 deployed moments before the errors began, and the log records each TypeError with the version. Rolling back to v1.4.2 restores service; restoring config changes nothing.',
     'memory-leak': 'The scenario requested a rollout of release v1.5.1 to {target}, whose background cache warmer keeps everything it loads, about 12 MiB a second. When that succeeds, the service works normally while its memory climbs, until it reaches the container\'s 192 MiB limit and the kernel kills it (OOMKilled, exit code 137). The rollout\'s deploy controller then restarts it after a few seconds and re-applies v1.5.1, as an orchestrator would, so the service crash-loops: healthy, then down, then healthy again. Starting it by hand only begins the next loop. While it is down a stopped catalogue fails both gateways\' requests and a stopped gateway only its own. The memory check shows memory growing about 12 MiB a second towards the limit and the last exit as an OOM kill; release history shows v1.5.1 re-deployed after every restart. Rolling back to v1.4.2 stops the leak and keeps it stopped.',
     'traffic-flood': 'The scenario requested starting a report export job that pulls {target} as fast as 160 keep-alive connections allow, from a separate reports service on the internal network. When that succeeds, the catalogue handles several hundred requests a second at its 0.25-CPU limit, so its own checks and both gateways\' requests queue behind the flood and turn slow, sometimes past the gateways\' 1-second timeout. Nothing is broken or misconfigured: resource use shows the CPU at its limit, which looks like CPU starvation, but there is no runaway job, so stopping one changes nothing. The traffic check shows one caller, report-exporter, sending most of the requests without a quota. Rate-limiting it makes the catalogue answer that caller with HTTP 429 and Retry-After, the exporter backs off as a well-behaved client should, and latency returns to normal.',
+    'retry-storm': 'The scenario requested app users, 60 a second through {target}, whose app retries a failed request at once up to three times, and then a short index compaction that took the catalogue\'s whole CPU for 8 seconds. The compaction made requests time out; every timeout became up to four attempts; the extra attempts overloaded {target}, so its requests kept failing after the compaction had ended. That is a metastable failure: the overload outlives its cause, and it sits in a different service from the trigger. The other gateway recovers as soon as the compaction ends. Nothing is broken, stopped or misconfigured, and no unknown caller floods anything, so restarting, stopping a job or rate-limiting a client changes nothing. Resource use shows {target} at its CPU limit while the catalogue is idle, and its traffic shows most requests are retries. Enabling load shedding on {target} caps the requests it keeps in flight and turns the rest away at once, so the ones it accepts finish in time, users stop retrying, and the load falls back to normal.',
     'network-delay': 'The scenario requested a {delay} ms delay on all traffic leaving {target}, applied with a Linux netem queue inside its own network namespace. When that succeeds, the process stays live and its CPU and disk stay normal, but everything it sends waits in the queue: its own checks take about {delay} ms longer. A delayed catalogue slows both gateways\' requests by the same amount; a delayed gateway pays the delay twice, on its call to the catalogue and on its reply, while the catalogue and the other gateway stay fast. Requests still succeed, because each wait stays under the gateways\' 1-second upstream timeout. The network path check shows TCP connections taking about {delay} ms and the netem queue itself, and a request trace shows a fast handler with the time spent outside it. Removing the delay, or restarting the container, restores normal latency.',
 }
 
@@ -86,7 +94,7 @@ def debrief(s):
 
 
 FaultKind = Literal['service-unavailable', 'cpu-starvation', 'disk-full', 'config-drift', 'network-delay', 'packet-loss', 'quota-zero', 'bad-release', 'memory-leak',
-                    'traffic-flood']
+                    'traffic-flood', 'retry-storm']
 NodeName = Literal['gateway-a', 'catalog-b', 'gateway-c']
 CheckKind = Literal['liveness', 'readiness', 'business', 'logs', 'service', 'resources', 'disk', 'config', 'trace', 'network', 'traffic', 'releases', 'memory']
 
@@ -117,7 +125,7 @@ class Action(SessionInput):
 
 
 class Recover(Action):
-    verb: Literal['start', 'calm', 'clear', 'restore', 'undelay', 'undrop', 'requota', 'rollback', 'ratelimit'] = 'start'
+    verb: Literal['start', 'calm', 'clear', 'restore', 'undelay', 'undrop', 'requota', 'rollback', 'ratelimit', 'shed'] = 'start'
 
 
 class Note(SessionInput):
@@ -203,7 +211,7 @@ class Lab:
                 body = {'ok': True, **await self.broker(node, BROKER_CHECKS[kind])}
                 body.pop('changed', None)
             else:
-                async with self.client.stream('GET', self.nodes[node] + CHECKS[kind], headers=PROBE, timeout=3) as response:
+                async with self.client.stream('GET', self.nodes[node] + CHECKS[kind], headers=probe_headers(3), timeout=3) as response:
                     raw = bytearray()
                     async for chunk in response.aiter_bytes():
                         raw.extend(chunk)
@@ -252,7 +260,7 @@ class Lab:
                 await writer.wait_closed()
         for attempt in range(2):  # a lossy service's reply can need one more try
             try:
-                response = await self.client.get(self.nodes[node] + '/diagnostics/network', headers=PROBE, timeout=8)
+                response = await self.client.get(self.nodes[node] + '/diagnostics/network', headers=probe_headers(8), timeout=8)
                 break
             except httpx.TimeoutException:
                 if attempt:
@@ -266,7 +274,7 @@ class Lab:
         body = {'ok': True, **{k: inspected.get(k) for k in ('generation', 'running', 'status', 'exit_code', 'oom_killed', 'started_at', 'finished_at')}}
         if inspected.get('running'):
             try:
-                response = await self.client.get(self.nodes[node] + '/diagnostics/memory', headers=PROBE, timeout=3)
+                response = await self.client.get(self.nodes[node] + '/diagnostics/memory', headers=probe_headers(3), timeout=3)
                 body.update(http_status=response.status_code, result=response.json())
             except (httpx.HTTPError, ValueError) as error:
                 body['service_error'] = type(error).__name__  # the container runs but the process did not answer
@@ -456,7 +464,8 @@ class Lab:
         return list(dict.fromkeys(ids))
 
     async def maintenance(self, node, verb, actor=None):
-        headers = {'X-Aegis-Fleet-Token': self.fleet_token, **({'X-Aegis-Actor': actor} if actor else {})}
+        headers = {'X-Aegis-Fleet-Token': self.fleet_token, **({'X-Aegis-Actor': actor} if actor else {}),
+                   **({'X-Aegis-Target': node} if verb in CLIENT_VERBS else {})}
         base = REPORTS_URL if verb in CLIENT_VERBS else self.nodes[node]
         try:
             response = await self.client.post(base + '/maintenance/' + verb, headers=headers, timeout=10)

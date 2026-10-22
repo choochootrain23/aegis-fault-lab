@@ -115,8 +115,16 @@ def heavy_callers(record):
     """Callers in a traffic observation sending heavily with no quota of any kind, busiest first."""
     result = (record or {}).get('body', {}).get('result') or {}
     limited = {q.get('client') for q in result.get('quotas', [])}
-    return sorted((c for c in result.get('clients', []) if (c.get('recent_rps') or 0) > HEAVY_RPS and c.get('client') not in limited and c.get('client') != 'controller'),
+    return sorted((c for c in result.get('clients', []) if (c.get('recent_rps') or 0) > HEAVY_RPS and c.get('client') not in limited and c.get('client') != 'controller'
+                   and (c.get('retries') or 0) <= (c.get('requests') or 0) / 2),
                   key=lambda c: -(c.get('requests') or 0))
+
+
+def retry_storm(record):
+    """The busiest caller whose requests are mostly retries of failed ones, if it is sending heavily now."""
+    result = (record or {}).get('body', {}).get('result') or {}
+    stormy = [c for c in result.get('clients', []) if (c.get('recent_rps') or 0) > HEAVY_RPS and c.get('requests') and (c.get('retries') or 0) / c['requests'] > 0.5]
+    return max(stormy, key=lambda c: c['requests']) if stormy else None
 
 
 def catalogue_healthy(fresh):
@@ -167,6 +175,11 @@ def remedy(fresh):
             tcp = body['result'].get('tcp') or {}
             resent = f", and {tcp['retrans_pct']:g}% of the TCP segments it sent had to be resent" if tcp.get('retrans_pct') is not None else ''
             action = f"Traffic leaving {node} passes a netem queue that drops {queue['loss_pct']:g}% of packets{resent}. You can try removing the packet loss, then verify requests succeed reliably, not just once."
+        elif kind == 'traffic' and retry_storm(record):
+            caller = retry_storm(record)
+            share = round(100 * caller['retries'] / caller['requests'])
+            action = (f"{node} received {caller['requests']} requests in the last minute from {caller['client']}, and {share}% of them were retries of requests that had just failed. "
+                      f"Callers are retrying faster than it can serve, so the overload feeds itself even if whatever started it has stopped. You can try enabling load shedding on {node}, then verify its requests succeed again.")
         elif kind == 'traffic' and heavy_callers(record):
             top = heavy_callers(record)[0]
             action = (f"{node} received {top['requests']} requests in the last minute from {top['client']}, about {top['recent_rps']:g} a second right now, from a caller with no quota: "

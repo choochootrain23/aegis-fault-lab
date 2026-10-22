@@ -107,12 +107,17 @@ Reports are under ignored `state/validation/`. The app is running at http://loca
 - Robustness found while prototyping a retry storm: the traffic counter no longer cancels in-flight requests (it had leaked every pooled connection under overload), and every container allows 65,536 open files instead of 1,024.
 - Guidance: CPU at the limit names both possible causes (a job, or one heavy caller) and defers to the traffic check when it shows a flood.
 
+## Thirteenth checkpoint (22 October 2026)
+
+- **Overload safety for every fault.** Each request carries a deadline, which services honour (answering 504 without doing the work) and gateways propagate to the catalogue. Gateways bound their upstream calls with a bulkhead below the HTTP client's pool.
+- **Eleventh fault: retry storm.** App users from the reports service, 60 a second through one gateway, retry every failure at once. An 8-second catalogue compaction tips that gateway into an overload that outlives its cause. Gateways count retries per caller, and **Enable load shedding** caps a gateway's in-flight requests, turning the rest away at once. It only takes effect on a gateway that is actually queuing. The catalogue's per-gateway quota is now 300 a second, room for user traffic.
+- Guidance: a caller whose requests are mostly retries means a retry storm, and supports shedding load rather than rate-limiting.
+
 ## Next work
 
-1. Server-side request deadlines, so overloaded services drop abandoned work; then the paused retry storm.
-2. Roadmap step 4: facility telemetry, with thermal throttling and rack power loss.
-3. AI evaluation covering the five newest faults, and with other models.
-4. Screen-reader review; runs measured in days.
+1. Roadmap step 4: facility telemetry, with rack power loss and thermal throttling.
+2. AI evaluation covering the six newest faults, and with other models.
+3. Screen-reader review; runs measured in days.
 
 ## Boundaries preserved
 

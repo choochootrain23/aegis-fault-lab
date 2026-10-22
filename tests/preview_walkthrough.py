@@ -404,6 +404,32 @@ def main():
             expect(page.locator('#session-status')).to_have_text('ended', timeout=15000)
             page.select_option('#practice-kind', 'service-unavailable')
 
+            # A retry storm on gateway-c: the catalogue's short compaction starts it, the users' retries keep it going.
+            # Rate-limiting and shedding elsewhere change nothing; shedding load on gateway-c recovers.
+            page.select_option('#practice-kind', 'retry-storm')
+            page.select_option('#practice-target', 'gateway-c')
+            assert page.locator('#practice-target option[value="catalog-b"]').evaluate('o => o.disabled')
+            expect(page.locator('#scenario-title')).to_have_text('When retries storm')
+            expect(page.locator('#start')).to_be_enabled(timeout=20000)
+            page.click('#start')
+            expect(page.locator('#session-status')).to_have_text('investigating', timeout=40000)
+            page.click('#node-gateway-c')
+            page.click('[data-check="traffic"]')
+            expect(page.locator('[data-check="traffic"] .check-result')).to_contain_text(re.compile(r'rejections|rejected'))
+            page.click('[data-help="action"]')
+            expect(page.locator('#help-result')).to_contain_text('enabling load shedding on gateway-c')
+            page.click('[data-remedy="ratelimit"]')
+            expect(page.locator('#toast')).to_contain_text('nothing changed')
+            page.click('#node-gateway-a')
+            page.click('[data-remedy="shed"]')
+            expect(page.locator('#toast')).to_contain_text('nothing changed')
+            page.click('#node-gateway-c')
+            page.click('[data-remedy="shed"]')
+            expect(page.locator('#session-status')).to_have_text('recovered', timeout=45000)
+            page.click('#reset')
+            expect(page.locator('#session-status')).to_have_text('ended', timeout=15000)
+            page.select_option('#practice-kind', 'service-unavailable')
+
             # A stopped gateway-c is local: gateway-a and the catalogue stay healthy, and guidance says so.
             page.select_option('#practice-kind', 'service-unavailable')
             page.select_option('#practice-target', 'gateway-c')
@@ -445,7 +471,7 @@ def main():
             expect(page.locator('#scenario-reveal')).to_contain_text('Known scenario:')
             page.click('#reset')
             expect(page.locator('#session-status')).to_have_text('ended', timeout=15000)
-            expect(page.locator('#history .history-item')).to_have_count(12)
+            expect(page.locator('#history .history-item')).to_have_count(13)
 
             mobile = browser.new_page(viewport={'width': 390, 'height': 844})
             mobile.on('pageerror', lambda error: errors.append(str(error)))

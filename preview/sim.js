@@ -52,7 +52,7 @@ const hop = node => (fleet[node].lossy ? draw(REPLY) : {extra: 0, error: null});
 // One gateway call to the catalogue crosses the catalogue's egress or the gateway's own; only one can be lossy.
 const call = node => (fleet['catalog-b'].lossy || fleet[node].lossy ? draw(CALL) : {extra: 0, error: null});
 // Business traffic by caller, as aegis/fleet.py counts it, and the catalogue's per-caller quotas.
-const QUOTA_DEPLOYED = {'gateway-a': 20, 'gateway-c': 20};
+const QUOTA_DEPLOYED = {'gateway-a': 100, 'gateway-c': 100};
 const quotaOf = (node, client) => (node === 'catalog-b' && client in QUOTA_DEPLOYED ? (fleet[node].squeezed ? 0 : QUOTA_DEPLOYED[client]) : null);
 const count = (node, client, status) => { const t = fleet[node].traffic; t.push({at: now(), client, status}); if (t.length > 4000) t.shift(); };
 const quotaRefusal = client => ({ok: false, error: 'QuotaExceeded', client, limit_rps: 0, detail: 'per-client request quota exhausted', generation: fleet['catalog-b'].process});
@@ -113,6 +113,24 @@ function exporterTraffic(t) {
   const recent = flooded() ? FLOOD_RPS : flood.limitedAt != null && flood.stoppedAt == null ? LIMITED_RPS : 0;
   return requests ? {client: 'report-exporter', requests, rejected, errors: 0, rps: Math.round(requests / 60 * 100) / 100, recent_rps: recent} : null;
 }
+// The retry storm, as the reports service and gateways run it. Measured on the real lab (22 October 2026): 60 app users
+// a second through one gateway, retrying failures at once up to three times. Six seconds in, the catalogue's 8-second
+// compaction made requests time out; the retries then held the gateway at its CPU limit with most requests failing,
+// about 220 attempts a second, 70% of them retries, until load shedding brought it back within about 10 seconds.
+const storm = {target: null, start: null, shedAt: null, stoppedAt: null, shedding: new Set()};
+const HICCUP_AFTER = 6, HICCUP_S = 8, USER_RPS = 60, STORM_RPS = 220;
+const hiccup = () => storm.start != null && storm.stoppedAt == null && now() >= storm.start + HICCUP_AFTER && now() < storm.start + HICCUP_AFTER + HICCUP_S && !storm.hiccupStopped;
+const storming = node => storm.target === node && storm.stoppedAt == null && storm.shedAt == null && now() >= storm.start + HICCUP_AFTER;
+const settling = node => storm.target === node && storm.shedAt != null && now() < storm.shedAt + 4;  // shedding takes a few seconds to bite
+function usersTraffic(node, t) {
+  if (storm.target !== node || storm.start == null) return null;
+  const from = t - 60, end = storm.stoppedAt ?? t, overlap = (a, b) => Math.max(0, Math.min(b, end) - Math.max(a, from));
+  const stormFrom = storm.start + HICCUP_AFTER, stormTo = storm.shedAt ?? end;
+  const heavy = overlap(stormFrom, stormTo), calm = overlap(storm.start, end) - heavy;
+  const requests = Math.round(heavy * STORM_RPS + calm * USER_RPS), retries = Math.round(heavy * STORM_RPS * 0.7);
+  const recent = storm.stoppedAt != null ? 0 : storming(node) ? STORM_RPS : USER_RPS;
+  return requests ? {client: 'mobile-app', requests, rejected: 0, errors: Math.round(heavy * STORM_RPS * 0.95), retries, rps: Math.round(requests / 60 * 100) / 100, recent_rps: recent} : null;
+}
 const busyMs = () => Math.round(Math.min(1600, 110 + Math.random() ** 1.6 * 1100) * 10) / 10;
 const diskFull = node => ({ok: false, error: 'OSError', errno: 'ENOSPC', detail: 'No space left on device', path: 'receipt write', generation: fleet[node].process});
 // Runtime settings as aegis/fleet.py reports them; drift overrides one, as a bad hot reload would.
@@ -143,7 +161,7 @@ function trace(node) {
     else if (cat.full) ok = span(name, between(2, 6), false, {status: 507});
     else {
       // httpx applies the 1-second timeout to each wait, so only a slow catalogue handler can exceed it, not the delay.
-      const wait = cat.busy ? busyMs() : flooded() ? floodMs() : between(1.5, 6), ms = Math.round((wait + lag('catalog-b') + lag(node) + net.extra) * 10) / 10;
+      const wait = cat.busy || hiccup() ? busyMs() : flooded() ? floodMs() : between(1.5, 6), ms = Math.round((wait + lag('catalog-b') + lag(node) + net.extra) * 10) / 10;
       count('catalog-b', node, 200);  // the catalogue still answers; the gateway may already have given up
       ok = wait > 1000 ? span(name, 1000, false, {error: 'ReadTimeout'}) : span(name, ms, true, {status: 200});
     }
@@ -173,7 +191,7 @@ function probe(node, kind) {
     if (!n.running) return {...base, duration_ms: between(9, 30)};
     // A process that has just started uses its whole limit while it boots, as on the real lab.
     const booting = now() - n.startedAt < 4;
-    const cores = Math.round((n.busy || booting || (node === 'catalog-b' && flooded()) ? 0.24 + Math.random() * 0.01 : 0.004 + Math.random() * 0.016) * 1000) / 1000;
+    const cores = Math.round((n.busy || booting || (node === 'catalog-b' && (flooded() || hiccup())) || storming(node) ? 0.24 + Math.random() * 0.01 : 0.004 + Math.random() * 0.016) * 1000) / 1000;
     n.periods += 10; if (n.busy) n.throttled += 9;
     return {...base, cpu_cores: cores, cpu_pct_of_limit: Math.round(cores / 0.25 * 1000) / 10, periods: n.periods, throttled_periods: n.throttled,
             throttled_ms: Math.round(n.throttled * 75 * 10) / 10, memory_mib: memoryAt(node, now()), memory_limit_mib: MEMORY_LIMIT, duration_ms: between(1000, 1250)};
@@ -210,7 +228,7 @@ function probe(node, kind) {
 function answered(node, kind) {
   const n = fleet[node];
   const role = isGateway(node) ? 'gateway' : 'catalog';
-  const quick = (low, high) => n.busy ? busyMs() : node === 'catalog-b' && flooded() ? floodMs() : between(low, high);
+  const quick = (low, high) => n.busy || (node === 'catalog-b' && hiccup()) ? busyMs() : node === 'catalog-b' && flooded() ? floodMs() : storming(node) || settling(node) ? between(300, 900) : between(low, high);
   if (kind === 'liveness') return reply({live: true, role, generation: n.process, version: n.version}, quick(3, 13));
   if (kind === 'releases') return reply({running: n.version, note: RELEASE_NOTES[n.version], history: n.history.slice(-10), uptime_s: Math.round((now() - n.startedAt) * 10) / 10, generation: n.process}, quick(3, 9));
   if (kind === 'logs') return reply({entries: n.logs.slice(-200), bounded_to: 200, generation: n.process, truncated: false, omitted_retained_entries: 0}, quick(3, 9));
@@ -225,10 +243,10 @@ function answered(node, kind) {
     const t = now(), callers = {};
     for (const e of n.traffic) {
       if (t - e.at > 60) continue;
-      const c = callers[e.client] ||= {client: e.client, requests: 0, rejected: 0, errors: 0};
+      const c = callers[e.client] ||= {client: e.client, requests: 0, rejected: 0, errors: 0, retries: 0};
       c.requests += 1; c.rejected += e.status === 429; c.errors += e.status >= 500;
     }
-    const exporter = role === 'catalog' ? exporterTraffic(t) : null;
+    const exporter = role === 'catalog' ? exporterTraffic(t) : usersTraffic(node, t);
     const recentCount = client => n.traffic.filter(e => e.client === client && t - e.at <= 10).length;
     const clients = [...Object.values(callers).map(c => ({...c, rps: Math.round(c.requests / 60 * 100) / 100, recent_rps: Math.round(recentCount(c.client) / 10 * 100) / 100})),
       ...(exporter ? [exporter] : [])].sort((a, b) => b.requests - a.requests);
@@ -244,11 +262,17 @@ function answered(node, kind) {
     if (n.full) { const failure = diskFull(node); log(node, failure); return {ok: false, http_status: 507, result: failure, duration_ms: quick(4, 10)}; }
     return reply(catalogue(), quick(5, 12));
   }
+  // An overloaded gateway in a retry storm fails most requests: its queue outlasts the callers' deadlines.
+  if ((storming(node) && Math.random() < 0.9) || (settling(node) && Math.random() < 0.5)) {
+    const result = {ok: false, dependency: 'catalog-b', correlation: crypto.randomUUID(), error: Math.random() < 0.6 ? 'ReadTimeout' : 'UpstreamBusy', generation: n.process, duration_ms: between(900, 1000)};
+    log(node, result); count(node, 'controller', 503);
+    return {ok: false, http_status: 503, result, duration_ms: Math.round((result.duration_ms + between(200, 900)) * 10) / 10};
+  }
   // Gateway readiness and business requests call the catalogue dependency, unless the gateway's own release fails first.
   if (releaseFails(node)) { const failure = {...typeError(node), duration_ms: quick(1, 4)}; log(node, failure); count(node, 'controller', 500); return {ok: false, http_status: 500, result: failure, duration_ms: failure.duration_ms}; }
   const correlation = crypto.randomUUID(), cat = fleet['catalog-b'], net = call(node), catFails = releaseFails('catalog-b');
   let result, status = 503;
-  const wait = answering('catalog-b') ? (cat.busy ? busyMs() : flooded() ? floodMs() : between(1.5, 6)) : between(1, 5);
+  const wait = answering('catalog-b') ? (cat.busy || hiccup() ? busyMs() : flooded() ? floodMs() : between(1.5, 6)) : between(1, 5);
   const upstream = answering('catalog-b') ? Math.round((wait + lag('catalog-b') + lag(node) + net.extra) * 10) / 10 : wait;
   const reached = !n.drifted && answering('catalog-b') && !net.error;
   if (reached) count('catalog-b', node, cat.squeezed ? 429 : catFails || cat.drifted ? 500 : cat.full ? 507 : 200);
@@ -404,10 +428,10 @@ function state() {
 // changes nothing and says so, as the real broker and services do; a stopped service cannot confirm maintenance.
 const FAULTS = {'service-unavailable': ['stop', 'start'], 'cpu-starvation': ['burn', 'calm'], 'disk-full': ['fill', 'clear'], 'config-drift': ['drift', 'restore'],
   'network-delay': ['delay', 'undelay'], 'packet-loss': ['drop', 'undrop'], 'quota-zero': ['squeeze', 'requota'], 'bad-release': ['ship', 'rollback'], 'memory-leak': ['leak', 'rollback'],
-  'traffic-flood': ['flood', 'ratelimit']};
-const FAULT_TARGETS = {'quota-zero': ['catalog-b'], 'traffic-flood': ['catalog-b']};  // faults that only exist on some services
+  'traffic-flood': ['flood', 'ratelimit'], 'retry-storm': ['storm', 'shed']};
+const FAULT_TARGETS = {'quota-zero': ['catalog-b'], 'traffic-flood': ['catalog-b'], 'retry-storm': ['gateway-a', 'gateway-c']};  // faults that only exist on some services
 // Reset normally reapplies the remedy; a flood is undone by stopping its source and removing any limit.
-const RESET_CLEANUP = {'traffic-flood': ['unflood', 'requota']};
+const RESET_CLEANUP = {'traffic-flood': ['unflood', 'requota'], 'retry-storm': ['unstorm', 'unshed']};
 const UNCHANGED = {start: 'Already running; nothing changed', stop: 'Already stopped; nothing changed', calm: 'No background job running; nothing changed',
   burn: 'A background job was already running; nothing changed', clear: 'No filler file present; nothing changed', fill: 'Nothing changed',
   restore: 'Running config already matches the deployed settings; nothing changed', drift: 'Setting already overridden; nothing changed',
@@ -415,7 +439,9 @@ const UNCHANGED = {start: 'Already running; nothing changed', stop: 'Already sto
   undrop: 'No packet loss present; nothing changed', drop: 'Packet loss already present; nothing changed',
   requota: 'Quotas already match the deployed limits; nothing changed', squeeze: 'Quotas already at zero; nothing changed',
   rollback: 'Already running the stable release; nothing changed', ship: 'Release already deployed; nothing changed', leak: 'Release already deployed; nothing changed',
-  ratelimit: 'No heavy caller without a quota to limit; nothing changed', flood: 'Export job already running; nothing changed', unflood: 'No export job running; nothing changed'};
+  ratelimit: 'No heavy caller without a quota to limit; nothing changed', flood: 'Export job already running; nothing changed', unflood: 'No export job running; nothing changed',
+  shed: 'Load shedding already on, or not available here; nothing changed', unshed: 'Load shedding already off; nothing changed',
+  storm: 'App users already running; nothing changed', unstorm: 'No app users running; nothing changed'};
 const DEBRIEFS = {
   "service-unavailable": "The scenario requested stopping {target}. When that succeeds, its container state reads stopped and its own probes fail. When the catalogue stops, both gateways stay live but their business requests fail, so the failure spreads; when one gateway stops, the catalogue and the other gateway stay healthy, so it does not. Starting the stopped service restores the request path.",
   "cpu-starvation": "The scenario requested a runaway background job inside {target}. When that succeeds, the service keeps running and answering, but slowly: the job uses the container's whole 0.25-CPU limit, the kernel throttles it, and requests queue behind it, crossing the 300 ms threshold. Its log records the job starting. A slow catalogue makes both gateways slow, and sometimes time out, too. Stopping the job returns normal latency.",
@@ -426,9 +452,10 @@ const DEBRIEFS = {
   "bad-release": "The scenario requested a rollout of release v1.5.0 to {target}, whose new price-conversion code fails about half of business requests with a TypeError (HTTP 500). The process stays live and its container, CPU, disk, network and running config all look normal: nothing about the machine changed, only the code. A bad catalogue release fails about half of both gateways' requests with an upstream 500, which looks like a drifted catalogue config until the config is found unchanged; a bad gateway release affects only that gateway. Because failures come and go, recovery has to hold for ten healthy cycles. Release history shows v1.5.0 deployed moments before the errors began, and the log records each TypeError with the version. Rolling back to v1.4.2 restores service; restoring config changes nothing.",
   "memory-leak": "The scenario requested a rollout of release v1.5.1 to {target}, whose background cache warmer keeps everything it loads, about 12 MiB a second. When that succeeds, the service works normally while its memory climbs, until it reaches the container's 192 MiB limit and the kernel kills it (OOMKilled, exit code 137). The rollout's deploy controller then restarts it after a few seconds and re-applies v1.5.1, as an orchestrator would, so the service crash-loops: healthy, then down, then healthy again. Starting it by hand only begins the next loop. While it is down a stopped catalogue fails both gateways' requests and a stopped gateway only its own. The memory check shows memory growing about 12 MiB a second towards the limit and the last exit as an OOM kill; release history shows v1.5.1 re-deployed after every restart. Rolling back to v1.4.2 stops the leak and keeps it stopped.",
   "traffic-flood": "The scenario requested starting a report export job that pulls {target} as fast as 160 keep-alive connections allow, from a separate reports service on the internal network. When that succeeds, the catalogue handles several hundred requests a second at its 0.25-CPU limit, so its own checks and both gateways' requests queue behind the flood and turn slow, sometimes past the gateways' 1-second timeout. Nothing is broken or misconfigured: resource use shows the CPU at its limit, which looks like CPU starvation, but there is no runaway job, so stopping one changes nothing. The traffic check shows one caller, report-exporter, sending most of the requests without a quota. Rate-limiting it makes the catalogue answer that caller with HTTP 429 and Retry-After, the exporter backs off as a well-behaved client should, and latency returns to normal.",
+  "retry-storm": "The scenario requested app users, 60 a second through {target}, whose app retries a failed request at once up to three times, and then a short index compaction that took the catalogue's whole CPU for 8 seconds. The compaction made requests time out; every timeout became up to four attempts; the extra attempts overloaded {target}, so its requests kept failing after the compaction had ended. That is a metastable failure: the overload outlives its cause, and it sits in a different service from the trigger. The other gateway recovers as soon as the compaction ends. Nothing is broken, stopped or misconfigured, and no unknown caller floods anything, so restarting, stopping a job or rate-limiting a client changes nothing. Resource use shows {target} at its CPU limit while the catalogue is idle, and its traffic shows most requests are retries. Enabling load shedding on {target} caps the requests it keeps in flight and turns the rest away at once, so the ones it accepts finish in time, users stop retrying, and the load falls back to normal.",
   "network-delay": "The scenario requested a 600 ms delay on all traffic leaving {target}, applied with a Linux netem queue inside its own network namespace. When that succeeds, the process stays live and its CPU and disk stay normal, but everything it sends waits in the queue: its own checks take about 600 ms longer. A delayed catalogue slows both gateways' requests by the same amount; a delayed gateway pays the delay twice, on its call to the catalogue and on its reply, while the catalogue and the other gateway stay fast. Requests still succeed, because each wait stays under the gateways' 1-second upstream timeout. The network path check shows TCP connections taking about 600 ms and the netem queue itself, and a request trace shows a fast handler with the time spent outside it. Removing the delay, or restarting the container, restores normal latency.",
 };
-const debrief = s => DEBRIEFS[s.fault_kind].replace('{target}', s.fault_target) + ' Injection outcome: ' + (s.fault_action?.status || 'not recorded') + '. The action record explains the exercise but was not evidence available during the investigation. Other evidence-supported investigation orders are valid.';
+const debrief = s => DEBRIEFS[s.fault_kind].replaceAll('{target}', s.fault_target) + ' Injection outcome: ' + (s.fault_action?.status || 'not recorded') + '. The action record explains the exercise but was not evidence available during the investigation. Other evidence-supported investigation orders are valid.';
 
 function apply(node, verb) {
   const target = fleet[node];
@@ -447,6 +474,22 @@ function apply(node, verb) {
     if (ours) { delete s.rollout; if (!target.running) apply(node, 'start'); changed = true; }
     return changed;
   }
+  // The app users run in the reports service too; the compaction that triggers the storm stops by itself.
+  if (verb === 'storm') {
+    if (storm.start != null && storm.stoppedAt == null) return false;
+    Object.assign(storm, {target: node, start: now(), shedAt: null, stoppedAt: null, hiccupStopped: false});
+    setTimeout(() => { if (storm.target === node && storm.stoppedAt == null) log('catalog-b', {ok: true, event: 'background job started', job: 'index compaction', expected_s: HICCUP_S}); }, HICCUP_AFTER * 1000);
+    return true;
+  }
+  if (verb === 'unstorm') { if (storm.start == null || storm.stoppedAt != null) return false; storm.stoppedAt = now(); return true; }
+  if (verb === 'shed') {
+    if (!isGateway(node) || !target.running || storm.shedding.has(node) || !storming(node)) return false;  // only an overloaded gateway
+    storm.shedding.add(node); storm.shedAt = now();
+    log(node, {ok: true, event: 'load shedding enabled', max_in_flight: 12});
+    return true;
+  }
+  if (verb === 'unshed') { if (!storm.shedding.has(node)) return false; storm.shedding.delete(node); return true; }
+  if (verb === 'calm' && node === 'catalog-b' && hiccup()) { storm.hiccupStopped = true; return true; }
   // The exporter runs in the reports service, outside the three inspected services.
   if (verb === 'flood') { if (flood.start != null && flood.stoppedAt == null) return false; Object.assign(flood, {start: now(), limitedAt: null, stoppedAt: null}); return true; }
   if (verb === 'unflood') { if (flood.start == null || flood.stoppedAt != null) return false; flood.stoppedAt = now(); return true; }
@@ -629,7 +672,13 @@ function explain(level) {
 // Callers sending heavily with no quota of any kind, busiest first, as aegis/guidance.py finds them.
 function heavyCallers(record) {
   const result = record?.body?.result || {}, limited = new Set((result.quotas || []).map(q => q.client));
-  return (result.clients || []).filter(c => (c.recent_rps || 0) > 20 && !limited.has(c.client) && c.client !== 'controller').sort((a, b) => b.requests - a.requests);
+  return (result.clients || []).filter(c => (c.recent_rps || 0) > 20 && !limited.has(c.client) && c.client !== 'controller' && (c.retries || 0) <= (c.requests || 0) / 2).sort((a, b) => b.requests - a.requests);
+}
+
+// The busiest caller whose requests are mostly retries, if it is sending heavily now, as aegis/guidance.py finds it.
+function retryStorm(record) {
+  const stormy = (record?.body?.result?.clients || []).filter(c => (c.recent_rps || 0) > 20 && c.requests && (c.retries || 0) / c.requests > 0.5);
+  return stormy.length ? stormy.reduce((a, b) => (b.requests > a.requests ? b : a)) : null;
 }
 
 function remedyFor(fresh) {
@@ -657,6 +706,9 @@ function remedyFor(fresh) {
       const queue = body.result.qdiscs.find(q => q.kind === 'netem'), tcp = body.result.tcp || {};
       const resent = tcp.retrans_pct != null ? `, and ${tcp.retrans_pct}% of the TCP segments it sent had to be resent` : '';
       action = `Traffic leaving ${node} passes a netem queue that drops ${queue.loss_pct}% of packets${resent}. You can try removing the packet loss, then verify requests succeed reliably, not just once.`;
+    } else if (kind === 'traffic' && retryStorm(record)) {
+      const caller = retryStorm(record), share = Math.round(100 * caller.retries / caller.requests);
+      action = `${node} received ${caller.requests} requests in the last minute from ${caller.client}, and ${share}% of them were retries of requests that had just failed. Callers are retrying faster than it can serve, so the overload feeds itself even if whatever started it has stopped. You can try enabling load shedding on ${node}, then verify its requests succeed again.`;
     } else if (kind === 'traffic' && heavyCallers(record).length) {
       const top = heavyCallers(record)[0];
       action = `${node} received ${top.requests} requests in the last minute from ${top.client}, about ${top.recent_rps} a second right now, from a caller with no quota: one client is using most of its capacity. You can try rate-limiting the top client, then verify the other callers' requests are fast again.`;
@@ -743,7 +795,7 @@ const routes = {
     const s = active(d.session_id);
     if (s.status === 'resetting') throw new HttpError(409, 'Reset is in progress. Wait for verification or retry reset.');
     const verb = d.verb || 'start';
-    if (!['start', 'calm', 'clear', 'restore', 'undelay', 'undrop', 'requota', 'rollback', 'ratelimit'].includes(verb)) invalid();
+    if (!['start', 'calm', 'clear', 'restore', 'undelay', 'undrop', 'requota', 'rollback', 'ratelimit', 'shed'].includes(verb)) invalid();
     const result = mutate(d.key, d.node || 'catalog-b', verb);
     if (!s.recovery_attempts.some(a => a.key === d.key)) {
       s.recovery_attempts.push({key: d.key, at: now(), ...result});

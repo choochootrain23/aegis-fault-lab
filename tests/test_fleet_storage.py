@@ -215,7 +215,7 @@ def test_rate_limit_targets_heavy_unknown_callers_and_asks_them_to_back_off(serv
     assert service('POST', '/maintenance/ratelimit', headers=TOKEN).json()['changed'] is False
     refused = service('GET', '/catalog', headers={'X-Aegis-Client': 'report-exporter'})
     assert refused.status_code == 429 and refused.headers['retry-after'] == '10'
-    assert fleet.quota['gateway-a'] == 20 and 'controller' not in fleet.quota
+    assert fleet.quota['gateway-a'] == 300 and 'controller' not in fleet.quota
     quotas = {q['client']: q for q in service('GET', '/diagnostics/traffic').json()['quotas']}
     assert quotas['report-exporter']['limit_rps'] == 2 and quotas['report-exporter']['deployed_rps'] is None
     assert service('POST', '/maintenance/requota', headers=TOKEN).json() == {'changed': True, 'restored': ['report-exporter']}
@@ -224,3 +224,14 @@ def test_rate_limit_targets_heavy_unknown_callers_and_asks_them_to_back_off(serv
 
 def test_only_the_reports_service_runs_the_exporter(service):
     assert service('POST', '/maintenance/flood', headers=TOKEN).json() == {'changed': False}
+
+
+def test_work_whose_caller_gave_up_is_dropped_without_doing_it(service, tmp_path):
+    import time
+    expired = service('GET', '/catalog', headers={'X-Aegis-Deadline': f'{time.time() - 1:.3f}', 'X-Aegis-Client': 'gateway-a'})
+    assert expired.status_code == 504 and expired.json()['error'] == 'DeadlineExceeded'
+    assert not (tmp_path / 'receipts').exists()  # no receipt: the handler never ran
+    assert service('GET', '/catalog', headers={'X-Aegis-Deadline': f'{time.time() + 5:.3f}'}).status_code == 200
+    assert service('GET', '/catalog', headers={'X-Aegis-Deadline': 'not-a-time'}).status_code == 200
+    traffic = {c['client']: c for c in service('GET', '/diagnostics/traffic').json()['clients']}
+    assert traffic['gateway-a']['errors'] == 1

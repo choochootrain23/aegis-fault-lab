@@ -673,3 +673,4 @@ kbd{display:inline-block;min-width:24px;padding:4px 6px;border:1px solid var(--l
 .memory-trend polyline{fill:none;stroke:var(--bad);stroke-width:1.6;vector-effect:non-scaling-stroke}
 .memory-trend .memory-limit{stroke:var(--ink);stroke-width:1;stroke-dasharray:3 3;vector-effect:non-scaling-stroke}
 .remedies .remedy-ratelimit:not(:disabled){background:#6d4c41;border-color:#6d4c41;box-shadow:5px 5px 0 rgba(109,76,65,.22)}
+.remedies .remedy-shed:not(:disabled){background:#37474f;border-color:#37474f;box-shadow:5px 5px 0 rgba(55,71,79,.22)}

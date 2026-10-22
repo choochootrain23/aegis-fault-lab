@@ -6,13 +6,13 @@ A hands-on lab for practising Linux service troubleshooting. Three small web ser
 > - **[Browser simulator](https://choochootrain23.github.io/aegis-fault-lab/)**: opens in any browser with nothing to install. **Nothing in it is real**: services and measurements are generated in your tab.
 > - **[Full lab](#quick-start)**: real containers, real failures and measured evidence on your own Linux machine. About 10 minutes to set up.
 
-**Status:** a working milestone. Ten fault types run on real Docker and are validated end to end, with an optional AI investigator that reads only the evidence on the page. See [limitations](#limitations).
+**Status:** a working milestone. Eleven fault types run on real Docker and are validated end to end, with an optional AI investigator that reads only the evidence on the page. See [limitations](#limitations).
 
 ## Contents
 
 1. [What makes it different](#what-makes-it-different)
 2. [Quick start](#quick-start)
-3. [What you practise](#what-you-practise): [the ten faults](#the-ten-faults) and [the twelve checks](#the-twelve-checks)
+3. [What you practise](#what-you-practise): [the eleven faults](#the-eleven-faults) and [the twelve checks](#the-twelve-checks)
 4. [Your first investigation](#your-first-investigation)
 5. [Optional AI investigator](#optional-ai-investigator)
 6. [Everyday use and troubleshooting](#everyday-use-and-troubleshooting)
@@ -83,7 +83,7 @@ Keeping it safe:
 
 ### 4. Build, start and open
 
-`docker compose ps` should list six running containers: `controller`, `broker`, `gateway-a`, `catalog-b`, `gateway-c` and `reports` (an idle batch client used by the traffic-flood fault).
+`docker compose ps` should list six running containers: `controller`, `broker`, `gateway-a`, `catalog-b`, `gateway-c` and `reports` (an idle batch client and app-user simulator, used only by the traffic-flood and retry-storm faults).
 
 **Lab inside a VM or on another machine?** Forward the port from the computer you browse on: `ssh -L 8787:localhost:8787 you@lab-machine`, then open http://localhost:8787 there. In VS Code Remote-SSH, the **Ports** panel can forward 8787 for you. Use `localhost`, not an IP address: the lab deliberately rejects other addresses.
 
@@ -91,9 +91,9 @@ Keeping it safe:
 
 The core skill is **finding the boundary of a failure**. Both gateways call the shared catalogue, so a fault on the catalogue reaches both gateways, while a fault on one gateway stays local and the other gateway stays healthy. Comparing the two gateways is the quickest first step.
 
-### The ten faults
+### The eleven faults
 
-Eight faults can target any of the three services. The zero quota and the traffic flood only exist on the shared catalogue, which enforces quotas and is the one service a batch client calls directly.
+Eight faults can target any of the three services. The zero quota and the traffic flood only exist on the shared catalogue, which enforces quotas and is the one service a batch client calls directly; the retry storm only exists on a gateway, where app users arrive.
 
 | Fault | What you see | Evidence that gives it away | Look-alike | Fix |
 | --- | --- | --- | --- | --- |
@@ -106,9 +106,10 @@ Eight faults can target any of the three services. The zero quota and the traffi
 | **Quota set to zero** | Both gateways fail with HTTP 429, yet the catalogue is up, fast and green to its own health checks | **Traffic & quotas** shows each gateway rejected against a limit of 0 per second, pushed by the quota system | Config drift (the running config is unchanged) | **Reset client quotas** |
 | **Bad release** | About half of business requests fail with HTTP 500 (`TypeError`); the machine looks fine | **Release history** shows v1.5.0 deployed just before the errors; logs name the version | Config drift (the running config is unchanged) | **Roll back release** |
 | **Traffic flood** | Everything is slow: the catalogue's checks and both gateways' requests take about 450 ms, though nothing fails | **Resource use** shows the catalogue's CPU at its limit, but its logs show no job; **Traffic & quotas** shows one caller, report-exporter, sending about 360 requests a second with no quota | CPU starvation (there is no runaway job to stop) | **Rate-limit top client** |
+| **Retry storm** | One gateway fails almost every request, long after a short slowdown in the catalogue has ended; the other gateway and the catalogue are fine | **Resource use** shows that gateway at its CPU limit while the catalogue idles; **Traffic & quotas** on it shows most requests are retries | A traffic flood, or a broken gateway (nothing is broken) | **Enable load shedding** |
 | **Memory leak** | The service crash-loops: healthy for about 14 s, then killed, then restarted | **Memory** shows growth of about 12 MiB/s towards the 192 MiB limit and the last exit as an out-of-memory kill; **Release history** shows v1.5.1 re-deployed after every restart | A stopped service (starting it only begins the next loop) | **Roll back release** |
 
-The packet-loss rate is deliberately extreme. Real links already hurt at 1–2% loss; 50% makes the effect show within a minute. The zero-quota fault is inspired by public reports of the December 2020 Google authentication outage, where a quota system reduced capacity to zero. The release faults start a rollout: while it lasts, a **deploy controller** keeps the new version running, restarting a crashed service after three missed health cycles and re-applying the release, as an orchestrator such as Kubernetes would. Rolling back ends the rollout. The traffic flood comes from a separate small `reports` service on the internal network, whose export job honours `Retry-After` with jitter once it is rate-limited, as a well-behaved client should. Planned faults (retry storms, power and cooling events) are listed in the [scenario roadmap](docs/scenario-roadmap.md).
+The packet-loss rate is deliberately extreme. Real links already hurt at 1–2% loss; 50% makes the effect show within a minute. The zero-quota fault is inspired by public reports of the December 2020 Google authentication outage, where a quota system reduced capacity to zero. The release faults start a rollout: while it lasts, a **deploy controller** keeps the new version running, restarting a crashed service after three missed health cycles and re-applying the release, as an orchestrator such as Kubernetes would. Rolling back ends the rollout. The traffic flood comes from a separate small `reports` service on the internal network, whose export job honours `Retry-After` with jitter once it is rate-limited, as a well-behaved client should. The retry storm is a metastable failure, the pattern behind many cascading outages: app users retry every failure at once, so an 8-second compaction in the catalogue tips one gateway into an overload that sustains itself. Planned faults (power and cooling events) are listed in the [scenario roadmap](docs/scenario-roadmap.md).
 
 **Practice** mode tells you the fault and lets you choose the service. **Challenge** mode picks both at random and hides them until you reveal them or end the attempt. The 15-minute timer can be extended; if it runs out and you do not respond within 60 seconds, the lab resets itself, even with the browser closed.
 
@@ -233,6 +234,8 @@ flowchart LR
 
 **Other faults** (CPU, disk, config, quota, releases and the flood) are injected and cleared through maintenance endpoints inside each service, protected by a separate token. Filling refuses to run unless `/tmp` really is a small bounded tmpfs, and never writes more than 16 MiB. The leaky release never holds more than 512 MiB, and the container's 192 MiB limit stops it long before that: the kernel's out-of-memory kill stays inside the container.
 
+**Overload safety.** Every request carries a deadline (`X-Aegis-Deadline`), and a service that reaches a request after its caller has given up drops it unanswered rather than doing the work; gateways pass the tighter deadline on to the catalogue. Each gateway limits its own calls to the catalogue (a bulkhead), and containers allow 65,536 open files. Without these, an overload left the services busy for minutes after it ended.
+
 **Isolation.** The service containers run read-only, as a non-root user, with no Linux capabilities, capped memory and CPU, and no ports open to your network. The page listens on `localhost` only and rejects other hosts and cross-origin requests.
 
 **Evidence and storage.** Detailed records are kept for 24 hours, and evidence for an active investigation is protected. Ended summaries remain for 30 days. Exports put cited observations first, plus recent detail within 8 MiB, and report anything omitted.
@@ -299,7 +302,7 @@ The build copies `web/` unchanged apart from relabelling every real-measurement 
 ## Limitations
 
 - **Scope:** containers share one kernel and the business data is synthetic. Nothing here claims physical hardware repair; planned power and cooling scenarios would use clearly labelled simulated telemetry.
-- **AI investigator:** optional and off by default. In 30 hidden-fault rounds with `gemini-3.5-flash-lite` (before the five newest faults were added) it named the correct fix every time once all inspections had been run, but once guessed too early from thin evidence. Other models are unevaluated. Treat answers as suggestions and check what they cite.
+- **AI investigator:** optional and off by default. In 30 hidden-fault rounds with `gemini-3.5-flash-lite` (before the six newest faults were added) it named the correct fix every time once all inspections had been run, but once guessed too early from thin evidence. Other models are unevaluated. Treat answers as suggestions and check what they cite.
 - **Not yet validated:** screen-reader use (the automated axe audit passes, but it cannot judge everything). The simulator passes automatically in Chromium, Firefox and WebKit, and has been checked by hand in Safari.
 
 ## Further reading
