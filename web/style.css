@@ -666,3 +666,9 @@ kbd{display:inline-block;min-width:24px;padding:4px 6px;border:1px solid var(--l
 .arrived{animation:arrive 2.4s ease-in-out .3s}
 .diagnosis.citing.arrived{animation:arrive 2.4s ease-in-out .3s,cite-breathe 3.2s ease-in-out infinite}
 @keyframes arrive{35%{box-shadow:inset 0 0 0 3px color-mix(in srgb,var(--section,var(--accent)) 60%,transparent),inset 0 0 70px color-mix(in srgb,var(--section,var(--accent)) 18%,transparent)}}
+
+.check-icon.rose{background:#c2185b}.check-icon.slate{background:#455a64}
+.remedies .remedy-rollback:not(:disabled){background:#ad1457;border-color:#ad1457;box-shadow:5px 5px 0 rgba(173,20,87,.22)}
+.memory-trend{display:block;width:100%;height:64px;margin:6px 0 2px;background:var(--well)}
+.memory-trend polyline{fill:none;stroke:var(--bad);stroke-width:1.6;vector-effect:non-scaling-stroke}
+.memory-trend .memory-limit{stroke:var(--ink);stroke-width:1;stroke-dasharray:3 3;vector-effect:non-scaling-stroke}

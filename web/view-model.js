@@ -28,6 +28,16 @@ globalThis.AegisView = Object.freeze({
       const retrans=resent>=1?` · ${resent}% resent`:'';
       return {text:`Network · connect ${body.median_connect_ms} ms${shaped}${retrans}`,tone:netem||body.median_connect_ms>100||resent>=10?'red':body.median_connect_ms>20||resent>=1?'amber':'green'};
     }
+    if(record.kind==='releases'){
+      const r=body.result||{}, history=r.history||[], changed=history.length>1&&r.running!==history[0].version;
+      return {text:changed?`Release ${r.running} · deployed by ${history[history.length-1].by} after ${history[0].version}`:`Release ${r.running} · unchanged since start`,tone:changed?'amber':'green'};
+    }
+    if(record.kind==='memory'){
+      const m=body.result||{};
+      if(body.running===false)return {text:`Memory · container ${body.status}${body.oom_killed?' · killed for running out of memory':''}`,tone:'red'};
+      const growth=m.growth_mib_s??0;
+      return {text:`Memory ${m.current_mib} of ${m.limit_mib} MiB${growth>=1?` · growing ${growth} MiB/s`:''}${body.oom_killed?' · last exit an OOM kill':''}`,tone:growth>=4||body.oom_killed?'red':m.used_pct>=80||growth>=1?'amber':'green'};
+    }
     if(record.kind==='traffic'){
       const t=body.result||{}, callers=t.clients||[], rejected=callers.reduce((a,c)=>a+(c.rejected||0),0), zero=(t.quotas||[]).filter(q=>q.limit_rps===0);
       const total=callers.reduce((a,c)=>a+(c.requests||0),0);
@@ -60,10 +70,10 @@ globalThis.AegisView = Object.freeze({
     return value>=1048576?`${(value/1048576).toFixed(1)} MiB`:value>=1024?`${Math.round(value/1024)} KiB`:`${value} B`;
   },
   remedyLabel(verb) {
-    return ({start:'Start service',calm:'Stop runaway job',clear:'Clear temp files',restore:'Restore config',undelay:'Remove traffic delay',undrop:'Remove packet loss',requota:'Reset client quotas'})[verb]||verb;
+    return ({start:'Start service',calm:'Stop runaway job',clear:'Clear temp files',restore:'Restore config',undelay:'Remove traffic delay',undrop:'Remove packet loss',requota:'Reset client quotas',rollback:'Roll back release'})[verb]||verb;
   },
   faultLabel(kind) {
-    return ({'service-unavailable':'Stopped service','cpu-starvation':'CPU starvation','disk-full':'Disk full','config-drift':'Config drift','network-delay':'Network delay','packet-loss':'Packet loss','quota-zero':'Quota set to zero'})[kind]||kind;
+    return ({'service-unavailable':'Stopped service','cpu-starvation':'CPU starvation','disk-full':'Disk full','config-drift':'Config drift','network-delay':'Network delay','packet-loss':'Packet loss','quota-zero':'Quota set to zero','bad-release':'Bad release','memory-leak':'Memory leak'})[kind]||kind;
   },
   // The services a fault can target, when it cannot target all three.
   faultTargets(kind) {
@@ -72,8 +82,8 @@ globalThis.AegisView = Object.freeze({
   // Scenario heading: the selected fault and target, the running practice scenario, or a hidden challenge.
   scenarioCopy(kind, target, mode) {
     if (mode==='challenge') return {number:'??', eyebrow:'Challenge · hidden fault', title:['A ','hidden',' fault'],
-      text:'One of seven faults on one of the three services, picked at random and kept secret. Find it from the evidence, fix it, then reveal it to check.'};
-    const kinds=['service-unavailable','cpu-starvation','disk-full','config-drift','network-delay','packet-loss','quota-zero'];
+      text:'One of nine faults on one of the three services, picked at random and kept secret. Find it from the evidence, fix it, then reveal it to check.'};
+    const kinds=['service-unavailable','cpu-starvation','disk-full','config-drift','network-delay','packet-loss','quota-zero','bad-release','memory-leak'];
     const copy={
       'service-unavailable':{title:['When a service ','stops',''], text:'Its container is stopped, so its own checks fail.'},
       'cpu-starvation':{title:['When a service is ','starved',' of CPU'], text:'A runaway job uses its whole CPU limit. It still answers, just slowly.'},
@@ -82,6 +92,8 @@ globalThis.AegisView = Object.freeze({
       'network-delay':{title:['When the network ','lags',''], text:'Every packet leaving it waits 600 ms. It stays up with idle CPU, yet everything it sends arrives late.'},
       'packet-loss':{title:['When packets ','go missing',''], text:'Half the packets it sends are dropped. Requests sometimes work, sometimes stall, sometimes time out.'},
       'quota-zero':{title:['When the quota ','hits zero',''], text:'A quota push lets the gateways make zero requests. The catalogue is up, fast and green to its own probes.'},
+      'bad-release':{title:['When a release ','ships a bug',''], text:'A new version fails about half its requests. The machine is fine and the config unchanged; only the code moved.'},
+      'memory-leak':{title:['When memory ','leaks',''], text:'A new version never frees what it loads. It runs fine until the kernel kills it, then the rollout restarts it, again and again.'},
     }[kind]||{title:['A ','fault',''], text:''};
     const scope=kind==='quota-zero'?'Enforced by the shared catalogue: compare what its callers see with what its own checks say.'
       :target==='catalog-b'?'On the shared catalogue: see whether both gateways are affected too.':`On ${target}, a local fault: see whether the catalogue and the other gateway stay healthy.`;
@@ -136,6 +148,8 @@ globalThis.AegisView = Object.freeze({
     else if(body.ok&&record.kind==='disk')outcome=`${body.result?.used_pct}% used`;
     else if(body.ok&&record.kind==='config')outcome=body.result?.drifted?.length?'drifted':'matches';
     else if(body.ok&&record.kind==='network')outcome=`connect ${body.median_connect_ms} ms${body.result?.tcp?.retrans_pct>=1?` · ${body.result.tcp.retrans_pct}% resent`:''}`;
+    else if(body.ok&&record.kind==='releases')outcome=body.result?.running||'read';
+    else if(body.ok&&record.kind==='memory')outcome=body.running===false?(body.oom_killed?'OOM killed':'stopped'):`${body.result?.current_mib} MiB${(body.result?.growth_mib_s??0)>=1?' ↑':''}`;
     else if(body.ok&&record.kind==='traffic'){const rejected=(body.result?.clients||[]).reduce((a,c)=>a+(c.rejected||0),0);outcome=rejected?`${rejected} rejected`:'no rejections';}
     else if(body.ok&&record.kind==='trace')outcome=body.result?.request_ok===false?'failed':'traced';
     else if(body.slow)outcome='slow';

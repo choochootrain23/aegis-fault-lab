@@ -77,6 +77,16 @@ function detailView(e){
   const quotas=(result.quotas||[]).length?`<table class="config-table"><thead><tr><th>Caller</th><th>Quota now</th><th>Deployed</th></tr></thead><tbody>${result.quotas.map(q=>`<tr class="${q.changed?'drifted':''}"><td>${esc(q.client)}</td><td>${esc(q.limit_rps)}/s${q.changed?' <b>≠</b>':''}</td><td>${esc(q.deployed_rps)}/s</td></tr>`).join('')}</tbody></table><p class="waterfall-head">Quotas set by ${esc(result.quota_source?.pushed_by||'unknown')}${result.quota_source?.at?' at '+new Date(result.quota_source.at*1000).toLocaleTimeString():''} · callers without a quota are not limited</p>`:'<p class="waterfall-head">This service enforces no per-caller quotas</p>';
   return `<table class="config-table"><thead><tr><th>Caller · last ${esc(result.window_s)} s</th><th>Requests</th><th>Rejected (429)</th><th>Errors</th></tr></thead><tbody>${callers}</tbody></table>${quotas}`;
  }
+ if(e.kind==='releases'&&Array.isArray(result?.history)){
+  return `<table class="config-table"><thead><tr><th>Version</th><th>Deployed by</th><th>When</th><th>Note</th></tr></thead><tbody>${result.history.map((h,i)=>`<tr class="${h.version===result.running&&i>0?'drifted':''}"><td>${esc(h.version)}${h.version===result.running&&i===result.history.length-1?' <b>running</b>':''}</td><td>${esc(h.by)}</td><td>${h.at?new Date(h.at*1000).toLocaleTimeString():''}</td><td>${esc(h.note||'')}</td></tr>`).join('')}</tbody></table><p class="waterfall-head">This process started ${esc(Math.round(result.uptime_s))} s ago · history is kept per process</p>`;
+ }
+ if(e.kind==='memory'){
+  const m=result||{}, exit=`Container ${esc(e.body.status||'unknown')}${e.body.exit_code!=null?' · last exit code '+esc(e.body.exit_code):''}${e.body.oom_killed?' · <b>killed for running out of memory</b>':''}`;
+  if(!Array.isArray(m.samples))return `<p class="waterfall-head">${exit}</p>`;
+  const limit=m.limit_mib||Math.max(...m.samples.map(s=>s.mib)), span=Math.max(...m.samples.map(s=>s.age_s),1);
+  const points=m.samples.map(s=>`${(100-s.age_s/span*100).toFixed(1)},${(40-Math.min(1,s.mib/limit)*38).toFixed(1)}`).join(' ');
+  return `<div class="waterfall"><p class="waterfall-head">${exit}</p><p class="waterfall-head">Memory ${esc(m.current_mib)} of ${esc(m.limit_mib)} MiB${m.growth_mib_s!=null?' · growing '+esc(m.growth_mib_s)+' MiB/s':''} · release ${esc(m.version)} · up ${esc(Math.round(m.uptime_s))} s</p><svg class="memory-trend" viewBox="0 0 100 42" preserveAspectRatio="none" role="img" aria-label="Memory over the last ${esc(Math.round(span))} seconds, against the limit"><line class="memory-limit" x1="0" y1="2" x2="100" y2="2"/><polyline points="${points}"/></svg></div>`;
+ }
  if(e.kind==='config'&&Array.isArray(result?.settings)){
   return `<table class="config-table"><thead><tr><th>Setting</th><th>Running</th><th>Deployed</th></tr></thead><tbody>${result.settings.map(s=>`<tr class="${s.drifted?'drifted':''}"><td>${esc(s.key)}</td><td>${esc(s.value)}${s.drifted?' <b>≠</b>':''}</td><td>${esc(s.deployed)}</td></tr>`).join('')}</tbody></table>`;
  }

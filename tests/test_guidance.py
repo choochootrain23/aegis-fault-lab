@@ -220,3 +220,49 @@ def test_zero_quota_supports_resetting_client_quotas():
 def test_healthy_traffic_supports_no_quota_action():
     traffic=observation('catalog-b','traffic',result={'quotas':[{'client':'gateway-a','limit_rps':20,'deployed_rps':20}],'clients':[]})
     assert 'No fresh inspection yet supports' in explain({('catalog-b','traffic'):traffic},'action',now=101)['message']
+
+
+def test_a_gateways_own_500_points_at_its_release_history():
+    latest={('gateway-c','liveness'):observation('gateway-c','liveness'),
+            ('gateway-c','business'):observation('gateway-c','business',False,http_status=500,result={'error':'TypeError','version':'v1.5.0'})}
+    result=explain(latest,'hint',now=101)
+    assert result['suggested_check']=={'node':'gateway-c','kind':'releases'} and 'v1.5.0' in result['message']
+
+
+def test_a_catalogue_code_error_points_at_releases_not_config():
+    latest={('gateway-a','liveness'):observation('gateway-a','liveness'),
+            ('gateway-a','business'):observation('gateway-a','business',False,result={'upstream_status':500,'upstream_error':'TypeError'})}
+    assert explain(latest,'evidence',now=101)['suggested_check']=={'node':'catalog-b','kind':'releases'}
+
+
+def test_an_out_of_memory_stop_does_not_recommend_starting():
+    service=observation('catalog-b','service',running=False,oom_killed=True,exit_code=137)
+    result=explain({('catalog-b','service'):service},'action',now=101)
+    assert 'OOMKilled' in result['message'] and 'You can try starting' not in result['message']
+    assert result['suggested_check']=={'node':'catalog-b','kind':'memory'}
+
+
+def test_a_growing_memory_trend_supports_rolling_back():
+    memory=observation('catalog-b','memory',running=True,oom_killed=False,result={'growth_mib_s':11.8,'current_mib':130.2,'limit_mib':192.0,'version':'v1.5.1'})
+    result=explain({('catalog-b','memory'):memory},'action',now=101)
+    assert 'rolling back the release' in result['message'] and '11.8 MiB a second' in result['message'] and 'v1.5.1' in result['message']
+    steady=observation('catalog-b','memory',running=True,oom_killed=False,result={'growth_mib_s':0.1,'current_mib':45.0,'limit_mib':192.0})
+    assert 'No fresh inspection yet supports' in explain({('catalog-b','memory'):steady},'action',now=101)['message']
+
+
+def test_a_release_after_boot_supports_rolling_back():
+    releases=observation('gateway-a','releases',result={'running':'v1.5.0','history':[{'version':'v1.4.2','by':'deployment'},{'version':'v1.5.0','by':'release-bot'}]})
+    result=explain({('gateway-a','releases'):releases},'action',now=101)
+    assert 'rolling back the release' in result['message'] and 'release-bot' in result['message']
+    unchanged=observation('gateway-a','releases',result={'running':'v1.4.2','history':[{'version':'v1.4.2','by':'deployment'}]})
+    assert 'No fresh inspection yet supports' in explain({('gateway-a','releases'):unchanged},'action',now=101)['message']
+
+
+def test_cpu_at_the_limit_just_after_a_restart_is_not_called_starvation():
+    from datetime import datetime, timezone
+    started=datetime.fromtimestamp(95,timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.123456789Z')
+    booting=observation('gateway-a','resources',cpu_pct_of_limit=100.0,cpu_limit=0.25,started_at=started)
+    result=explain({('gateway-a','resources'):booting},'action',now=101)
+    assert 'stopping the runaway job' not in result['message'] and 'boots' in result['message']
+    long_running=observation('gateway-a','resources',cpu_pct_of_limit=100.0,cpu_limit=0.25,started_at='0001-01-01T00:00:00Z')
+    assert 'stopping the runaway job' in explain({('gateway-a','resources'):long_running},'action',now=101)['message']

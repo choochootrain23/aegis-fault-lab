@@ -18,6 +18,9 @@ def service(tmp_path, monkeypatch):
     fleet.config.update(fleet.DEPLOYED)
     fleet.quota.update(fleet.QUOTA_DEPLOYED)
     fleet.TRAFFIC.clear()
+    fleet.leak_stop.set()
+    fleet.leak_store.clear()
+    fleet.release.update(version=fleet.STABLE, history=[{'version': fleet.STABLE, 'at': 0.0, 'by': 'deployment', 'note': 'stable build'}])
 
     async def call(method, path, **kwargs):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=fleet.app), base_url='http://catalog-b') as client:
@@ -153,3 +156,46 @@ def test_network_report_reads_loss_and_retransmissions(service, monkeypatch):
     assert first['tcp']['since'] == 'process start' and first['tcp']['retrans_pct'] == 10.0
     second = service('GET', '/diagnostics/network').json()['tcp']
     assert second == {'available': True, 'since': 'previous network check', 'interval_s': 5.0, 'out_segs': 400, 'retrans_segs': 100, 'retrans_pct': 25.0}
+
+
+def test_bad_release_fails_business_requests_until_rolled_back(service, monkeypatch):
+    assert service('POST', '/maintenance/ship').status_code == 403
+    assert service('POST', '/maintenance/ship', headers=TOKEN).json() == {'changed': True, 'version': 'v1.5.0'}
+    assert service('POST', '/maintenance/ship', headers=TOKEN).json()['changed'] is False
+    monkeypatch.setattr(fleet.random, 'random', lambda: 0.1)
+    failed = service('GET', '/catalog')
+    assert failed.status_code == 500 and failed.json()['error'] == 'TypeError' and failed.json()['version'] == 'v1.5.0'
+    monkeypatch.setattr(fleet.random, 'random', lambda: 0.9)
+    assert service('GET', '/catalog').status_code == 200  # about half still work
+    assert service('GET', '/live').json()['version'] == 'v1.5.0'
+    history = service('GET', '/diagnostics/releases').json()
+    assert history['running'] == 'v1.5.0' and [h['by'] for h in history['history']] == ['deployment', 'release-bot']
+    # Nothing in the running config changed, so restoring it does nothing.
+    assert service('POST', '/maintenance/restore', headers=TOKEN).json()['changed'] is False
+    assert service('POST', '/maintenance/rollback', headers=TOKEN).json() == {'changed': True, 'from': 'v1.5.0'}
+    assert service('POST', '/maintenance/rollback', headers=TOKEN).json()['changed'] is False
+    monkeypatch.setattr(fleet.random, 'random', lambda: 0.1)
+    assert service('GET', '/catalog').status_code == 200
+
+
+def test_leaky_release_grows_memory_and_rollback_frees_it(service, monkeypatch):
+    import time
+    monkeypatch.setattr(fleet, 'LEAK_MIB_S', 200)
+    monkeypatch.setattr(fleet, 'LEAK_CAP_MIB', 20)
+    deployed = service('POST', '/maintenance/leak', headers={**TOKEN, 'X-Aegis-Actor': 'deploy-controller'}).json()
+    assert deployed == {'changed': True, 'version': 'v1.5.1'}
+    for _ in range(50):
+        if len(fleet.leak_store) >= 20:
+            break
+        time.sleep(0.02)
+    assert len(fleet.leak_store) == 20  # the cap holds, whatever the container limit
+    assert service('GET', '/diagnostics/releases').json()['history'][-1]['by'] == 'deploy-controller'
+    report = service('GET', '/diagnostics/memory').json()
+    assert report['version'] == 'v1.5.1' and report['current_mib'] > 0 and 'oom_kills' in report
+    assert service('POST', '/maintenance/rollback', headers=TOKEN).json()['changed'] is True
+    assert fleet.leak_store == [] and fleet.leak_stop.is_set()
+
+
+def test_unknown_deployers_are_recorded_as_the_release_pipeline(service):
+    service('POST', '/maintenance/ship', headers={**TOKEN, 'X-Aegis-Actor': 'someone; rm -rf /'})
+    assert service('GET', '/diagnostics/releases').json()['history'][-1]['by'] == 'release-bot'

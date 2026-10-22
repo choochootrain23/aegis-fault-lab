@@ -29,28 +29,35 @@ CONNECT_LIMIT_S = 3  # how long one network-path connection attempt may take
 PROBE = {'X-Aegis-Client': 'controller'}  # how the controller's checks identify themselves to the services
 NODES = {'gateway-a': 'http://gateway-a:8000', 'catalog-b': 'http://catalog-b:8000', 'gateway-c': 'http://gateway-c:8000'}
 CHECKS = {'liveness': '/live', 'readiness': '/ready', 'business': '/summary', 'logs': '/diagnostics/logs', 'disk': '/diagnostics/disk',
-          'config': '/diagnostics/config', 'trace': '/diagnostics/trace', 'traffic': '/diagnostics/traffic'}
+          'config': '/diagnostics/config', 'trace': '/diagnostics/trace', 'traffic': '/diagnostics/traffic', 'releases': '/diagnostics/releases'}
 BROKER_CHECKS = {'service': 'inspect', 'resources': 'resources'}
 TERMINAL = {'ended'}
 # Each fault kind: the injection verb and the remedy that reverses it.
 FAULTS = {'service-unavailable': ('stop', 'start'), 'cpu-starvation': ('burn', 'calm'), 'disk-full': ('fill', 'clear'),
           'config-drift': ('drift', 'restore'), 'network-delay': ('delay', 'undelay'), 'packet-loss': ('drop', 'undrop'),
-          'quota-zero': ('squeeze', 'requota')}
+          'quota-zero': ('squeeze', 'requota'), 'bad-release': ('ship', 'rollback'), 'memory-leak': ('leak', 'rollback')}
+# Release faults start a rollout: a deploy controller keeps the new version running, restarting the service and
+# re-applying the release after a crash, until someone rolls back. This is how an orchestrator behaves.
+ROLLOUTS = {'bad-release': ('ship', 'v1.5.0'), 'memory-leak': ('leak', 'v1.5.1')}
+ROLLBACK_ATTEMPTS = 6  # one-second tries to roll back a target that is booting or being killed
+ROLLOUT_BACKOFF_CYCLES = 3  # health cycles (6 s) a crashed service stays down before the deploy controller restarts it
 # Faults that only exist on some services; every other fault can target any of the three.
 FAULT_TARGETS = {'quota-zero': ('catalog-b',)}
 REMEDIES = {remedy for _, remedy in FAULTS.values()}
-NODE_VERBS = {'fill', 'clear', 'burn', 'calm', 'drift', 'restore', 'squeeze', 'requota'}  # applied through the service's token-protected maintenance endpoint
+NODE_VERBS = {'fill', 'clear', 'burn', 'calm', 'drift', 'restore', 'squeeze', 'requota', 'ship', 'leak'}  # applied through the service's token-protected maintenance endpoint
 DETECT_FAILING = 3     # failing cycles among the last DETECT_WINDOW that open an investigation
 DETECT_WINDOW = 5
 VERIFY_STREAK = 3      # consecutive healthy cycles that verify recovery or reset
-FLAPPING_STREAK = 10   # required instead once failures have come and gone twice, so a lucky run cannot pass a wrong fix
+FLAPPING_STREAK = 10   # required instead once failures have come and gone on their own, so a lucky run cannot pass a wrong fix
 UNCHANGED = {'start': 'Already running; nothing changed', 'stop': 'Already stopped; nothing changed',
              'calm': 'No background job running; nothing changed', 'burn': 'A background job was already running; nothing changed',
              'clear': 'No filler file present; nothing changed', 'fill': 'Nothing changed',
              'restore': 'Running config already matches the deployed settings; nothing changed', 'drift': 'Setting already overridden; nothing changed',
              'undelay': 'No network delay present; nothing changed', 'delay': 'Network delay already present; nothing changed',
              'undrop': 'No packet loss present; nothing changed', 'drop': 'Packet loss already present; nothing changed',
-             'requota': 'Quotas already match the deployed limits; nothing changed', 'squeeze': 'Quotas already at zero; nothing changed'}
+             'requota': 'Quotas already match the deployed limits; nothing changed', 'squeeze': 'Quotas already at zero; nothing changed',
+             'rollback': 'Already running the stable release; nothing changed', 'ship': 'Release already deployed; nothing changed',
+             'leak': 'Release already deployed; nothing changed'}
 DEBRIEFS = {
     'service-unavailable': 'The scenario requested stopping {target}. When that succeeds, its container state reads stopped and its own probes fail. When the catalogue stops, both gateways stay live but their business requests fail, so the failure spreads; when one gateway stops, the catalogue and the other gateway stay healthy, so it does not. Starting the stopped service restores the request path.',
     'cpu-starvation': 'The scenario requested a runaway background job inside {target}. When that succeeds, the service keeps running and answering, but slowly: the job uses the container\'s whole 0.25-CPU limit, the kernel throttles it, and requests queue behind it, crossing the {slow} ms threshold. Its log records the job starting. A slow catalogue makes both gateways slow, and sometimes time out, too. Stopping the job returns normal latency.',
@@ -58,6 +65,8 @@ DEBRIEFS = {
     'config-drift': 'The scenario requested a bad runtime configuration reload on {target}. When that succeeds, the process stays live and its container keeps running, so liveness, container state, CPU and disk all look normal. On a gateway, the upstream address points at a port nothing listens on, so every business request fails to connect, which looks like a stopped catalogue until the catalogue is checked directly. On the catalogue, the data source points at a dataset that was never deployed, so its business requests fail with HTTP 500 and both gateways\' fail with them. The running config shows the drifted setting next to its deployed value, and the log records the reload. Restoring the deployed config fixes it.',
     'packet-loss': 'The scenario requested dropping {loss}% of the packets leaving {target}, applied with a Linux netem queue inside its own network namespace. Real links already hurt at 1 to 2% loss; the lab exaggerates it so the effect shows within a minute. When that succeeds, the process stays live and its CPU, disk and config stay normal, but TCP must resend every lost packet after a timeout of at least 200 ms. So the same request is sometimes instant, sometimes about 200 ms or 600 ms late, and sometimes fails when a lost connection setup or reply outlasts the gateways\' 1-second upstream timeout. A lossy catalogue makes both gateways fail intermittently; a lossy gateway affects only itself. Because failures come and go, recovery has to hold for ten healthy cycles rather than three. The network path check shows the netem loss setting and a high share of retransmitted TCP segments, and some connection attempts take about a second while a lost handshake is resent. Removing the packet loss, or restarting the container, restores reliable requests.',
     'quota-zero': 'The scenario requested a quota push that set both gateways\' request quotas on {target} to zero, as a faulty quota system might. Quotas are enforced by the shared catalogue for each named caller and come from the quota system, not the service\'s own config. When that succeeds, the catalogue is up, fast and idle, and its own checks pass, because the controller\'s health probes have no quota: the monitoring is green while every gateway request is refused with HTTP 429. Both gateways stay live but fail every business request. The running config matches what was deployed, so restoring config changes nothing; the traffic check shows each gateway\'s requests rejected against a limit of 0 per second, and the log records the quota push. Resetting the client quotas restores service.',
+    'bad-release': 'The scenario requested a rollout of release v1.5.0 to {target}, whose new price-conversion code fails about half of business requests with a TypeError (HTTP 500). The process stays live and its container, CPU, disk, network and running config all look normal: nothing about the machine changed, only the code. A bad catalogue release fails about half of both gateways\' requests with an upstream 500, which looks like a drifted catalogue config until the config is found unchanged; a bad gateway release affects only that gateway. Because failures come and go, recovery has to hold for ten healthy cycles. Release history shows v1.5.0 deployed moments before the errors began, and the log records each TypeError with the version. Rolling back to v1.4.2 restores service; restoring config changes nothing.',
+    'memory-leak': 'The scenario requested a rollout of release v1.5.1 to {target}, whose background cache warmer keeps everything it loads, about 12 MiB a second. When that succeeds, the service works normally while its memory climbs, until it reaches the container\'s 192 MiB limit and the kernel kills it (OOMKilled, exit code 137). The rollout\'s deploy controller then restarts it after a few seconds and re-applies v1.5.1, as an orchestrator would, so the service crash-loops: healthy, then down, then healthy again. Starting it by hand only begins the next loop. While it is down a stopped catalogue fails both gateways\' requests and a stopped gateway only its own. The memory check shows memory growing about 12 MiB a second towards the limit and the last exit as an OOM kill; release history shows v1.5.1 re-deployed after every restart. Rolling back to v1.4.2 stops the leak and keeps it stopped.',
     'network-delay': 'The scenario requested a {delay} ms delay on all traffic leaving {target}, applied with a Linux netem queue inside its own network namespace. When that succeeds, the process stays live and its CPU and disk stay normal, but everything it sends waits in the queue: its own checks take about {delay} ms longer. A delayed catalogue slows both gateways\' requests by the same amount; a delayed gateway pays the delay twice, on its call to the catalogue and on its reply, while the catalogue and the other gateway stay fast. Requests still succeed, because each wait stays under the gateways\' 1-second upstream timeout. The network path check shows TCP connections taking about {delay} ms and the netem queue itself, and a request trace shows a fast handler with the time spent outside it. Removing the delay, or restarting the container, restores normal latency.',
 }
 
@@ -67,9 +76,9 @@ def debrief(s):
     return (text + ' Injection outcome: ' + s.get('fault_action', {}).get('status', 'not recorded') + '. The action record explains the exercise but was not evidence available during the investigation. Other evidence-supported investigation orders are valid.')
 
 
-FaultKind = Literal['service-unavailable', 'cpu-starvation', 'disk-full', 'config-drift', 'network-delay', 'packet-loss', 'quota-zero']
+FaultKind = Literal['service-unavailable', 'cpu-starvation', 'disk-full', 'config-drift', 'network-delay', 'packet-loss', 'quota-zero', 'bad-release', 'memory-leak']
 NodeName = Literal['gateway-a', 'catalog-b', 'gateway-c']
-CheckKind = Literal['liveness', 'readiness', 'business', 'logs', 'service', 'resources', 'disk', 'config', 'trace', 'network', 'traffic']
+CheckKind = Literal['liveness', 'readiness', 'business', 'logs', 'service', 'resources', 'disk', 'config', 'trace', 'network', 'traffic', 'releases', 'memory']
 
 
 class Input(BaseModel):
@@ -98,7 +107,7 @@ class Action(SessionInput):
 
 
 class Recover(Action):
-    verb: Literal['start', 'calm', 'clear', 'restore', 'undelay', 'undrop', 'requota'] = 'start'
+    verb: Literal['start', 'calm', 'clear', 'restore', 'undelay', 'undrop', 'requota', 'rollback'] = 'start'
 
 
 class Note(SessionInput):
@@ -178,6 +187,8 @@ class Lab:
         try:
             if kind == 'network':
                 body = await self.network_path(node)
+            elif kind == 'memory':
+                body = await self.memory(node)
             elif kind in BROKER_CHECKS:
                 body = {'ok': True, **await self.broker(node, BROKER_CHECKS[kind])}
                 body.pop('changed', None)
@@ -199,7 +210,7 @@ class Lab:
             body = {'ok': False, 'error': type(error).__name__, 'detail': 'Check unavailable or failed',
                     'duration_ms': round((time.monotonic() - started) * 1000, 1)}
         body['origin'] = origin
-        if kind in BROKER_CHECKS and body.get('generation'):
+        if (kind in BROKER_CHECKS or kind == 'memory') and body.get('generation'):
             body['generation_scope'] = 'container'
         elif isinstance(body.get('result'), dict) and body['result'].get('generation'):
             body['process_generation'] = body['result']['generation']
@@ -239,6 +250,18 @@ class Lab:
         return {'ok': response.is_success, 'http_status': response.status_code, 'connect_ms': samples, 'connect_timeouts': timeouts,
                 'median_connect_ms': sorted(samples)[1], 'result': response.json()}
 
+    async def memory(self, node):
+        """How the container last exited (from Docker, through the broker) and, while it runs, its memory trend."""
+        inspected = await self.broker(node, 'inspect')
+        body = {'ok': True, **{k: inspected.get(k) for k in ('generation', 'running', 'status', 'exit_code', 'oom_killed', 'started_at', 'finished_at')}}
+        if inspected.get('running'):
+            try:
+                response = await self.client.get(self.nodes[node] + '/diagnostics/memory', headers=PROBE, timeout=3)
+                body.update(http_status=response.status_code, result=response.json())
+            except (httpx.HTTPError, ValueError) as error:
+                body['service_error'] = type(error).__name__  # the container runs but the process did not answer
+        return body
+
     def persistence_budget(self):
         usage = self.store.storage()
         if usage['live_bytes'] >= usage['live_limit_bytes'] or usage['wal_bytes'] >= usage['wal_limit_bytes']:
@@ -268,11 +291,16 @@ class Lab:
                 s['status'] = 'investigating'
                 s['detected_at'] = time.time()
                 s['verification'] = 'Repeated failures observed; investigate the evidence'
-            # Once failures have come and gone twice, three healthy cycles can be luck: require a longer run.
+            # Once failures have come and gone on their own, three healthy cycles can be luck: require a longer run.
+            # The first recovery after a fix may be the fix working, so it does not count; later ones do.
             if recovered_cycle and s['status'] in ('observing', 'investigating', 'verifying'):
-                s['flaps'] = s.get('flaps', 0) + 1
-                if s['flaps'] >= 2 and s.get('required_streak', VERIFY_STREAK) < FLAPPING_STREAK:
+                if s['status'] == 'verifying' and not s.get('settled_since_fix'):
+                    s['settled_since_fix'] = True
+                else:
+                    s['flaps'] = s.get('flaps', 0) + 1
                     s['required_streak'] = FLAPPING_STREAK
+            if s.get('rollout') and s['status'] in ('observing', 'investigating', 'verifying'):
+                await self.reconcile_rollout(s, results)
             needed = VERIFY_STREAK if s['status'] == 'resetting' else s.get('required_streak', VERIFY_STREAK)
             if s['status'] in ('verifying', 'resetting') and self.successes >= needed:
                 if s['status'] == 'resetting':
@@ -299,7 +327,7 @@ class Lab:
         s = s or self.session
         if not s:
             return None
-        result = {k: v for k, v in s.items() if k not in ('fault_target', 'fault_kind', 'fault_action', 'start_key', 'reset_key', 'extensions')}
+        result = {k: v for k, v in s.items() if k not in ('fault_target', 'fault_kind', 'fault_action', 'start_key', 'reset_key', 'extensions', 'rollout')}
         if s['mode'] == 'practice' or s.get('revealed') or s['status'] == 'ended':
             result['scenario'] = {'kind': s['fault_kind'], 'target': s['fault_target']}
             if s.get('revealed') or s['status'] == 'ended':
@@ -414,9 +442,10 @@ class Lab:
         ids.extend(session.get('reset_evidence_ids', []))
         return list(dict.fromkeys(ids))
 
-    async def maintenance(self, node, verb):
+    async def maintenance(self, node, verb, actor=None):
+        headers = {'X-Aegis-Fleet-Token': self.fleet_token, **({'X-Aegis-Actor': actor} if actor else {})}
         try:
-            response = await self.client.post(self.nodes[node] + '/maintenance/' + verb, headers={'X-Aegis-Fleet-Token': self.fleet_token}, timeout=10)
+            response = await self.client.post(self.nodes[node] + '/maintenance/' + verb, headers=headers, timeout=10)
             response.raise_for_status()
             return response.json()
         except (httpx.HTTPError, ValueError) as error:
@@ -433,7 +462,9 @@ class Lab:
         sid = self.session['id'] if self.session else None
         self.store.save_action(key, sid, request, {'status': 'running', 'node': node, 'verb': verb})
         try:
-            if verb in NODE_VERBS:
+            if verb == 'rollback':
+                result = await self.rollback(node)
+            elif verb in NODE_VERBS:
                 result = await self.maintenance(node, verb)
             else:
                 target = await self.broker(node, 'inspect')
@@ -447,6 +478,51 @@ class Lab:
             body = {'status': 'unknown', 'node': node, 'verb': verb, 'detail': 'Inspect actual state before retrying; completion was not confirmed'}
         self.store.save_action(key, sid, request, body)
         return body
+
+    async def rollback(self, node):
+        """Return a service to the stable release. Ending its rollout stops the deploy controller re-applying the new
+        version; a service it left crashed is started again on the stable build, as the deploy system would."""
+        rollout = (self.session or {}).get('rollout')
+        if not rollout or rollout['node'] != node:
+            inspected = await self.broker(node, 'inspect')
+            return await self.maintenance(node, 'rollback') if inspected['running'] else {'changed': False}
+        self.session.pop('rollout')
+        # A crash-looping target may be down, booting or about to be killed: keep at it for a few seconds until it is
+        # either started afresh (which boots the stable build) or its running process has rolled back.
+        for attempt in range(ROLLBACK_ATTEMPTS):
+            inspected = await self.broker(node, 'inspect')
+            if not inspected['running']:
+                await self.broker(node, 'start', inspected['generation'])
+                return {'changed': True, 'restarted_on_stable': True}
+            try:
+                return {**await self.maintenance(node, 'rollback'), 'changed': True}
+            except HTTPException:
+                if attempt == ROLLBACK_ATTEMPTS - 1:
+                    raise
+                await asyncio.sleep(1)
+
+    async def reconcile_rollout(self, s, results):
+        """The deploy controller of an active rollout: re-apply the release to a fresh process, and restart a crashed
+        service after a short back-off. Real effects through the same broker and maintenance operations as everything else."""
+        rollout = s['rollout']
+        node = rollout['node']
+        live = next(e for e in results if e['node'] == node and e['kind'] == 'liveness')
+        try:
+            if live['body']['ok']:
+                rollout.pop('down_cycles', None)
+                if (live['body'].get('result') or {}).get('version') != rollout['version']:
+                    await self.maintenance(node, rollout['verb'], actor='deploy-controller')
+                return
+            inspected = await self.broker(node, 'inspect')
+            if inspected['running']:
+                return
+            rollout['down_cycles'] = rollout.get('down_cycles', 0) + 1
+            if rollout['down_cycles'] >= ROLLOUT_BACKOFF_CYCLES:
+                await self.broker(node, 'start', inspected['generation'])
+                rollout['restarts'] = rollout.get('restarts', 0) + 1
+                rollout.pop('down_cycles')
+        except HTTPException:
+            pass  # the next cycle tries again; a deploy controller never blocks health collection
 
     async def start(self, data):
         async with self.lock:
@@ -480,6 +556,8 @@ class Lab:
             self.store.save(self.session)
             result = await self.mutate(data.key, target, FAULTS[kind][0])
             self.session['fault_action'] = result
+            if kind in ROLLOUTS and result['status'] == 'succeeded':
+                self.session['rollout'] = {'node': target, 'verb': ROLLOUTS[kind][0], 'version': ROLLOUTS[kind][1]}
             if result['status'] != 'succeeded':
                 self.session['status'] = 'investigating'
                 self.session['verification'] = 'Injection outcome uncertain; inspect fleet or reset'
@@ -607,6 +685,7 @@ async def recover(data: Recover):
         if not any(a['key'] == data.key for a in lab.session['recovery_attempts']):
             lab.session['recovery_attempts'].append({'key': data.key, 'at': time.time(), **result})
             lab.session['status'] = 'verifying'
+            lab.session['settled_since_fix'] = False
             lab.session['verification'] = 'Waiting for fresh measured recovery; an accepted action is not proof'
             lab.successes = 0
         lab.store.save(lab.session)

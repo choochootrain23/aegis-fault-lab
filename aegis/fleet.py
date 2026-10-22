@@ -3,6 +3,7 @@ import errno
 import hmac
 import os
 import json
+import random
 import re
 import subprocess
 import threading
@@ -48,10 +49,43 @@ quota_source = {'pushed_by': 'deployment', 'at': time.time()}
 TRAFFIC = deque(maxlen=4000)  # (at, client, status) for business requests, newest last
 TRAFFIC_WINDOW_S = 60
 tcp_last = None  # TCP counters at the previous network check, so retransmissions are reported per interval
+# Releases. Every process boots on the stable build; the release faults deploy a newer one in place, as a rollout
+# would, and rollback returns to the stable build. Only these fixed versions exist.
+STABLE = 'v1.4.2'
+RELEASE_NOTES = {STABLE: 'stable build', 'v1.5.0': 'faster catalogue lookups', 'v1.5.1': 'warm the item cache in the background'}
+BAD_RELEASE = 'v1.5.0'       # a code path that fails about half of business requests
+LEAKY_RELEASE = 'v1.5.1'     # a cache warmer that never frees what it loads
+BAD_RELEASE_FAILURE = 0.5
+LEAK_MIB_S = 12              # how fast the leaky build grows; the container's 192 MiB limit stops it within seconds
+LEAK_CAP_MIB = 512           # never hold more than this, whatever the limit
+release = {'version': STABLE, 'history': [{'version': STABLE, 'at': time.time(), 'by': 'deployment', 'note': RELEASE_NOTES[STABLE]}]}
+leak_store = []
+leak_stop = threading.Event()
+MEMORY = deque(maxlen=31)    # (at, bytes) sampled every 2 seconds from this container's cgroup
+
+
+def cgroup_memory():
+    """This container's memory use, limit and OOM-kill count, from its own cgroup (read-only)."""
+    root = Path('/sys/fs/cgroup')
+    try:
+        current = int((root / 'memory.current').read_text())
+        limit = (root / 'memory.max').read_text().strip()
+        events = dict(line.split() for line in (root / 'memory.events').read_text().splitlines())
+        return current, None if limit == 'max' else int(limit), int(events.get('oom_kill', 0))
+    except (OSError, ValueError):
+        rss = next((int(line.split()[1]) * 1024 for line in Path('/proc/self/status').read_text().splitlines() if line.startswith('VmRSS:')), 0)
+        return rss, None, None
+
+
+def sample_memory():
+    while True:
+        MEMORY.append((time.time(), cgroup_memory()[0]))
+        time.sleep(2)
 
 
 @asynccontextmanager
 async def lifespan(app):
+    threading.Thread(target=sample_memory, name='memory-sampler', daemon=True).start()
     async with httpx.AsyncClient(timeout=1, trust_env=False) as client:
         app.state.client = client
         yield
@@ -94,7 +128,17 @@ def storage_failure(error, started):
 
 @app.get('/live')
 async def live():
-    return {'live': True, 'role': ROLE, 'generation': BOOT}
+    return {'live': True, 'role': ROLE, 'generation': BOOT, 'version': release['version']}
+
+
+def release_failure(started):
+    """The bad release's broken code path: about half of business requests fail inside the service."""
+    if release['version'] != BAD_RELEASE or random.random() >= BAD_RELEASE_FAILURE:
+        return None
+    result = {'ok': False, 'error': 'TypeError', 'detail': "unsupported operand type(s) for *: 'NoneType' and 'float'", 'path': 'price conversion',
+              'version': release['version'], 'generation': BOOT, 'duration_ms': round((time.monotonic() - started) * 1000, 1)}
+    LOGS.append({'at': time.time(), **result})
+    return JSONResponse(result, status_code=500)
 
 
 def load_catalogue():
@@ -122,6 +166,8 @@ async def catalog(x_aegis_client: str = Header(default='unidentified')):
                   'detail': 'per-client request quota exhausted', 'generation': BOOT, 'duration_ms': round((time.monotonic() - started) * 1000, 1)}
         LOGS.append({'at': time.time(), **result})
         return JSONResponse(result, status_code=429)
+    if (failure := release_failure(started)):
+        return failure
     try:
         items = load_catalogue()
     except (OSError, ValueError, KeyError) as error:
@@ -138,6 +184,8 @@ async def catalog(x_aegis_client: str = Header(default='unidentified')):
 
 async def dependency():
     started = time.monotonic()
+    if (failure := release_failure(started)):
+        return failure
     correlation = str(uuid.uuid4())
     try:
         response = await app.state.client.get(config['upstream'] + '/catalog', headers={'X-Correlation-ID': correlation, 'X-Aegis-Client': NAME},
@@ -255,6 +303,28 @@ def retransmissions():
 @app.get('/diagnostics/network')
 async def network():
     return {**read_qdiscs(), 'tcp': retransmissions(), 'generation': BOOT}
+
+
+@app.get('/diagnostics/releases')
+async def releases():
+    """The running version and this process's deployment history, newest last."""
+    return {'running': release['version'], 'note': RELEASE_NOTES[release['version']], 'history': release['history'][-10:],
+            'uptime_s': round(time.time() - release['history'][0]['at'], 1), 'generation': BOOT}
+
+
+@app.get('/diagnostics/memory')
+async def memory():
+    """Memory against the container limit, the last minute of samples and how fast it is growing."""
+    current, limit, oom_kills = cgroup_memory()
+    now = time.time()
+    samples = list(MEMORY) + [(now, current)]
+    recent = [(at, used) for at, used in samples if now - at <= 20]
+    span = recent[-1][0] - recent[0][0] if len(recent) > 1 else 0
+    growth = (recent[-1][1] - recent[0][1]) / span / 2**20 if span >= 4 else None
+    return {'current_mib': round(current / 2**20, 1), 'limit_mib': round(limit / 2**20, 1) if limit else None,
+            'used_pct': round(100 * current / limit, 1) if limit else None, 'growth_mib_s': round(growth, 2) if growth is not None else None,
+            'samples': [{'age_s': round(now - at, 1), 'mib': round(used / 2**20, 1)} for at, used in samples[-30:]],
+            'oom_kills': oom_kills, 'uptime_s': round(now - release['history'][0]['at'], 1), 'version': release['version'], 'generation': BOOT}
 
 
 @app.get('/diagnostics/traffic')
@@ -422,6 +492,56 @@ async def requota(x_aegis_fleet_token: str = Header(default='')):
     quota_source = {'pushed_by': 'deployment', 'at': time.time()}
     LOGS.append({'at': time.time(), 'ok': True, 'event': 'quota policy restored', 'clients': changed, 'generation': BOOT})
     return {'changed': True, 'restored': changed}
+
+
+def deploy(version, actor):
+    previous = release['version']
+    if previous == version:
+        return False
+    release['version'] = version
+    release['history'].append({'version': version, 'at': time.time(), 'by': actor, 'note': RELEASE_NOTES[version]})
+    LOGS.append({'at': time.time(), 'ok': True, 'event': 'release deployed', 'version': version, 'previous': previous, 'by': actor, 'generation': BOOT})
+    return True
+
+
+def actor(header):
+    """Who deployed: the release pipeline's first rollout, or the deploy controller re-applying it after a restart."""
+    return header if header in ('release-bot', 'deploy-controller') else 'release-bot'
+
+
+def grow(deadline):
+    chunk = b'\x5a' * 2**20  # filled bytes, so every page is really used
+    while not leak_stop.is_set() and time.monotonic() < deadline and len(leak_store) < LEAK_CAP_MIB:
+        leak_store.append(bytearray(chunk))  # a fresh copy each time: real, resident memory
+        time.sleep(1 / LEAK_MIB_S)
+
+
+@app.post('/maintenance/ship')
+async def ship(x_aegis_fleet_token: str = Header(default=''), x_aegis_actor: str = Header(default='')):
+    """Fault injection: deploy the release with a broken code path."""
+    authorize(x_aegis_fleet_token)
+    return {'changed': deploy(BAD_RELEASE, actor(x_aegis_actor)), 'version': release['version']}
+
+
+@app.post('/maintenance/leak')
+async def leak(x_aegis_fleet_token: str = Header(default=''), x_aegis_actor: str = Header(default='')):
+    """Fault injection: deploy the release whose cache warmer leaks until the container's memory limit stops it."""
+    authorize(x_aegis_fleet_token)
+    if not deploy(LEAKY_RELEASE, actor(x_aegis_actor)):
+        return {'changed': False, 'version': release['version']}
+    leak_stop.clear()
+    threading.Thread(target=grow, args=(time.monotonic() + JOB_MAX_S,), name='cache-warmer', daemon=True).start()
+    return {'changed': True, 'version': release['version']}
+
+
+@app.post('/maintenance/rollback')
+async def rollback(x_aegis_fleet_token: str = Header(default='')):
+    """Recovery: return to the stable build, stopping and freeing anything the newer one held."""
+    authorize(x_aegis_fleet_token)
+    leak_stop.set()
+    leak_store.clear()
+    previous = release['version']
+    return {'changed': deploy(STABLE, 'rollback'), 'from': previous}
 
 
 @app.post('/maintenance/restore')

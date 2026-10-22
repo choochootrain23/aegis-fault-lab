@@ -22,6 +22,12 @@ class Fleet:
         self.lossy = {'gateway-a': False, 'catalog-b': False, 'gateway-c': False}
         self.squeezed = {'gateway-a': False, 'catalog-b': False, 'gateway-c': False}  # only the catalogue has quotas
         self.loss_tick = 0  # a lossy path repeats three failing cycles, then two working ones
+        self.version = {'gateway-a': 'v1.4.2', 'catalog-b': 'v1.4.2', 'gateway-c': 'v1.4.2'}
+        self.leaking = {'gateway-a': 0, 'catalog-b': 0, 'gateway-c': 0}  # probes since the leaky build started; 0 when not leaking
+        self.oom_killed = {'gateway-a': False, 'catalog-b': False, 'gateway-c': False}
+        self.deployers = []  # (node, version, actor) for every release deployed
+        self.release_tick = 0
+        self.booting = set()
         self.mutations = []
         self.broker_available = True
         self.log_entries = None  # set to plant entries in /diagnostics/logs
@@ -39,10 +45,13 @@ class Fleet:
             else:
                 changed = self.running[node] != (verb == 'start')
                 self.running[node] = verb == 'start'
+                if changed and verb == 'start':  # a fresh process boots on the stable build
+                    self.version[node], self.leaking[node], self.oom_killed[node] = 'v1.4.2', 0, False
             if changed:
                 self.mutations.append((node, verb))
         return httpx.Response(200, json={'target': node, 'generation': node + '-generation', 'running': self.running[node],
-                                         'status': 'running' if self.running[node] else 'exited', 'exit_code': 0, 'changed': changed,
+                                         'status': 'running' if self.running[node] else 'exited', 'changed': changed,
+                                         'exit_code': 137 if self.oom_killed[node] else 0, 'oom_killed': self.oom_killed[node],
                                          **({'cpu_limit': 0.25, 'cpu_pct_of_limit': 100.0 if self.busy[node] else 4.0} if verb == 'resources' else {})})
 
     def handle(self, request):
@@ -54,9 +63,21 @@ class Fleet:
         if not self.running[node]:
             raise httpx.ConnectError('Process stopped', request=request)
         if path.startswith('/maintenance/'):
+            if node in self.booting:  # the container runs but its process does not answer yet
+                self.booting.discard(node)
+                raise httpx.ConnectError('Process still starting', request=request)
             if request.headers.get('x-aegis-fleet-token') != 'fleet-token':
                 return httpx.Response(403)
             verb = path.rsplit('/', 1)[1]
+            if verb in ('ship', 'leak', 'rollback'):
+                version = {'ship': 'v1.5.0', 'leak': 'v1.5.1', 'rollback': 'v1.4.2'}[verb]
+                changed = self.version[node] != version
+                if changed:
+                    self.version[node] = version
+                    self.leaking[node] = 1 if verb == 'leak' else 0
+                    self.deployers.append((node, version, request.headers.get('x-aegis-actor', 'release-bot')))
+                    self.mutations.append((node, verb))
+                return httpx.Response(200, json={'changed': changed, 'version': self.version[node]})
             state = {'fill': self.full, 'clear': self.full, 'burn': self.busy, 'calm': self.busy, 'drift': self.drifted, 'restore': self.drifted,
                      'squeeze': self.squeezed, 'requota': self.squeezed}[verb]
             on = verb in ('fill', 'burn', 'drift', 'squeeze')
@@ -66,6 +87,20 @@ class Fleet:
             if changed:
                 self.mutations.append((node, path.rsplit('/', 1)[1]))
             return httpx.Response(200, json={'changed': changed})
+        if path == '/live' and self.leaking[node]:
+            self.leaking[node] += 1
+            if self.leaking[node] > 3:  # the leak reaches the memory limit and the kernel kills the process
+                self.running[node], self.oom_killed[node], self.leaking[node] = False, True, 0
+                raise httpx.ConnectError('Process killed', request=request)
+        if path == '/diagnostics/releases':
+            return httpx.Response(200, json={'running': self.version[node], 'history': [{'version': v, 'by': a} for n, v, a in self.deployers if n == node]})
+        if path == '/diagnostics/memory':
+            return httpx.Response(200, json={'current_mib': 150.0 if self.leaking[node] else 45.0, 'limit_mib': 192.0,
+                                             'growth_mib_s': 12.0 if self.leaking[node] else 0.0, 'version': self.version[node]})
+        if path == '/summary' and self.version[node] == 'v1.5.0':
+            self.release_tick += 1
+            if self.release_tick % 2:
+                return httpx.Response(500, json={'ok': False, 'error': 'TypeError', 'version': 'v1.5.0'})
         if path == '/diagnostics/logs' and self.log_entries is not None:
             return httpx.Response(200, json={'entries': self.log_entries, 'bounded_to': 200, 'truncated': False})
         if path == '/diagnostics/disk':
@@ -95,7 +130,7 @@ class Fleet:
         if slow and path in ('/live', '/summary'):
             time.sleep(0.06)  # above the test SLOW_MS
         if path == '/live':
-            return httpx.Response(200, json={'live': True})
+            return httpx.Response(200, json={'live': True, 'version': self.version[node]})
         if self.full[node]:
             return httpx.Response(507, json={'ok': False, 'errno': 'ENOSPC'})
         if self.drifted[node]:
@@ -417,8 +452,11 @@ def test_future_measurement_is_not_fresh(lab):
 
 
 async def investigate(controller):
-    for _ in range(3):
+    # Steady faults are detected in three cycles; intermittent ones and a leak that has yet to crash take longer.
+    for _ in range(20):
         await controller.cycle()
+        if controller.session['status'] == 'investigating':
+            break
     assert controller.session['status'] == 'investigating'
     return {n['id']: n['health'] for n in controller.state()['nodes']}
 
@@ -485,7 +523,7 @@ def test_challenge_hides_fault_kind_and_target(lab):
     async def scenario():
         controller, _ = lab
         seen = set()
-        for attempt in range(60):
+        for attempt in range(120):
             await baseline(controller)
             await controller.start(Start(mode='challenge', key=f'challenge-kind-{attempt:03d}'))
             public = controller.state()
@@ -494,9 +532,10 @@ def test_challenge_hides_fault_kind_and_target(lab):
             await controller.reset_locked(f'reset-kind-{attempt:03d}')
             for _ in range(3):
                 await controller.cycle()
-            if len(seen) == 7:
+            if len(seen) == 9:
                 break
-        assert seen == {'service-unavailable', 'cpu-starvation', 'disk-full', 'config-drift', 'network-delay', 'packet-loss', 'quota-zero'}
+        assert seen == {'service-unavailable', 'cpu-starvation', 'disk-full', 'config-drift', 'network-delay', 'packet-loss', 'quota-zero',
+                        'bad-release', 'memory-leak'}
     run(scenario())
 
 
@@ -782,4 +821,86 @@ def test_a_timed_out_connection_is_a_measurement_not_a_failed_check(lab, monkeyp
         controller.connect = connect
         evidence = await controller.check('catalog-b', 'network')
         assert evidence['body']['ok'] and evidence['body']['connect_timeouts'] == 1 and evidence['body']['connect_ms'][0] == 50.0
+    run(scenario())
+
+
+def test_bad_release_needs_a_rollback_not_a_config_restore(lab):
+    async def scenario():
+        controller, fleet = lab
+        await baseline(controller)
+        await controller.start(Start(mode='practice', kind='bad-release', target='gateway-a', key='start-release'))
+        assert fleet.version['gateway-a'] == 'v1.5.0' and fleet.deployers == [('gateway-a', 'v1.5.0', 'release-bot')]
+        for _ in range(6):
+            await controller.cycle()
+        assert controller.session['status'] == 'investigating' and 'rollout' not in controller.public_session()
+        releases = await controller.check('gateway-a', 'releases')
+        assert releases['body']['result']['running'] == 'v1.5.0'
+        for node, verb in (('gateway-a', 'restore'), ('catalog-b', 'rollback'), ('gateway-a', 'start')):
+            assert (await controller.mutate(f'wrong-release-{node}-{verb}', node, verb))['status'] == 'unchanged'
+        result = await verify(controller, 'rollback', 'gateway-a', 'rollback')
+        assert result['status'] == 'succeeded' and fleet.version['gateway-a'] == 'v1.4.2' and 'rollout' not in controller.session
+        for _ in range(10):
+            await controller.cycle()
+        assert controller.session['status'] == 'recovered'
+        assert 'v1.5.0' in controller.public_session(controller.session | {'revealed': True})['debrief']
+        await controller.reset_locked('reset-release')
+        assert [r['verb'] for r in controller.session['reset']['results']] == ['start', 'start', 'start', 'rollback']
+    run(scenario())
+
+
+def test_memory_leak_crash_loops_until_rolled_back(lab):
+    async def scenario():
+        controller, fleet = lab
+        await baseline(controller)
+        await controller.start(Start(mode='practice', kind='memory-leak', target='catalog-b', key='start-leak'))
+        while fleet.running['catalog-b']:
+            await controller.cycle()
+        # The leak reached the limit: the kernel killed the process, and the memory check says so.
+        memory = await controller.check('catalog-b', 'memory')
+        assert memory['body']['ok'] and memory['body']['oom_killed'] and memory['body']['exit_code'] == 137 and not memory['body']['running']
+        for _ in range(6):
+            await controller.cycle()
+        # The deploy controller restarted it and re-applied the leaky release, so it loops.
+        assert ('catalog-b', 'v1.5.1', 'deploy-controller') in fleet.deployers and controller.session['status'] == 'investigating'
+        assert controller.session['required_streak'] == 10
+        # Starting it by hand only begins the next loop, and is not credited.
+        while fleet.running['catalog-b']:
+            await controller.cycle()
+        await verify(controller, 'start-by-hand', 'catalog-b', 'start')
+        for _ in range(10):
+            await controller.cycle()
+        assert controller.session['status'] == 'verifying'
+        deploys = len(fleet.deployers)
+        result = await verify(controller, 'rollback-leak', 'catalog-b', 'rollback')
+        assert result['status'] == 'succeeded' and 'rollout' not in controller.session
+        for _ in range(10):
+            await controller.cycle()
+        assert controller.session['status'] == 'recovered' and fleet.version['catalog-b'] == 'v1.4.2'
+        assert all(v != 'v1.5.1' for _, v, _ in fleet.deployers[deploys:])
+        assert 'OOMKilled' in controller.public_session(controller.session | {'revealed': True})['debrief']
+    run(scenario())
+
+
+def test_the_first_recovery_after_a_fix_is_not_flapping(lab):
+    async def scenario():
+        controller, _ = lab
+        await baseline(controller)
+        await controller.start(Start(mode='practice', kind='disk-full', target='catalog-b', key='start-settle'))
+        await investigate(controller)
+        await verify(controller, 'clear-settle', 'catalog-b', 'clear')
+        assert controller.session['status'] == 'recovered' and controller.session.get('flaps', 0) == 0
+    run(scenario())
+
+
+def test_rollback_keeps_trying_while_the_target_boots(lab, monkeypatch):
+    async def scenario():
+        controller, fleet = lab
+        async def no_wait(seconds):
+            pass
+        monkeypatch.setattr('aegis.controller.asyncio.sleep', no_wait)
+        await baseline(controller)
+        await controller.start(Start(mode='practice', kind='bad-release', target='gateway-c', key='start-boot'))
+        fleet.booting.add('gateway-c')
+        result = await controller.mutate('rollback-boot', 'gateway-c', 'rollback')
+        assert result['status'] == 'succeeded' and fleet.version['gateway-c'] == 'v1.4.2' and 'rollout' not in controller.session
     run(scenario())

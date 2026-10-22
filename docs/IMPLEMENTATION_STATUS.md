@@ -94,10 +94,17 @@ Reports are under ignored `state/validation/`. The app is running at http://loca
 - Interface: the evidence notebook shows a **Live** or **Paused** state, a **Cite** column and the list of cited records in the diagnosis; help answers say which kind they are and offer the next check inline; the AI investigator is a card.
 - The planned scenarios are in the [scenario roadmap](scenario-roadmap.md).
 
+## Eleventh checkpoint (22 October 2026)
+
+- **Eighth fault: bad release.** A rollout deploys v1.5.0 in place of the stable v1.4.2; its new code path fails about half of business requests with a `TypeError`. A new **Release history** check shows the running version and each deploy. Remedy: **Roll back release**; restoring config changes nothing.
+- **Ninth fault: memory leak.** A rollout of v1.5.1 leaks about 12 MiB a second until the kernel kills the process at the container's 192 MiB limit. The controller acts as the rollout's deploy controller, restarting the crashed service after three missed cycles and re-applying the release, so the service crash-loops until it is rolled back. A new **Memory** check shows the last exit (with Docker's out-of-memory flag) and the memory trend. The broker now reports `OOMKilled` and start and finish times.
+- **Verification refinement.** Ten healthy cycles are required once a failure has come and gone on its own; the first recovery after a fix no longer counts, so steady faults keep three cycles and a crash loop restarted by hand cannot pass on a short run.
+- Guidance: a service's own HTTP 500 `TypeError` points at its release history; a catalogue code error points at releases rather than config; an out-of-memory stop advises checking memory instead of starting; a growing memory trend or a post-boot release supports rolling back. The simulator models both faults and the deploy controller from real measurements.
+
 ## Next work
 
-1. Roadmap step 2: a bad release on one gateway and a memory leak, with Release history and Memory & restarts checks.
-2. AI evaluation covering packet loss and quotas, and with other models.
+1. Roadmap step 3: a traffic flood from one client and a retry storm.
+2. AI evaluation covering the four newest faults, and with other models.
 3. Screen-reader review; runs measured in days.
 
 ## Boundaries preserved

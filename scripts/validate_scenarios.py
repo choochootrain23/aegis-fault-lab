@@ -21,13 +21,14 @@ ROOT = Path(__file__).resolve().parents[1]
 NODES = ('gateway-a', 'catalog-b', 'gateway-c')
 # A different node to try a wrong remedy on.
 OTHER = {'gateway-a': 'catalog-b', 'catalog-b': 'gateway-c', 'gateway-c': 'gateway-a'}
-KINDS = ('service-unavailable', 'cpu-starvation', 'disk-full', 'config-drift', 'network-delay', 'packet-loss', 'quota-zero')
+KINDS = ('service-unavailable', 'cpu-starvation', 'disk-full', 'config-drift', 'network-delay', 'packet-loss', 'quota-zero', 'bad-release', 'memory-leak')
 REMEDY = {'service-unavailable': 'start', 'cpu-starvation': 'calm', 'disk-full': 'clear', 'config-drift': 'restore', 'network-delay': 'undelay',
-          'packet-loss': 'undrop', 'quota-zero': 'requota'}
+          'packet-loss': 'undrop', 'quota-zero': 'requota', 'bad-release': 'rollback', 'memory-leak': 'rollback'}
 TARGETS = {'quota-zero': ('catalog-b',)}  # faults that only exist on some services
 # The fix for the fault each one is most easily mistaken for: it must change nothing.
-LOOKALIKE = {'packet-loss': 'undelay', 'network-delay': 'undrop', 'quota-zero': 'restore'}
-INTERMITTENT = ('cpu-starvation', 'packet-loss')  # effects that come and go from one cycle to the next
+LOOKALIKE = {'packet-loss': 'undelay', 'network-delay': 'undrop', 'quota-zero': 'restore', 'bad-release': 'restore'}
+INTERMITTENT = ('cpu-starvation', 'packet-loss', 'bad-release', 'memory-leak')
+RELEASE_FAULTS = {'v1.5.0': 'bad-release', 'v1.5.1': 'memory-leak'}  # effects that come and go from one cycle to the next
 
 
 def expected(kind, target):
@@ -80,10 +81,18 @@ def anomalies(operator):
     """Inspect every node five ways and report what the evidence shows, without the fault record."""
     found, evidence = [], {}
     for node in NODES:
-        service, resources, disk, config, network, traffic = (check(operator, node, k) for k in ('service', 'resources', 'disk', 'config', 'network', 'traffic'))
-        evidence[node] = {'service': service, 'resources': resources, 'disk': disk, 'config': config, 'network': network, 'traffic': traffic}
+        service, resources, disk, config, network, traffic, releases, memory = (
+            check(operator, node, k) for k in ('service', 'resources', 'disk', 'config', 'network', 'traffic', 'releases', 'memory'))
+        evidence[node] = {'service': service, 'resources': resources, 'disk': disk, 'config': config, 'network': network, 'traffic': traffic,
+                          'releases': releases, 'memory': memory}
         queues = network['body']['result'].get('qdiscs', []) if network['body'].get('ok') else []
-        if service['body'].get('running') is False:
+        running_release = (releases['body'].get('result') or {}).get('running') if releases['body'].get('ok') else None
+        growth = ((memory['body'].get('result') or {}).get('growth_mib_s') or 0) if memory['body'].get('ok') else 0
+        if memory['body'].get('oom_killed') or growth >= 4:
+            found.append(('memory-leak', node, memory))
+        elif running_release in RELEASE_FAULTS:
+            found.append((RELEASE_FAULTS[running_release], node, releases))
+        elif service['body'].get('running') is False:
             found.append(('service-unavailable', node, service))
         elif (resources['body'].get('cpu_pct_of_limit') or 0) >= 80:
             found.append(('cpu-starvation', node, resources))
@@ -104,12 +113,20 @@ def diagnose(operator, sid, state, mode):
     if mode == 'challenge':
         ensure('scenario' not in state['session'], 'challenge state leaked the scenario')
         ensure('fault_target' not in json.dumps(export(sid)) and 'fault_kind' not in json.dumps(export(sid)), 'challenge export leaked the fault')
-    found, _ = anomalies(operator)
+    # A crash-looping service can be between restarts with nothing yet to see, and a process that has just started
+    # uses its whole CPU limit while it boots, which is not starvation. Look again, as a learner would.
+    for _ in range(6):
+        found, evidence = anomalies(operator)
+        booting = {n for n, e in evidence.items() if e['memory']['body'].get('running')
+                   and (e['memory']['body'].get('service_error') or ((e['memory']['body'].get('result') or {}).get('uptime_s') or 99) < 15)}
+        if found and not any(k == 'cpu-starvation' and n in booting for k, n, _ in found):
+            break
+        time.sleep(4)
     ensure(len(found) == 1, f'expected exactly one anomaly, saw {[(k, n) for k, n, _ in found]}')
     kind, target, inspection = found[0]
     # Health is a per-cycle sample and CPU starvation is statistical, so judge the usual reading over several cycles.
     samples = []
-    for _ in range(10 if kind == 'packet-loss' else 5):  # about half of a lossy fleet's cycles fail, so take more samples
+    for _ in range(10 if kind in ('packet-loss', 'bad-release', 'memory-leak') else 5):  # about half their cycles fail, so take more samples
         samples.append({n['id']: n['health'] for n in operator.request('/api/state')['nodes']})
         time.sleep(2)
     # A healthy node must read healthy most of the time; an affected node must show its effect in at least two of
@@ -123,7 +140,7 @@ def diagnose(operator, sid, state, mode):
         elif kind in INTERMITTENT:
             # Starvation slows, and packet loss delays or fails, whichever request it lands on: in a given cycle that
             # may be the catalogue's own probe or only the gateways' calls through it. Judge the affected group as a whole.
-            ok = sum(any(sample[n] == 'degraded' for n in affected) for sample in samples) >= 2
+            ok = sum(any(sample[n] != 'healthy' for n in affected) for sample in samples) >= 2
         else:
             ok = readings[want[node]] >= 2
         ensure(ok, f'unexpected measured effects for {kind} on {target}: {node} expected {want[node]}, saw {dict(readings)} in {samples}')
@@ -133,8 +150,13 @@ def diagnose(operator, sid, state, mode):
     recent = [e for e in operator.request('/api/state')['evidence'] if e['node'] == watched and e['kind'] == 'business'][:10]
     affected = sum(1 for e in recent if e['body']['ok'] is False or e['body'].get('slow'))
     # Packet loss leaves most requests working, which is the point; the others mostly fail or are slow.
-    floor = len(recent) // 5 if kind == 'packet-loss' else len(recent) // 2
+    floor = len(recent) // 5 if kind in ('packet-loss', 'bad-release', 'memory-leak') else len(recent) // 2
     ensure(affected >= floor, f'gateway business requests should be affected; {affected}/{len(recent)} were')
+    # Guidance only trusts inspections from the last 30 seconds, and a full sweep plus sampling takes longer than that,
+    # so repeat the telling inspection first, as a learner would. A crash loop's evidence depends on the moment, so
+    # its original record stands.
+    if kind != 'memory-leak' and time.time() - inspection['at'] > 15:
+        inspection = check(operator, target, inspection['kind'])
     action = operator.request('/api/help', {'session_id': sid, 'level': 'action'})
     ensure(target in action['message'] and inspection['id'] in action['evidence_ids'], f'action guidance did not cite the {kind} evidence: {action["message"]}')
     note = operator.request('/api/note', {'session_id': sid, 'explanation': f'{kind} on {target}, from inspections.',
@@ -145,7 +167,9 @@ def diagnose(operator, sid, state, mode):
 
 def recover(operator, sid, kind, target):
     # A wrong node, and (while the target still runs) a wrong kind of remedy, must both change nothing.
-    wrong = [(OTHER[target], REMEDY[kind])] + ([(target, 'start')] if kind != 'service-unavailable' else []) + ([(target, LOOKALIKE[kind])] if kind in LOOKALIKE else [])
+    # Starting a crash-looping service really does start it, so for a leak the test is that it is not credited.
+    wrong = ([(OTHER[target], REMEDY[kind])] + ([(target, 'start')] if kind not in ('service-unavailable', 'memory-leak') else [])
+             + ([(target, LOOKALIKE[kind])] if kind in LOOKALIKE else []))
     for node, verb in wrong:
         wrong = operator.action('recover', sid, node=node, verb=verb)
         ensure(wrong['status'] == 'unchanged', f'{verb} on {node} should change nothing, got {wrong["status"]}')
@@ -156,8 +180,8 @@ def recover(operator, sid, kind, target):
     ensure(right['status'] == 'succeeded', f'{REMEDY[kind]} on {target} not confirmed: {right}')
     state = operator.wait(lambda s: s['session']['status'] == 'recovered', 'verified recovery', sid=sid)
     ensure(len(state['session']['recovery_evidence_ids']) == 6 * len(NODES), 'recovery should cite three cycles of every node')
-    flapping = state['session'].get('flaps', 0) >= 2
-    ensure(state['session'].get('required_streak', 3) == (10 if flapping else 3), 'ten healthy cycles are required exactly when failures came and went twice')
+    flapping = state['session'].get('flaps', 0) >= 1
+    ensure(state['session'].get('required_streak', 3) == (10 if flapping else 3), 'ten healthy cycles are required exactly when failures came and went on their own')
     return round(time.monotonic() - began, 2)
 
 

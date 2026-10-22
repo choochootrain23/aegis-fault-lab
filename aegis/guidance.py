@@ -1,8 +1,9 @@
 """Optional evidence-derived guidance. No fault ledger or model is consulted."""
+from datetime import datetime, timezone
 import time
 
 SLOW_MS = 300  # request checks slower than this count as degraded, not healthy
-INSPECTIONS = ('service', 'resources', 'disk', 'config', 'trace', 'network', 'traffic')
+INSPECTIONS = ('service', 'resources', 'disk', 'config', 'trace', 'network', 'traffic', 'releases', 'memory')
 TIMEOUTS = ('ConnectTimeout', 'ReadTimeout', 'WriteTimeout', 'PoolTimeout')
 GATEWAYS = ('gateway-a', 'gateway-c')
 
@@ -30,6 +31,12 @@ def explain(latest, level, now=None):
         elif live['body']['ok'] and not business['body']['ok'] and result.get('upstream_status') == 507:
             message = f'{g} is live, but the catalogue answered its request with HTTP 507 (insufficient storage). The catalogue is reachable yet cannot write; check its disk usage.'
             suggested = {'node':'catalog-b','kind':'disk'}
+        elif live['body']['ok'] and not business['body']['ok'] and business['body'].get('http_status') == 500 and result.get('error') == 'TypeError':
+            message = f"{g} is live, but its own code failed the business request with HTTP 500 ({result.get('error')}{', version ' + result['version'] if result.get('version') else ''}). Nothing about the machine is implied: an error from the service's own code after it was working usually follows a change. Check what changed recently in its release history."
+            suggested = {'node':g,'kind':'releases'}
+        elif live['body']['ok'] and not business['body']['ok'] and result.get('upstream_status') == 500 and result.get('upstream_error') == 'TypeError':
+            message = f'{g} is live, but the catalogue answered its request with HTTP 500 from an error in its own code (TypeError). The catalogue is reachable but its code is failing; compare its release history with its running config to see what changed.'
+            suggested = {'node':'catalog-b','kind':'releases'}
         elif live['body']['ok'] and not business['body']['ok'] and result.get('upstream_status') == 429:
             message = f'{g} is live, but the catalogue refused its request with HTTP 429 (too many requests: {result.get("upstream_error") or "quota exceeded"}). The catalogue is up and answering; it is rejecting this caller. Its own health checks may still pass, because they come from a different caller. Check the catalogue\'s traffic and quotas.'
             suggested = {'node':'catalog-b','kind':'traffic'}
@@ -92,6 +99,15 @@ def explain(latest, level, now=None):
             'source':'deterministic_observation_rules', 'observed_at':now}
 
 
+def started_seconds_before(body, at):
+    """How long the container had been running when a broker observation was taken, from Docker's start time."""
+    try:
+        started = datetime.strptime(body['started_at'][:19], '%Y-%m-%dT%H:%M:%S').replace(tzinfo=timezone.utc).timestamp()
+    except (KeyError, TypeError, ValueError):
+        return None
+    return at - started
+
+
 def catalogue_healthy(fresh):
     record = fresh.get(('catalog-b', 'business'))
     return bool(record and record['body'].get('ok') and not record['body'].get('slow'))
@@ -110,13 +126,19 @@ def newer_success(fresh, record):
 
 def remedy(fresh):
     """Most recent inspection that supports one recovery action, unless newer healthy checks contradict it."""
-    candidates, contradicted = [], []
+    candidates, contradicted, suggest = [], [], None
     for (node, kind), record in fresh.items():
         body = record['body']
         if not body.get('ok'):
             continue
-        if kind == 'service' and body.get('running') is False:
+        if kind == 'service' and body.get('running') is False and body.get('oom_killed'):
+            action = f"The recent service-state observation reports {node} stopped by the kernel for running out of memory (OOMKilled, exit code {body.get('exit_code')}). Starting it may only repeat the crash: check its memory trend and release history before choosing a fix."
+            suggest = 'memory'
+        elif kind == 'service' and body.get('running') is False:
             action = f"The recent service-state observation reports {node} stopped. You can try starting that selected service, then verify fresh business requests. This does not establish why it stopped."
+        elif kind == 'resources' and (body.get('cpu_pct_of_limit') or 0) >= 80 and (age := started_seconds_before(body, record['at'])) is not None and age < 15:
+            action = f"The resource check shows {node} at {body['cpu_pct_of_limit']:g}% of its CPU limit, but its container started only seconds earlier, and a process uses its whole limit while it boots. That alone is not starvation: check resources again in a few seconds, and its container state and memory to see why it restarted."
+            suggest = 'memory'
         elif kind == 'resources' and (body.get('cpu_pct_of_limit') or 0) >= 80:
             action = f"The resource check shows {node} using {body['cpu_pct_of_limit']:g}% of its {body.get('cpu_limit', 0):g}-CPU limit, so the kernel is throttling it. Its logs may show what started; you can try stopping the runaway job, then verify latency returns below {SLOW_MS} ms."
         elif kind == 'disk' and (body.get('result') or {}).get('free_bytes') is not None and body['result']['free_bytes'] < 64 * 1024:
@@ -134,18 +156,28 @@ def remedy(fresh):
             zero = [q['client'] for q in body['result']['quotas'] if q.get('limit_rps') == 0]
             rejected = sum(c.get('rejected', 0) for c in body['result'].get('clients', []))
             action = f"{node} enforces a request quota of 0 per second for {' and '.join(zero)}, set by {(body['result'].get('quota_source') or {}).get('pushed_by', 'the quota system')} rather than its deployed {body['result']['quotas'][0].get('deployed_rps')}; {rejected} requests were rejected in the last minute. You can try resetting the client quotas, then verify the gateways' business requests succeed."
+        elif kind == 'memory' and (body.get('oom_killed') or ((body.get('result') or {}).get('growth_mib_s') or 0) >= 4):
+            memory = body.get('result') or {}
+            seen = (f"memory growing {memory['growth_mib_s']:g} MiB a second, now {memory.get('current_mib')} of {memory.get('limit_mib')} MiB" if (memory.get('growth_mib_s') or 0) >= 4
+                    else f"its last exit an out-of-memory kill (exit code {body.get('exit_code')})")
+            running = f" on release {memory['version']}" if memory.get('version') else ''
+            action = f"The memory check shows {node}{running} with {seen}. A leak returns after every restart, so starting it again will not hold. You can try rolling back the release, then verify it stays up for ten cycles."
+        elif kind == 'releases' and (body.get('result') or {}).get('history') and body['result']['running'] != body['result']['history'][0].get('version'):
+            history = body['result']['history']
+            action = f"{node} runs {body['result']['running']}, deployed by {history[-1].get('by')} after this process started on {history[0].get('version')}. If its failures began with that deploy, you can try rolling back the release, then verify business requests succeed reliably."
         elif kind == 'network' and any(q.get('kind') == 'netem' and q.get('delay_ms') for q in (body.get('result') or {}).get('qdiscs', [])):
             queue = next(q for q in body['result']['qdiscs'] if q.get('kind') == 'netem')
             action = f"Traffic leaving {node} passes a netem queue that adds {queue['delay_ms']:g} ms, and new connections take about {body.get('median_connect_ms')} ms. You can try removing the traffic delay, then verify its latency returns below {SLOW_MS} ms."
         else:
             continue
         newer = newer_success(fresh, record) if kind == 'service' else None
-        (contradicted if newer else candidates).append((record, action, newer))
+        (contradicted if newer else candidates).append((record, action, newer, suggest))
+        suggest = None
     if candidates:
-        record, action, _ = max(candidates, key=lambda c: c[0]['at'])
-        return [record['id']], action, {'node': record['node'], 'kind': record['kind']}
+        record, action, _, then = max(candidates, key=lambda c: c[0]['at'])
+        return [record['id']], action, {'node': record['node'], 'kind': then or record['kind']}
     if contradicted:
-        old, _, newer = max(contradicted, key=lambda c: c[2]['at'])
+        old, _, newer, _ = max(contradicted, key=lambda c: c[2]['at'])
         return ([old['id'], newer['id']], f"The stopped-state observation for {old['node']} is older than a successful check from that node. Its state may have changed. Inspect its container state again before choosing a recovery action.",
                 {'node': old['node'], 'kind': 'service'})
     return None

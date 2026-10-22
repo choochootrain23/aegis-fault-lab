@@ -98,7 +98,9 @@ class Docker:
         if op.verb in ('start', 'stop') and data['State']['Running'] != (op.verb == 'start'):
             raise ValueError('Observed state does not match requested action')
         result = {'target': op.target, 'generation': data['Id'], 'running': data['State']['Running'],
-                  'status': data['State']['Status'], 'exit_code': data['State']['ExitCode'], 'changed': changed}
+                  'status': data['State']['Status'], 'exit_code': data['State']['ExitCode'], 'changed': changed,
+                  'oom_killed': bool(data['State'].get('OOMKilled')), 'started_at': data['State'].get('StartedAt'),
+                  'finished_at': data['State'].get('FinishedAt')}
         if op.verb == 'resources':
             result.update(await self.resources(data))
         return result

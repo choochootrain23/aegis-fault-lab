@@ -296,9 +296,9 @@ def main():
             expect(page.locator('#toast')).to_contain_text('No network delay present')
             page.click('[data-remedy="undrop"]')
             expect(page.locator('#session-status')).to_have_text('recovered', timeout=45000)
-            # Ten cycles are required only once the failures have come and gone twice before the fix.
+            # Ten cycles are required only once the failures have come and gone on their own.
             flaps = page.evaluate('AegisSimulator.lab.session.flaps || 0')
-            expect(page.locator('#verification')).to_contain_text('10 consecutive' if flaps >= 2 else 'Three consecutive')
+            expect(page.locator('#verification')).to_contain_text('10 consecutive' if flaps >= 1 else 'Three consecutive')
             page.click('#reset')
             expect(page.locator('#session-status')).to_have_text('ended', timeout=15000)
 
@@ -331,6 +331,52 @@ def main():
             expect(page.locator('#session-status')).to_have_text('ended', timeout=15000)
             page.select_option('#practice-kind', 'service-unavailable')
             assert not page.locator('#practice-target option[value="gateway-a"]').evaluate('o => o.disabled')
+
+            # A bad release on gateway-c: about half its requests fail with a TypeError while config is unchanged.
+            # Release history shows the deploy; restoring config does nothing and rolling back recovers.
+            page.select_option('#practice-kind', 'bad-release')
+            page.select_option('#practice-target', 'gateway-c')
+            expect(page.locator('#scenario-title')).to_have_text('When a release ships a bug')
+            expect(page.locator('#start')).to_be_enabled(timeout=20000)
+            page.click('#start')
+            expect(page.locator('#session-status')).to_have_text('investigating', timeout=40000)
+            page.click('#node-gateway-c')
+            page.click('[data-check="releases"]')
+            expect(page.locator('[data-check="releases"] .check-result')).to_contain_text('v1.5.0')
+            releases = page.locator('.evidence-row').filter(has_text='deployed by release-bot').first
+            releases.locator('summary').click()
+            expect(releases.locator('.config-table tr.drifted')).to_contain_text('v1.5.0')
+            page.click('[data-help="action"]')
+            expect(page.locator('#help-result')).to_contain_text('rolling back the release')
+            page.click('[data-remedy="restore"]')
+            expect(page.locator('#toast')).to_contain_text('Running config already matches')
+            page.click('[data-remedy="rollback"]')
+            expect(page.locator('#session-status')).to_have_text('recovered', timeout=45000)
+            page.click('#reset')
+            expect(page.locator('#session-status')).to_have_text('ended', timeout=15000)
+
+            # A memory leak on the catalogue crash-loops: the memory check shows the growth or the OOM kill, and
+            # rolling back ends the loop.
+            page.select_option('#practice-kind', 'memory-leak')
+            page.select_option('#practice-target', 'catalog-b')
+            expect(page.locator('#scenario-title')).to_have_text('When memory leaks')
+            expect(page.locator('#start')).to_be_enabled(timeout=20000)
+            page.click('#start')
+            expect(page.locator('#session-status')).to_have_text('investigating', timeout=45000)
+            page.click('#node-catalog-b')
+            # Just after a restart the trend has too few samples, so check again until it shows growth or the kill.
+            for _ in range(20):
+                page.click('[data-check="memory"]')
+                page.wait_for_timeout(1500)
+                if re.search(r'OOM killed|↑', page.locator('[data-check="memory"] .check-result').inner_text()):
+                    break
+            expect(page.locator('[data-check="memory"] .check-result')).to_contain_text(re.compile(r'OOM killed|↑'))
+            page.click('[data-help="action"]')
+            expect(page.locator('#help-result')).to_contain_text(re.compile(r'memory|stopped'))
+            page.click('[data-remedy="rollback"]')
+            expect(page.locator('#session-status')).to_have_text('recovered', timeout=60000)
+            page.click('#reset')
+            expect(page.locator('#session-status')).to_have_text('ended', timeout=15000)
 
             # A stopped gateway-c is local: gateway-a and the catalogue stay healthy, and guidance says so.
             page.select_option('#practice-kind', 'service-unavailable')
@@ -372,7 +418,7 @@ def main():
             expect(page.locator('#scenario-reveal')).to_contain_text('Known scenario:')
             page.click('#reset')
             expect(page.locator('#session-status')).to_have_text('ended', timeout=15000)
-            expect(page.locator('#history .history-item')).to_have_count(9)
+            expect(page.locator('#history .history-item')).to_have_count(11)
 
             mobile = browser.new_page(viewport={'width': 390, 'height': 844})
             mobile.on('pageerror', lambda error: errors.append(str(error)))

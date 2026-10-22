@@ -25,8 +25,9 @@ class HttpError extends Error {
 const SLOW_MS = 300;
 const DISK = 8 * 1024 * 1024;
 const fleet = Object.fromEntries(NODES.map(id => [id, {container: hex(64), process: 'sim-' + crypto.randomUUID(), running: true, readyAt: 0,
-  busy: false, full: false, drifted: false, delayed: false, lossy: false, squeezed: false, periods: 4000, throttled: 0, logs: [], traffic: []}]));
-const answering = id => fleet[id].running && now() >= fleet[id].readyAt;
+  busy: false, full: false, drifted: false, delayed: false, lossy: false, squeezed: false, periods: 4000, throttled: 0, logs: [], traffic: [],
+  version: 'v1.4.2', history: [{version: 'v1.4.2', at: now(), by: 'deployment', note: 'stable build'}], leakAt: null, oomKilled: false, exitCode: 0, startedAt: now(), finishedAt: null}]));
+const answering = id => { tick(id); return fleet[id].running && now() >= fleet[id].readyAt; };
 const catalogue = () => ({items: [{sku: 'LAB-001', name: 'Synthetic component', quantity: 12}], generation: fleet['catalog-b'].process});
 const reply = (result, duration) => ({ok: true, http_status: 200, result, duration_ms: duration});
 const log = (node, entry) => { const logs = fleet[node].logs; logs.push({at: now(), generation: fleet[node].process, ...entry}); if (logs.length > 200) logs.shift(); };
@@ -55,6 +56,47 @@ const QUOTA_DEPLOYED = {'gateway-a': 20, 'gateway-c': 20};
 const quotaOf = (node, client) => (node === 'catalog-b' && client in QUOTA_DEPLOYED ? (fleet[node].squeezed ? 0 : QUOTA_DEPLOYED[client]) : null);
 const count = (node, client, status) => { const t = fleet[node].traffic; t.push({at: now(), client, status}); if (t.length > 4000) t.shift(); };
 const quotaRefusal = client => ({ok: false, error: 'QuotaExceeded', client, limit_rps: 0, detail: 'per-client request quota exhausted', generation: fleet['catalog-b'].process});
+// Releases, as aegis/fleet.py models them. Measured on the real lab (22 October 2026): the bad release failed 47% of
+// business requests; the leaky one grew about 12 MiB a second from about 46 MiB until the kernel killed the process at
+// the 192 MiB limit (OOMKilled, exit 137), roughly 12-14 seconds after it was deployed.
+const STABLE = 'v1.4.2', BAD_RELEASE = 'v1.5.0', LEAKY_RELEASE = 'v1.5.1', MEMORY_LIMIT = 192, LEAK_MIB_S = 12.1;
+const RELEASE_NOTES = {[STABLE]: 'stable build', [BAD_RELEASE]: 'faster catalogue lookups', [LEAKY_RELEASE]: 'warm the item cache in the background'};
+const ROLLOUTS = {'bad-release': ['ship', BAD_RELEASE], 'memory-leak': ['leak', LEAKY_RELEASE]};
+const releaseFails = node => fleet[node].version === BAD_RELEASE && Math.random() < 0.47;
+const typeError = node => ({ok: false, error: 'TypeError', detail: "unsupported operand type(s) for *: 'NoneType' and 'float'", path: 'price conversion', version: BAD_RELEASE, generation: fleet[node].process});
+const iso = t => new Date(t * 1000).toISOString();
+function memoryAt(node, t) {
+  const n = fleet[node], idle = 45 + Math.sin(t / 7) * 0.8;
+  return Math.round((n.leakAt != null && t >= n.leakAt ? idle + LEAK_MIB_S * (t - n.leakAt) : idle) * 10) / 10;
+}
+// A leaking process that reaches the container's memory limit is killed by the kernel.
+function tick(node) {
+  const n = fleet[node];
+  if (!n.running || n.leakAt == null) return;
+  const killedAt = n.leakAt + (MEMORY_LIMIT - memoryAt(node, n.leakAt)) / LEAK_MIB_S;
+  if (now() >= killedAt) Object.assign(n, {running: false, oomKilled: true, exitCode: 137, finishedAt: killedAt, leakAt: null});
+}
+function deploy(node, version, by) {
+  const n = fleet[node];
+  if (n.version === version) return false;
+  log(node, {ok: true, event: 'release deployed', version, previous: n.version, by});
+  n.version = version;
+  n.history.push({version, at: now(), by, note: RELEASE_NOTES[version]});
+  n.leakAt = version === LEAKY_RELEASE ? now() : null;
+  return true;
+}
+function memoryReport(node) {
+  const n = fleet[node], t = now(), boot = n.readyAt || n.startedAt;
+  const samples = [];
+  for (let at = Math.max(boot, t - 60); at <= t; at += 2) samples.push({age_s: Math.round((t - at) * 10) / 10, mib: memoryAt(node, at)});
+  // The real lab reports about 12 MiB a second within seconds of a leak starting, so measure from its start.
+  const since = n.leakAt != null ? t - n.leakAt : 20;
+  const recent = samples.filter(s => s.age_s <= Math.min(20, since)), span = recent.length > 1 ? recent[0].age_s - recent[recent.length - 1].age_s : 0;
+  const current = memoryAt(node, t);
+  return {current_mib: current, limit_mib: MEMORY_LIMIT, used_pct: Math.round(current / MEMORY_LIMIT * 1000) / 10,
+    growth_mib_s: span >= 4 ? Math.round((recent[recent.length - 1].mib - recent[0].mib) / span * 100) / 100 : null,
+    samples: samples.reverse().slice(0, 30).reverse(), oom_kills: 0, uptime_s: Math.round((t - boot) * 10) / 10, version: n.version, generation: n.process};
+}
 const busyMs = () => Math.round(Math.min(1600, 110 + Math.random() ** 1.6 * 1100) * 10) / 10;
 const diskFull = node => ({ok: false, error: 'OSError', errno: 'ENOSPC', detail: 'No space left on device', path: 'receipt write', generation: fleet[node].process});
 // Runtime settings as aegis/fleet.py reports them; drift overrides one, as a bad hot reload would.
@@ -80,6 +122,7 @@ function trace(node) {
     if (n.drifted || !answering('catalog-b')) ok = span(name, between(0.8, 3), false, {error: 'ConnectError'});
     else if (net.error) ok = span(name, net.extra, false, {error: net.error});
     else if (cat.squeezed) { count('catalog-b', node, 429); ok = span(name, between(1.5, 4), false, {status: 429}); }
+    else if (releaseFails('catalog-b')) { count('catalog-b', node, 500); log('catalog-b', typeError('catalog-b')); ok = span(name, between(2, 6), false, {status: 500}); }
     else if (cat.drifted) ok = span(name, between(2, 6), false, {status: 500});
     else if (cat.full) ok = span(name, between(2, 6), false, {status: 507});
     else {
@@ -100,17 +143,24 @@ function trace(node) {
 
 function probe(node, kind) {
   const n = fleet[node];
-  if (kind === 'service') {
-    return {ok: true, target: node, generation: n.container, running: n.running,
-            status: n.running ? 'running' : 'exited', exit_code: 0, duration_ms: between(9, 30)};
+  tick(node);
+  const container = {generation: n.container, running: n.running, status: n.running ? 'running' : 'exited', exit_code: n.exitCode, oom_killed: n.oomKilled,
+    started_at: iso(n.startedAt), finished_at: n.finishedAt ? iso(n.finishedAt) : '0001-01-01T00:00:00Z'};
+  if (kind === 'service') return {ok: true, target: node, ...container, duration_ms: between(9, 30)};
+  if (kind === 'memory') {
+    if (!n.running) return {ok: true, ...container, duration_ms: between(9, 30)};
+    if (!answering(node)) return {ok: true, ...container, service_error: 'ConnectError', duration_ms: between(9, 30)};
+    return {ok: true, ...container, http_status: 200, result: memoryReport(node), duration_ms: between(12, 40)};
   }
   if (kind === 'resources') {
-    const base = {ok: true, target: node, generation: n.container, running: n.running, status: n.running ? 'running' : 'exited', exit_code: 0, cpu_limit: 0.25};
+    const base = {ok: true, target: node, ...container, cpu_limit: 0.25};
     if (!n.running) return {...base, duration_ms: between(9, 30)};
-    const cores = Math.round((n.busy ? 0.24 + Math.random() * 0.01 : 0.004 + Math.random() * 0.016) * 1000) / 1000;
+    // A process that has just started uses its whole limit while it boots, as on the real lab.
+    const booting = now() - n.startedAt < 4;
+    const cores = Math.round((n.busy || booting ? 0.24 + Math.random() * 0.01 : 0.004 + Math.random() * 0.016) * 1000) / 1000;
     n.periods += 10; if (n.busy) n.throttled += 9;
     return {...base, cpu_cores: cores, cpu_pct_of_limit: Math.round(cores / 0.25 * 1000) / 10, periods: n.periods, throttled_periods: n.throttled,
-            throttled_ms: Math.round(n.throttled * 75 * 10) / 10, memory_mib: between(38, 46), memory_limit_mib: 192, duration_ms: between(1000, 1250)};
+            throttled_ms: Math.round(n.throttled * 75 * 10) / 10, memory_mib: memoryAt(node, now()), memory_limit_mib: MEMORY_LIMIT, duration_ms: between(1000, 1250)};
   }
   if (!answering(node)) return {ok: false, error: kind === 'network' ? 'ConnectionRefusedError' : 'ConnectError', detail: 'Check unavailable or failed', duration_ms: between(0.8, 4)};
   // A lossy service's reply can be lost so often that the controller's 3-second wait runs out.
@@ -145,7 +195,8 @@ function answered(node, kind) {
   const n = fleet[node];
   const role = isGateway(node) ? 'gateway' : 'catalog';
   const quick = (low, high) => n.busy ? busyMs() : between(low, high);
-  if (kind === 'liveness') return reply({live: true, role, generation: n.process}, quick(3, 13));
+  if (kind === 'liveness') return reply({live: true, role, generation: n.process, version: n.version}, quick(3, 13));
+  if (kind === 'releases') return reply({running: n.version, note: RELEASE_NOTES[n.version], history: n.history.slice(-10), uptime_s: Math.round((now() - n.startedAt) * 10) / 10, generation: n.process}, quick(3, 9));
   if (kind === 'logs') return reply({entries: n.logs.slice(-200), bounded_to: 200, generation: n.process, truncated: false, omitted_retained_entries: 0}, quick(3, 9));
   if (kind === 'disk') {
     const free = n.full ? 0 : DISK - 40 * 4096;
@@ -167,21 +218,24 @@ function answered(node, kind) {
   }
   if (role === 'catalog') {
     if (kind === 'readiness') { count(node, 'controller', 200); return reply({ok: true, generation: n.process}, quick(4, 10)); }
+    if (releaseFails(node)) { const failure = {...typeError(node), duration_ms: quick(2, 6)}; log(node, failure); count(node, 'controller', 500); return {ok: false, http_status: 500, result: failure, duration_ms: failure.duration_ms}; }
     count(node, 'controller', n.drifted ? 500 : n.full ? 507 : 200);
     if (n.drifted) { const failure = {...sourceMissing(node), duration_ms: quick(2, 6)}; log(node, failure); return {ok: false, http_status: 500, result: failure, duration_ms: failure.duration_ms}; }
     if (n.full) { const failure = diskFull(node); log(node, failure); return {ok: false, http_status: 507, result: failure, duration_ms: quick(4, 10)}; }
     return reply(catalogue(), quick(5, 12));
   }
-  // Gateway readiness and business requests call the catalogue dependency.
-  const correlation = crypto.randomUUID(), cat = fleet['catalog-b'], net = call(node);
+  // Gateway readiness and business requests call the catalogue dependency, unless the gateway's own release fails first.
+  if (releaseFails(node)) { const failure = {...typeError(node), duration_ms: quick(1, 4)}; log(node, failure); count(node, 'controller', 500); return {ok: false, http_status: 500, result: failure, duration_ms: failure.duration_ms}; }
+  const correlation = crypto.randomUUID(), cat = fleet['catalog-b'], net = call(node), catFails = releaseFails('catalog-b');
   let result, status = 503;
   const wait = answering('catalog-b') ? (cat.busy ? busyMs() : between(1.5, 6)) : between(1, 5);
   const upstream = answering('catalog-b') ? Math.round((wait + lag('catalog-b') + lag(node) + net.extra) * 10) / 10 : wait;
   const reached = !n.drifted && answering('catalog-b') && !net.error;
-  if (reached) count('catalog-b', node, cat.squeezed ? 429 : cat.drifted ? 500 : cat.full ? 507 : 200);
+  if (reached) count('catalog-b', node, cat.squeezed ? 429 : catFails || cat.drifted ? 500 : cat.full ? 507 : 200);
   if (n.drifted || !answering('catalog-b')) result = {ok: false, dependency: 'catalog-b', correlation, error: 'ConnectError'};
   else if (net.error) result = {ok: false, dependency: 'catalog-b', correlation, error: net.error};
   else if (cat.squeezed) { result = {ok: false, dependency: 'catalog-b', correlation, error: 'HTTPStatusError', upstream_status: 429, upstream_error: 'QuotaExceeded'}; log('catalog-b', {...quotaRefusal(node), duration_ms: between(0.3, 1)}); }
+  else if (catFails) { result = {ok: false, dependency: 'catalog-b', correlation, error: 'HTTPStatusError', upstream_status: 500, upstream_error: 'TypeError'}; log('catalog-b', typeError('catalog-b')); }
   else if (cat.drifted) { result = {ok: false, dependency: 'catalog-b', correlation, error: 'HTTPStatusError', upstream_status: 500, upstream_error: 'FileNotFoundError'}; log('catalog-b', sourceMissing('catalog-b')); }
   else if (cat.full) { result = {ok: false, dependency: 'catalog-b', correlation, error: 'HTTPStatusError', upstream_status: 507, upstream_error: 'OSError'}; log('catalog-b', diskFull('catalog-b')); }
   else if (wait > 1000) result = {ok: false, dependency: 'catalog-b', correlation, error: 'ReadTimeout'};
@@ -256,11 +310,13 @@ function cycle() {
     s.detected_at = now();
     s.verification = 'Repeated failures observed; investigate the evidence';
   }
-  // Once failures have come and gone twice, three healthy cycles can be luck: require a longer run.
+  // Once failures have come and gone on their own, three healthy cycles can be luck: require a longer run.
+  // The first recovery after a fix may be the fix working, so it does not count; later ones do.
   if (recoveredCycle && ['observing', 'investigating', 'verifying'].includes(s.status)) {
-    s.flaps = (s.flaps || 0) + 1;
-    if (s.flaps >= 2 && (s.required_streak || VERIFY_STREAK) < FLAPPING_STREAK) s.required_streak = FLAPPING_STREAK;
+    if (s.status === 'verifying' && !s.settled_since_fix) s.settled_since_fix = true;
+    else { s.flaps = (s.flaps || 0) + 1; s.required_streak = FLAPPING_STREAK; }
   }
+  if (s.rollout && ['observing', 'investigating', 'verifying'].includes(s.status)) reconcileRollout(s, results);
   const needed = s.status === 'resetting' ? VERIFY_STREAK : s.required_streak || VERIFY_STREAK;
   if (['verifying', 'resetting'].includes(s.status) && lab.successes >= needed) {
     if (s.status === 'resetting') {
@@ -278,7 +334,20 @@ function cycle() {
   if (!['ended', 'recovered', 'resetting'].includes(s.status) && now() >= s.deadline + 60) resetLocked('expiry-' + s.id, true);
 }
 
-const HIDDEN = ['fault_target', 'fault_kind', 'fault_action', 'start_key', 'reset_key', 'extensions'];
+const HIDDEN = ['fault_target', 'fault_kind', 'fault_action', 'start_key', 'reset_key', 'extensions', 'rollout'];
+// The deploy controller of an active rollout: re-apply the release to a fresh process, and restart a crashed service
+// after three missed health cycles, as aegis/controller.py does.
+function reconcileRollout(s, results) {
+  const r = s.rollout, n = fleet[r.node], live = results.find(e => e.node === r.node && e.kind === 'liveness');
+  if (live.body.ok) {
+    delete r.down_cycles;
+    if (live.body.result?.version !== r.version) deploy(r.node, r.version, 'deploy-controller');
+    return;
+  }
+  if (n.running) return;
+  r.down_cycles = (r.down_cycles || 0) + 1;
+  if (r.down_cycles >= 3) { apply(r.node, 'start'); r.restarts = (r.restarts || 0) + 1; delete r.down_cycles; }
+}
 function publicSession(s = lab.session) {
   if (!s) return null;
   const result = clone(Object.fromEntries(Object.entries(s).filter(([k]) => !HIDDEN.includes(k))));
@@ -314,14 +383,15 @@ function state() {
 // Docker-equivalent effects. Starting a running service or clearing a disk that is not full
 // changes nothing and says so, as the real broker and services do; a stopped service cannot confirm maintenance.
 const FAULTS = {'service-unavailable': ['stop', 'start'], 'cpu-starvation': ['burn', 'calm'], 'disk-full': ['fill', 'clear'], 'config-drift': ['drift', 'restore'],
-  'network-delay': ['delay', 'undelay'], 'packet-loss': ['drop', 'undrop'], 'quota-zero': ['squeeze', 'requota']};
+  'network-delay': ['delay', 'undelay'], 'packet-loss': ['drop', 'undrop'], 'quota-zero': ['squeeze', 'requota'], 'bad-release': ['ship', 'rollback'], 'memory-leak': ['leak', 'rollback']};
 const FAULT_TARGETS = {'quota-zero': ['catalog-b']};  // faults that only exist on some services
 const UNCHANGED = {start: 'Already running; nothing changed', stop: 'Already stopped; nothing changed', calm: 'No background job running; nothing changed',
   burn: 'A background job was already running; nothing changed', clear: 'No filler file present; nothing changed', fill: 'Nothing changed',
   restore: 'Running config already matches the deployed settings; nothing changed', drift: 'Setting already overridden; nothing changed',
   undelay: 'No network delay present; nothing changed', delay: 'Network delay already present; nothing changed',
   undrop: 'No packet loss present; nothing changed', drop: 'Packet loss already present; nothing changed',
-  requota: 'Quotas already match the deployed limits; nothing changed', squeeze: 'Quotas already at zero; nothing changed'};
+  requota: 'Quotas already match the deployed limits; nothing changed', squeeze: 'Quotas already at zero; nothing changed',
+  rollback: 'Already running the stable release; nothing changed', ship: 'Release already deployed; nothing changed', leak: 'Release already deployed; nothing changed'};
 const DEBRIEFS = {
   "service-unavailable": "The scenario requested stopping {target}. When that succeeds, its container state reads stopped and its own probes fail. When the catalogue stops, both gateways stay live but their business requests fail, so the failure spreads; when one gateway stops, the catalogue and the other gateway stay healthy, so it does not. Starting the stopped service restores the request path.",
   "cpu-starvation": "The scenario requested a runaway background job inside {target}. When that succeeds, the service keeps running and answering, but slowly: the job uses the container's whole 0.25-CPU limit, the kernel throttles it, and requests queue behind it, crossing the 300 ms threshold. Its log records the job starting. A slow catalogue makes both gateways slow, and sometimes time out, too. Stopping the job returns normal latency.",
@@ -329,6 +399,8 @@ const DEBRIEFS = {
   "config-drift": "The scenario requested a bad runtime configuration reload on {target}. When that succeeds, the process stays live and its container keeps running, so liveness, container state, CPU and disk all look normal. On a gateway, the upstream address points at a port nothing listens on, so every business request fails to connect, which looks like a stopped catalogue until the catalogue is checked directly. On the catalogue, the data source points at a dataset that was never deployed, so its business requests fail with HTTP 500 and both gateways' fail with them. The running config shows the drifted setting next to its deployed value, and the log records the reload. Restoring the deployed config fixes it.",
   "packet-loss": "The scenario requested dropping 50% of the packets leaving {target}, applied with a Linux netem queue inside its own network namespace. Real links already hurt at 1 to 2% loss; the lab exaggerates it so the effect shows within a minute. When that succeeds, the process stays live and its CPU, disk and config stay normal, but TCP must resend every lost packet after a timeout of at least 200 ms. So the same request is sometimes instant, sometimes about 200 ms or 600 ms late, and sometimes fails when a lost connection setup or reply outlasts the gateways' 1-second upstream timeout. A lossy catalogue makes both gateways fail intermittently; a lossy gateway affects only itself. Because failures come and go, recovery has to hold for ten healthy cycles rather than three. The network path check shows the netem loss setting and a high share of retransmitted TCP segments, and some connection attempts take about a second while a lost handshake is resent. Removing the packet loss, or restarting the container, restores reliable requests.",
   "quota-zero": "The scenario requested a quota push that set both gateways' request quotas on {target} to zero, as a faulty quota system might. Quotas are enforced by the shared catalogue for each named caller and come from the quota system, not the service's own config. When that succeeds, the catalogue is up, fast and idle, and its own checks pass, because the controller's health probes have no quota: the monitoring is green while every gateway request is refused with HTTP 429. Both gateways stay live but fail every business request. The running config matches what was deployed, so restoring config changes nothing; the traffic check shows each gateway's requests rejected against a limit of 0 per second, and the log records the quota push. Resetting the client quotas restores service.",
+  "bad-release": "The scenario requested a rollout of release v1.5.0 to {target}, whose new price-conversion code fails about half of business requests with a TypeError (HTTP 500). The process stays live and its container, CPU, disk, network and running config all look normal: nothing about the machine changed, only the code. A bad catalogue release fails about half of both gateways' requests with an upstream 500, which looks like a drifted catalogue config until the config is found unchanged; a bad gateway release affects only that gateway. Because failures come and go, recovery has to hold for ten healthy cycles. Release history shows v1.5.0 deployed moments before the errors began, and the log records each TypeError with the version. Rolling back to v1.4.2 restores service; restoring config changes nothing.",
+  "memory-leak": "The scenario requested a rollout of release v1.5.1 to {target}, whose background cache warmer keeps everything it loads, about 12 MiB a second. When that succeeds, the service works normally while its memory climbs, until it reaches the container's 192 MiB limit and the kernel kills it (OOMKilled, exit code 137). The rollout's deploy controller then restarts it after a few seconds and re-applies v1.5.1, as an orchestrator would, so the service crash-loops: healthy, then down, then healthy again. Starting it by hand only begins the next loop. While it is down a stopped catalogue fails both gateways' requests and a stopped gateway only its own. The memory check shows memory growing about 12 MiB a second towards the limit and the last exit as an OOM kill; release history shows v1.5.1 re-deployed after every restart. Rolling back to v1.4.2 stops the leak and keeps it stopped.",
   "network-delay": "The scenario requested a 600 ms delay on all traffic leaving {target}, applied with a Linux netem queue inside its own network namespace. When that succeeds, the process stays live and its CPU and disk stay normal, but everything it sends waits in the queue: its own checks take about 600 ms longer. A delayed catalogue slows both gateways' requests by the same amount; a delayed gateway pays the delay twice, on its call to the catalogue and on its reply, while the catalogue and the other gateway stay fast. Requests still succeed, because each wait stays under the gateways' 1-second upstream timeout. The network path check shows TCP connections taking about 600 ms and the netem queue itself, and a request trace shows a fast handler with the time spent outside it. Removing the delay, or restarting the container, restores normal latency.",
 };
 const debrief = s => DEBRIEFS[s.fault_kind].replace('{target}', s.fault_target) + ' Injection outcome: ' + (s.fault_action?.status || 'not recorded') + '. The action record explains the exercise but was not evidence available during the investigation. Other evidence-supported investigation orders are valid.';
@@ -338,9 +410,19 @@ function apply(node, verb) {
   if (verb === 'start' || verb === 'stop') {
     if ((verb === 'start') === target.running) return false;
     target.running = verb === 'start';
-    if (target.running) Object.assign(target, {readyAt: now() + START_DELAY, process: 'sim-' + crypto.randomUUID(), busy: false, full: false, drifted: false, delayed: false, lossy: false, squeezed: false, logs: [], traffic: []});
+    if (target.running) Object.assign(target, {readyAt: now() + START_DELAY, process: 'sim-' + crypto.randomUUID(), busy: false, full: false, drifted: false, delayed: false, lossy: false, squeezed: false, logs: [], traffic: [],
+      version: STABLE, history: [{version: STABLE, at: now(), by: 'deployment', note: RELEASE_NOTES[STABLE]}], leakAt: null, oomKilled: false, exitCode: 0, startedAt: now()});
+    else Object.assign(target, {finishedAt: now(), exitCode: 0, oomKilled: false, leakAt: null});
     return true;
   }
+  if (verb === 'rollback') {
+    // Ending the rollout stops the deploy controller; a service it left crashed starts again on the stable build.
+    const s = lab.session, ours = s?.rollout?.node === node;
+    let changed = target.running && deploy(node, STABLE, 'rollback');
+    if (ours) { delete s.rollout; if (!target.running) apply(node, 'start'); changed = true; }
+    return changed;
+  }
+  if (verb === 'ship' || verb === 'leak') return target.running ? deploy(node, verb === 'ship' ? BAD_RELEASE : LEAKY_RELEASE, 'release-bot') : null;
   if (!target.running) return null;  // maintenance endpoint unreachable
   const field = {burn: 'busy', calm: 'busy', fill: 'full', clear: 'full', drift: 'drifted', restore: 'drifted', delay: 'delayed', undelay: 'delayed',
     drop: 'lossy', undrop: 'lossy', squeeze: 'squeezed', requota: 'squeezed'}[verb];
@@ -395,6 +477,7 @@ function start(data) {
     start_key: data.key, verification: 'Collecting measured effects', outcome: null};
   save(lab.session);
   lab.session.fault_action = mutate(data.key, target, FAULTS[kind][0]);
+  if (ROLLOUTS[kind] && lab.session.fault_action.status === 'succeeded') lab.session.rollout = {node: target, verb: ROLLOUTS[kind][0], version: ROLLOUTS[kind][1]};
   lab.baseline = lab.successes = 0;
   lab.recent = [];
   return publicSession();
@@ -422,7 +505,7 @@ function active(sessionId) {
 // Port of aegis/guidance.py: fresh observations only, never the fault record.
 const TIMEOUTS = ['ConnectTimeout', 'ReadTimeout', 'WriteTimeout', 'PoolTimeout'];
 function explain(level) {
-  const t = now(), sid = lab.session.id, inspections = ['service', 'resources', 'disk', 'config', 'trace', 'network', 'traffic'];
+  const t = now(), sid = lab.session.id, inspections = ['service', 'resources', 'disk', 'config', 'trace', 'network', 'traffic', 'releases', 'memory'];
   const fresh = new Map([...lab.latest].filter(([key, e]) => e.session_id === sid && t - e.at >= 0 && t - e.at <= (inspections.includes(key.split('|')[1]) ? 30 : 6)));
   let ids = [], message = 'There is not enough fresh evidence yet. Start with a liveness check, then compare it with a business request.';
   let suggested = {node: 'gateway-a', kind: 'liveness'};
@@ -442,6 +525,12 @@ function explain(level) {
     } else if (live.body.ok && !business.body.ok && result.upstream_status === 507) {
       message = `${g} is live, but the catalogue answered its request with HTTP 507 (insufficient storage). The catalogue is reachable yet cannot write; check its disk usage.`;
       suggested = {node: 'catalog-b', kind: 'disk'};
+    } else if (live.body.ok && !business.body.ok && business.body.http_status === 500 && result.error === 'TypeError') {
+      message = `${g} is live, but its own code failed the business request with HTTP 500 (${result.error}${result.version ? ', version ' + result.version : ''}). Nothing about the machine is implied: an error from the service's own code after it was working usually follows a change. Check what changed recently in its release history.`;
+      suggested = {node: g, kind: 'releases'};
+    } else if (live.body.ok && !business.body.ok && result.upstream_status === 500 && result.upstream_error === 'TypeError') {
+      message = `${g} is live, but the catalogue answered its request with HTTP 500 from an error in its own code (TypeError). The catalogue is reachable but its code is failing; compare its release history with its running config to see what changed.`;
+      suggested = {node: 'catalog-b', kind: 'releases'};
     } else if (live.body.ok && !business.body.ok && result.upstream_status === 429) {
       message = `${g} is live, but the catalogue refused its request with HTTP 429 (too many requests: ${result.upstream_error || 'quota exceeded'}). The catalogue is up and answering; it is rejecting this caller. Its own health checks may still pass, because they come from a different caller. Check the catalogue's traffic and quotas.`;
       suggested = {node: 'catalog-b', kind: 'traffic'};
@@ -507,8 +596,13 @@ function remedyFor(fresh) {
     const [node, kind] = key.split('|'), body = record.body;
     if (!body.ok) continue;
     let action;
-    if (kind === 'service' && body.running === false) action = `The recent service-state observation reports ${node} stopped. You can try starting that selected service, then verify fresh business requests. This does not establish why it stopped.`;
-    else if (kind === 'resources' && (body.cpu_pct_of_limit || 0) >= 80) action = `The resource check shows ${node} using ${body.cpu_pct_of_limit}% of its ${body.cpu_limit}-CPU limit, so the kernel is throttling it. Its logs may show what started; you can try stopping the runaway job, then verify latency returns below ${SLOW_MS} ms.`;
+    let then = null;
+    if (kind === 'service' && body.running === false && body.oom_killed) { action = `The recent service-state observation reports ${node} stopped by the kernel for running out of memory (OOMKilled, exit code ${body.exit_code}). Starting it may only repeat the crash: check its memory trend and release history before choosing a fix.`; then = 'memory'; }
+    else if (kind === 'service' && body.running === false) action = `The recent service-state observation reports ${node} stopped. You can try starting that selected service, then verify fresh business requests. This does not establish why it stopped.`;
+    else if (kind === 'resources' && (body.cpu_pct_of_limit || 0) >= 80 && record.at - Date.parse(body.started_at) / 1000 < 15) {
+      action = `The resource check shows ${node} at ${body.cpu_pct_of_limit}% of its CPU limit, but its container started only seconds earlier, and a process uses its whole limit while it boots. That alone is not starvation: check resources again in a few seconds, and its container state and memory to see why it restarted.`;
+      then = 'memory';
+    } else if (kind === 'resources' && (body.cpu_pct_of_limit || 0) >= 80) action = `The resource check shows ${node} using ${body.cpu_pct_of_limit}% of its ${body.cpu_limit}-CPU limit, so the kernel is throttling it. Its logs may show what started; you can try stopping the runaway job, then verify latency returns below ${SLOW_MS} ms.`;
     else if (kind === 'disk' && body.result?.free_bytes != null && body.result.free_bytes < 64 * 1024) action = `Disk usage shows ${node}'s /tmp full, mostly ${body.result.largest?.[0]?.path || 'one file'}. You can try clearing its temporary files, then verify business requests write receipts again.`;
     else if (kind === 'config' && body.result?.drifted?.length) {
       const setting = body.result.settings.find(s => s.drifted);
@@ -520,17 +614,24 @@ function remedyFor(fresh) {
     } else if (kind === 'traffic' && body.result?.quotas?.some(q => q.limit_rps === 0)) {
       const zero = body.result.quotas.filter(q => q.limit_rps === 0).map(q => q.client), rejected = (body.result.clients || []).reduce((a, c) => a + (c.rejected || 0), 0);
       action = `${node} enforces a request quota of 0 per second for ${zero.join(' and ')}, set by ${body.result.quota_source?.pushed_by || 'the quota system'} rather than its deployed ${body.result.quotas[0].deployed_rps}; ${rejected} requests were rejected in the last minute. You can try resetting the client quotas, then verify the gateways' business requests succeed.`;
+    } else if (kind === 'memory' && (body.oom_killed || (body.result?.growth_mib_s || 0) >= 4)) {
+      const m = body.result || {};
+      const seen = (m.growth_mib_s || 0) >= 4 ? `memory growing ${m.growth_mib_s} MiB a second, now ${m.current_mib} of ${m.limit_mib} MiB` : `its last exit an out-of-memory kill (exit code ${body.exit_code})`;
+      action = `The memory check shows ${node}${m.version ? ' on release ' + m.version : ''} with ${seen}. A leak returns after every restart, so starting it again will not hold. You can try rolling back the release, then verify it stays up for ten cycles.`;
+    } else if (kind === 'releases' && body.result?.history?.length && body.result.running !== body.result.history[0].version) {
+      const history = body.result.history;
+      action = `${node} runs ${body.result.running}, deployed by ${history[history.length - 1].by} after this process started on ${history[0].version}. If its failures began with that deploy, you can try rolling back the release, then verify business requests succeed reliably.`;
     } else if (kind === 'network' && body.result?.qdiscs?.some(q => q.kind === 'netem' && q.delay_ms)) {
       const queue = body.result.qdiscs.find(q => q.kind === 'netem');
       action = `Traffic leaving ${node} passes a netem queue that adds ${queue.delay_ms} ms, and new connections take about ${body.median_connect_ms} ms. You can try removing the traffic delay, then verify its latency returns below ${SLOW_MS} ms.`;
     } else continue;
     const newer = kind === 'service' ? [...fresh].filter(([k, e]) => e.node === node && /\|(liveness|business)$/.test(k) && e.at > record.at && e.body.ok && !e.body.slow).map(([, e]) => e) : [];
     if (newer.length) contradicted.push([record, newer.reduce((a, b) => (b.at > a.at ? b : a))]);
-    else candidates.push([record, action]);
+    else candidates.push([record, action, then]);
   }
   if (candidates.length) {
-    const [record, action] = candidates.reduce((a, b) => (b[0].at > a[0].at ? b : a));
-    return [[record.id], action, {node: record.node, kind: record.kind}];
+    const [record, action, then] = candidates.reduce((a, b) => (b[0].at > a[0].at ? b : a));
+    return [[record.id], action, {node: record.node, kind: then || record.kind}];
   }
   if (contradicted.length) {
     const [old, newer] = contradicted.reduce((a, b) => (b[1].at > a[1].at ? b : a));
@@ -579,7 +680,7 @@ function timeline(id) {
 
 // ---- Routing, shaped like the FastAPI handlers ----
 const nodeOk = value => NODES.includes(value);
-const kindOk = value => ['liveness', 'readiness', 'business', 'logs', 'service', 'resources', 'disk', 'config', 'trace', 'network', 'traffic'].includes(value);
+const kindOk = value => ['liveness', 'readiness', 'business', 'logs', 'service', 'resources', 'disk', 'config', 'trace', 'network', 'traffic', 'releases', 'memory'].includes(value);
 const invalid = () => { throw new HttpError(422, [{msg: 'Invalid request'}]); };
 
 const routes = {
@@ -593,11 +694,12 @@ const routes = {
     const s = active(d.session_id);
     if (s.status === 'resetting') throw new HttpError(409, 'Reset is in progress. Wait for verification or retry reset.');
     const verb = d.verb || 'start';
-    if (!['start', 'calm', 'clear', 'restore', 'undelay', 'undrop', 'requota'].includes(verb)) invalid();
+    if (!['start', 'calm', 'clear', 'restore', 'undelay', 'undrop', 'requota', 'rollback'].includes(verb)) invalid();
     const result = mutate(d.key, d.node || 'catalog-b', verb);
     if (!s.recovery_attempts.some(a => a.key === d.key)) {
       s.recovery_attempts.push({key: d.key, at: now(), ...result});
       s.status = 'verifying';
+      s.settled_since_fix = false;
       s.verification = 'Waiting for fresh measured recovery; an accepted action is not proof';
       lab.successes = 0;
     }

@@ -82,6 +82,23 @@ export function run(){
     assert.equal(view.remedyLabel('undrop'),'Remove packet loss');assert.equal(view.remedyLabel('requota'),'Reset client quotas');
     assert.equal(view.scenarioCopy('quota-zero','catalog-b','practice').number,'07');
   });
+  check('A release deployed after start is flagged, an unchanged one is not',()=>{
+    const changed=view.evidenceResult({kind:'releases',body:{ok:true,result:{running:'v1.5.0',history:[{version:'v1.4.2',by:'deployment'},{version:'v1.5.0',by:'release-bot'}]}}});
+    assert.equal(changed.tone,'amber');assert.match(changed.text,/v1.5.0 · deployed by release-bot after v1.4.2/);
+    assert.equal(view.evidenceResult({kind:'releases',body:{ok:true,result:{running:'v1.4.2',history:[{version:'v1.4.2',by:'deployment'}]}}}).tone,'green');
+  });
+  check('Memory growth and an OOM kill read as failures',()=>{
+    const growing=view.evidenceResult({kind:'memory',body:{ok:true,running:true,result:{current_mib:130,limit_mib:192,growth_mib_s:12.1}}});
+    assert.equal(growing.tone,'red');assert.match(growing.text,/growing 12.1 MiB\/s/);
+    const killed=view.evidenceResult({kind:'memory',body:{ok:true,running:false,status:'exited',oom_killed:true}});
+    assert.equal(killed.tone,'red');assert.match(killed.text,/killed for running out of memory/);
+    assert.match(view.checkSummary({kind:'memory',body:{ok:true,running:false,oom_killed:true}}).text,/OOM killed/);
+    assert.equal(view.evidenceResult({kind:'memory',body:{ok:true,running:true,result:{current_mib:45,limit_mib:192,used_pct:23,growth_mib_s:0.1}}}).tone,'green');
+  });
+  check('Release faults have readable labels',()=>{
+    assert.equal(view.remedyLabel('rollback'),'Roll back release');assert.equal(view.scenarioCopy('memory-leak','catalog-b','practice').number,'09');
+    assert.match(view.scenarioCopy('x','catalog-b','challenge').text,/nine faults/);
+  });
   return {passed,scope:'Pure UI state and timer decisions; frontend JavaScript parsed. No visual/browser validation.'};
 }
 if(typeof process!=='undefined' && process.argv[1] && import.meta.url===new URL('file://'+process.argv[1]).href) console.log(run());
