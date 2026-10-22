@@ -939,6 +939,12 @@ async def hiccup(x_aegis_fleet_token: str = Header(default='')):
         worker.start()
         job_threads.append(worker)
     LOGS.append({'at': time.time(), 'ok': True, 'event': 'background job started', 'job': 'index compaction', 'expected_s': HICCUP_S, 'generation': BOOT})
+
+    def finished(workers):
+        for worker in workers:
+            worker.join()
+        LOGS.append({'at': time.time(), 'ok': True, 'event': 'background job finished', 'job': 'index compaction', 'generation': BOOT})
+    threading.Thread(target=finished, args=(list(job_threads),), name='compaction-end', daemon=True).start()
     return {'changed': True, 'seconds': HICCUP_S}
 
 

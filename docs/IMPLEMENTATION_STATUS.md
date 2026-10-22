@@ -128,6 +128,7 @@ Reports are under ignored `state/validation/`. The app is running at http://loca
 - **Real name resolution.** Gateways resolve the catalogue with their own DNS queries to Docker's resolver, caching each answer for 5 seconds; the **Network path** check on a gateway adds a fresh lookup, the resolver beside the one deployed, and a TCP connection to the last address that resolved. The request trace gains a DNS lookup step.
 - **Fourteenth fault: DNS failure.** A settings sync points one gateway's resolver at 127.0.0.53, where nothing listens inside a container. Remedy: **Restore resolver**.
 - **Found on the way:** a stopped catalogue's name stops resolving too. Docker answers SERVFAIL for a stopped container, which the generic `ConnectError` used to hide. Guidance now checks whether the catalogue is running before blaming the resolver, and restoring the resolver is suggested only when it changed or the catalogue is still reachable.
+- AI investigator: log events carry their age, and an open incident is not cleared by a fleet that looks healthy between crashes. With full evidence it got 28 of 30 challenge rounds right across all fourteen faults.
 
 ## Next work
 

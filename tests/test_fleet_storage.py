@@ -317,3 +317,16 @@ def test_gateway_caches_lookups_and_a_repointed_resolver_fails_once_the_answer_e
 def test_only_a_gateway_has_a_resolver_to_repoint(service):
     assert service('POST', '/maintenance/repoint', headers=TOKEN).status_code == 409
     assert 'dns' not in service('GET', '/diagnostics/network').json()
+
+
+def test_the_compaction_logs_its_start_and_its_end(service, monkeypatch):
+    import time
+    monkeypatch.setattr(fleet, 'HICCUP_S', 0.2)
+    assert service('POST', '/maintenance/hiccup', headers=TOKEN).json() == {'changed': True, 'seconds': 0.2}
+    assert service('POST', '/maintenance/hiccup', headers=TOKEN).json()['changed'] is False  # one at a time
+    for _ in range(50):
+        events = [e.get('event') for e in fleet.LOGS]
+        if 'background job finished' in events:
+            break
+        time.sleep(0.05)
+    assert events[-2:] == ['background job started', 'background job finished']

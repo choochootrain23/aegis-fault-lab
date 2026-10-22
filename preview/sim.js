@@ -570,6 +570,7 @@ function apply(node, verb) {
     if (storm.start != null && storm.stoppedAt == null) return false;
     Object.assign(storm, {target: node, start: now(), shedAt: null, stoppedAt: null, hiccupStopped: false});
     setTimeout(() => { if (storm.target === node && storm.stoppedAt == null) log('catalog-b', {ok: true, event: 'background job started', job: 'index compaction', expected_s: HICCUP_S}); }, HICCUP_AFTER * 1000);
+    setTimeout(() => { if (storm.target === node && storm.stoppedAt == null) log('catalog-b', {ok: true, event: 'background job finished', job: 'index compaction'}); }, (HICCUP_AFTER + HICCUP_S) * 1000);
     return true;
   }
   if (verb === 'unstorm') { if (storm.start == null || storm.stoppedAt != null) return false; storm.stoppedAt = now(); return true; }

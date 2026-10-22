@@ -164,6 +164,19 @@ It used the existing evidence volume: the broker deliberately accepts only conta
 - **Full matrix.** All 32 practice rounds passed, every fault on every service it can target. Then 52 challenge rounds passed, until every fault and service had appeared, followed by a reset without recovery. Detection took 5–38 s and verified recovery 5–22 s. The slowest detections were a bad release on a gateway (34 and 38 s): only about half its requests fail, so three failing cycles in five can take a while.
 - **Tests.** Backend tests: 187 pass, 1 skipped, including the resolver against a real local DNS server. UI logic tests: 37 pass. The simulator walkthrough passes with a DNS round in Chromium, Firefox and WebKit.
 
+**AI investigator with the DNS fault (23 October 2026, two more 30-round runs, `gemini-3.5-flash-lite`).**
+
+- **First run.** With full evidence the model chose the right fix in 22 of 30 rounds. It got the DNS failure right 5 of 5 times. Two faults that had appeared only once in the previous run went badly:
+  - **Memory leak, 0 of 4.** Each time, the full inspection caught the service up between crashes. The model said nothing was wrong, citing the prompt's rule that a healthy fleet after recovery needs no action.
+  - **Thermal throttling, 1 of 4.** Three answers were *calm on catalog-b*, citing a "background job started" log event. The event was minutes old, from an earlier round's compaction, because a log outlives investigations and the summary gave event names without times.
+- **Changes.**
+  - Log events now carry their age, and the prompt compares that with how long the investigation has run.
+  - Memory and release summaries keep the uptime.
+  - The "no action" rule now applies only once the status is *recovered*; while an incident is open, the model is told to look for restarts first.
+  - The compaction that triggers a retry storm now logs when it finishes, as a real job would.
+- **Second run.** 28 of 30 right with full evidence: the memory leak 3 of 3, thermal throttling 2 of 3, and the DNS failure 3 of 3. The two misses were a thermal round answered *ratelimit on catalog-b*, and the only retry storm, answered *calm on catalog-b* (the compaction had no end event yet in that run). After its own fix was verified, the model answered "no action" in all 26 rounds where that was asked.
+- **Variation.** Runs vary. The same prompt scored 30 of 30 and then 22 of 30 on different random draws of faults, so per-fault results from a handful of rounds are anecdotes, not rates.
+
 ## Reproduce browser reviews
 
 Use a development Python environment with `requirements.lock`, Playwright 1.64.0 and its Chromium headless shell:
