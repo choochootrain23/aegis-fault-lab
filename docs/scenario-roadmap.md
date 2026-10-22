@@ -19,8 +19,8 @@ New faults modelled on the kinds of incident that public data-centre reports des
 | 4 | **Memory leak and repeated OOM kills**: the service crash-loops as the kernel kills it and the deploy controller restarts it | Stopped service ("start" seems to work, then it fails again) | Roll back release | **Done** (F9) |
 | 1 | **Traffic flood from one client**: high CPU from serving requests | CPU starvation (no runaway job to stop) | Rate-limit top client | **Done** (F10) |
 | 2 | **Retry storm**: a brief catalogue slowdown is kept alive by app users retrying without backoff, overloading one gateway | A traffic flood; a broken gateway | Enable load shedding | **Done** (F11), after adding request deadlines and a bulkhead (see [validation](VALIDATION.md)) |
-| 6 | **Thermal throttling / power capping**: everything slower at once, CPU throttled but usage low | CPU starvation on every node | Shed load, then lift the cap once cooling recovers | Planned: needs facility telemetry and a reversible "power cap" broker operation |
-| 7 | **Rack power loss**: two services on one PDU stop together | Two separate faults | Reset the breaker, start in dependency order | Planned: facility telemetry |
+| 6 | **Thermal throttling / power capping**: the gateways fail under a power cap while the catalogue stays fast | CPU starvation | Lift power cap, once cooling recovers | **Done** (F13), with steady user load, since a cap alone barely slows light requests |
+| 7 | **Rack power loss**: two services on one PDU stop together | Two separate stopped services | Reset breaker | **Done** (F12), with a simulated facility layer |
 | 8 | **Brownout and restart loops** | Memory leak (memory flat here) | Move to the redundant feed | Planned |
 | 9 | **Clock skew** on one gateway: signed requests rejected | Bad release, config drift | Resync clock | Planned: needs request signing |
 | 10 | **DNS resolution failure** on one gateway | Stopped catalogue (it is fine, and reachable by IP) | Restore resolver | Planned |

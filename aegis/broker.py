@@ -15,6 +15,9 @@ TARGETS = ('gateway-a', 'catalog-b', 'gateway-c')
 TOKEN = os.getenv('AEGIS_BROKER_TOKEN', '')
 READ_VERBS = ('inspect', 'resources')
 NET_VERBS = ('delay', 'undelay', 'drop', 'undrop')
+CAP_VERBS = ('cap', 'uncap')
+# The power cap of the thermal fault: exactly these two CPU limits, nothing in between and nothing above the deployed one.
+CPU_CAPPED, CPU_DEPLOYED = 50_000_000, 250_000_000  # 0.05 and 0.25 CPU, in Docker's NanoCpus
 DELAY_MS = 600          # fixed egress delay of the network-delay fault
 LOSS_PCT = 50           # fixed egress loss of the packet-loss fault; far above real-world harm (1-2%) so it shows within a minute
 # Each network fault's exact netem parameters, as `tc qdisc show` prints them after the queue limit.
@@ -26,7 +29,7 @@ HELPER_LABEL = PROJECT + '.role'
 class Operation(BaseModel):
     model_config = ConfigDict(extra='forbid')
     target: Literal['gateway-a', 'catalog-b', 'gateway-c']
-    verb: Literal['inspect', 'resources', 'start', 'stop', 'delay', 'undelay', 'drop', 'undrop']
+    verb: Literal['inspect', 'resources', 'start', 'stop', 'delay', 'undelay', 'drop', 'undrop', 'cap', 'uncap']
     generation: str | None = Field(default=None, max_length=80)
 
 
@@ -91,7 +94,8 @@ class Docker:
         if op.verb not in READ_VERBS:
             if not op.generation:
                 raise ValueError('Mutation requires inspected container identity')
-            changed = await (self.network(data, op.verb) if op.verb in NET_VERBS else self.mutate(data, op.verb))
+            changed = await (self.network(data, op.verb) if op.verb in NET_VERBS else self.cpu_cap(data, op.verb) if op.verb in CAP_VERBS
+                             else self.mutate(data, op.verb))
             data = await self.resolve(op.target)
             if data['Id'] != op.generation:
                 raise ValueError('Container replaced during action; result uncertain')
@@ -110,6 +114,15 @@ class Docker:
         if data['State']['Running'] == (verb == 'start'):
             return False
         response = await self.client.post('/containers/' + data['Id'] + '/' + verb, params={'t': 3})
+        response.raise_for_status()
+        return True
+
+    async def cpu_cap(self, data, verb):
+        """Set the container's CPU limit to the fixed capped or deployed value; False when it is already there."""
+        wanted = CPU_CAPPED if verb == 'cap' else CPU_DEPLOYED
+        if data['HostConfig'].get('NanoCpus') == wanted:
+            return False
+        response = await self.client.post('/containers/' + data['Id'] + '/update', json={'NanoCpus': wanted})
         response.raise_for_status()
         return True
 

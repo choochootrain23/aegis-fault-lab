@@ -674,3 +674,23 @@ kbd{display:inline-block;min-width:24px;padding:4px 6px;border:1px solid var(--l
 .memory-trend .memory-limit{stroke:var(--ink);stroke-width:1;stroke-dasharray:3 3;vector-effect:non-scaling-stroke}
 .remedies .remedy-ratelimit:not(:disabled){background:#6d4c41;border-color:#6d4c41;box-shadow:5px 5px 0 rgba(109,76,65,.22)}
 .remedies .remedy-shed:not(:disabled){background:#37474f;border-color:#37474f;box-shadow:5px 5px 0 rgba(55,71,79,.22)}
+.check-icon.olive{background:#827717}
+.remedies .remedy-breaker:not(:disabled){background:#bf360c;border-color:#bf360c;box-shadow:5px 5px 0 rgba(191,54,12,.22)}
+.sim-tag{margin-left:6px;padding:1px 6px;border:1px solid var(--line-strong);font:600 9px/1.4 var(--mono);font-style:normal;letter-spacing:.08em;text-transform:uppercase;vertical-align:middle}
+.sim-note{color:var(--warn)}
+
+/* Thirteen checks and twelve fixes: the fixes sit under the live map in a grid, and each check is one compact row
+   with its result beside the title, so the inspector is no longer twice the height of the map. */
+.fleet-panel .recovery-box{border-top:1px solid var(--line)}
+.fleet-panel .remedies{grid-template-columns:repeat(auto-fill,minmax(190px,1fr))}
+.fleet-panel .recovery-box p{text-align:left}
+#action-node{font-weight:700;color:var(--ink)}
+.checks button{grid-template-columns:30px minmax(0,1fr) auto;grid-template-areas:'icon text result';padding:10px 22px;row-gap:0}
+.checks button>.check-icon{width:30px;height:30px;font-size:16px;align-self:center}
+.checks button>.check-result{justify-self:end;align-self:center}
+.checks button>span:last-child:not(.check-result){display:none}
+.checks small{line-height:1.35}
+@media(min-width:1151px){.work-grid{grid-template-columns:minmax(0,1fr) 400px}}
+.fleet-panel .remedies .button{text-align:left;line-height:1.35}
+.checks .sim-tag{margin-left:6px;padding:1px 5px;border-color:var(--warn);color:var(--warn);font-size:8.5px}
+.remedies .remedy-uncap:not(:disabled){background:#0277bd;border-color:#0277bd;box-shadow:5px 5px 0 rgba(2,119,189,.22)}

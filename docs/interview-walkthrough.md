@@ -1,6 +1,6 @@
 # Interview walkthrough
 
-Four stories that explain AegisRack in an interview: one fault end to end, the privilege trade-off, a restart failure, and the AI's uncertainty. Each starts with a short answer, then the detail and likely follow-up questions. Numbers come from [validation](VALIDATION.md); quote them as measured on one laptop, not as benchmarks.
+Five stories that explain AegisRack in an interview: one fault end to end, the privilege trade-off, a restart failure, the AI's uncertainty, and a failure that outlived its cause. Each starts with a short answer, then the detail and likely follow-up questions. Numbers come from [validation](VALIDATION.md); quote them as measured on one laptop, not as benchmarks.
 
 ## 1. One fault, end to end: network delay on the catalogue
 
@@ -21,11 +21,11 @@ Four stories that explain AegisRack in an interview: one fault end to end, the p
 
 ## 2. The privilege trade-off: who can touch Docker
 
-**Short answer.** Access to the Docker socket is effectively root on the host, so the web-facing controller never gets it. A separate broker holds the socket and accepts only six fixed operations on three named containers. The network fault needs `NET_ADMIN`, so instead of granting it to a long-lived service, the broker starts a throwaway helper with only that capability, inside one container's network, for one fixed command.
+**Short answer.** Access to the Docker socket is effectively root on the host, so the web-facing controller never gets it. A separate broker holds the socket and accepts only ten fixed operations on three named containers. The network fault needs `NET_ADMIN`, so instead of granting it to a long-lived service, the broker starts a throwaway helper with only that capability, inside one container's network, for one fixed command.
 
 **Detail.**
 
-- **Broker.** It accepts inspect, read resource use, start, stop, and add or remove the fixed delay, on gateway-a, catalog-b and gateway-c only. It checks each container's identity and security settings before acting. It sits on an internal network and requires a token.
+- **Broker.** It accepts inspect, read resource use, start, stop, add or remove the fixed delay or packet loss, and set the CPU limit to exactly 0.05 or 0.25, on gateway-a, catalog-b and gateway-c only. It checks each container's identity and security settings before acting. It sits on an internal network and requires a token.
 - **Services.** They run read-only, as a non-root user, with no Linux capabilities, capped memory, CPU and processes, and no ports open to the host network. The UI listens on `localhost` only and rejects other hosts.
 - **Helper container.** It is given `NET_ADMIN` and nothing else (all other capabilities dropped). It has a read-only filesystem, no mounts, no new privileges, 32 MiB of memory and 16 processes. It joins only the target's network namespace and runs one fixed `tc` command. It is removed straight away. Removal deletes only a queue with exactly the fault's settings and refuses to touch anything else.
 - **Faults inside services.** CPU, disk and config faults go through maintenance endpoints protected by a second token. Disk filling refuses to run unless `/tmp` really is a small tmpfs, and never writes more than 16 MiB.
@@ -68,6 +68,21 @@ Four stories that explain AegisRack in an interview: one fault end to end, the p
 - *So is it 97% accurate?* No. It is 60 answers from one model and one question wording, on faults I designed. It shows the assistant is useful when the evidence is complete. The early wrong guess shows why its answers must stay advisory and cited.
 - *Why is it optional?* The lab must teach without it, and an API key is a cost and a secret. Without a key nothing is sent anywhere.
 - *What would you evaluate next?* Healthy and ambiguous states, other models, different question wording, and whether learners actually finish faster with it.
+
+## 5. A failure that outlived its cause: the retry storm
+
+**Short answer.** App users retried every failed request at once. An 8-second slowdown in the catalogue made requests time out, the retries quadrupled the load on the gateway, and the gateway stayed overloaded long after the slowdown ended: a metastable failure. Load shedding fixed it in about 10 seconds. Building it safely took longer than the fault itself, because the overload first broke the lab in three ways.
+
+**Detail.**
+
+- **What broke the lab.** Starlette's decorator middleware cancelled handlers when callers disconnected and leaked every pooled connection; Docker's 1,024 open files ran out; and services kept processing thousands of abandoned requests for minutes after the load stopped.
+- **What fixed it.** Plain ASGI middleware; 65,536 open files; and deadline propagation: every request says when its caller stops waiting, services drop work past it, and gateways pass the tighter deadline on.
+- **What deadlines did to the storm.** With deadlines alone, the first storm healed itself about 10 seconds after the trigger. The wasted work was what had sustained it. A storm that lasts needed users near the gateway's capacity, and the bottleneck turned out to be the gateway, not the catalogue I had assumed.
+
+**Follow-ups.**
+
+- *Why not just fix the client's retries?* In real systems you often do not control the clients. Shedding at the server breaks the loop whatever they do, and deadlines stop wasted work.
+- *How did you know the storm, not your trigger, was sustaining it?* One trial looked stuck, but the trigger's own "stop job" had timed out under the overload and was honestly recorded as unknown. The shipped trigger stops itself, and the storm still persisted.
 
 ## Honest limits to volunteer
 

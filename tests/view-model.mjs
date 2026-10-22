@@ -100,12 +100,23 @@ export function run(){
   });
   check('Traffic flood is catalogue-only and has a readable fix',()=>{
     assert.deepEqual([...view.faultTargets('traffic-flood')],['catalog-b']);assert.equal(view.remedyLabel('ratelimit'),'Rate-limit top client');
-    assert.equal(view.scenarioCopy('traffic-flood','catalog-b','practice').number,'10');assert.match(view.scenarioCopy('x','catalog-b','challenge').text,/eleven faults/);
+    assert.equal(view.scenarioCopy('traffic-flood','catalog-b','practice').number,'10');assert.match(view.scenarioCopy('x','catalog-b','challenge').text,/One of \w+ faults on one of the three services/);
   });
   check('A traffic record that is mostly retries reads as a failure',()=>{
     const storm=view.evidenceResult({kind:'traffic',body:{ok:true,result:{window_s:60,clients:[{client:'mobile-app',requests:9000,retries:6600,rejected:0}],quotas:[]}}});
     assert.equal(storm.tone,'red');assert.match(storm.text,/73% retries/);
     assert.deepEqual([...view.faultTargets('retry-storm')],['gateway-a','gateway-c']);assert.equal(view.remedyLabel('shed'),'Enable load shedding');
+  });
+  check('Facility records are labelled simulated and an open breaker reads as a failure',()=>{
+    const open=view.evidenceResult({kind:'facility',body:{ok:true,simulated:true,pdu:'PDU-A',rack:'R1',breaker:'open'}});
+    assert.equal(open.tone,'red');assert.match(open.text,/simulated/);assert.match(open.text,/no power/);
+    assert.equal(view.evidenceResult({kind:'facility',body:{ok:true,simulated:true,pdu:'PDU-B',rack:'R2',breaker:'closed',load_kw:0.15,inlet_c:25.1}}).tone,'green');
+    assert.equal(view.remedyLabel('breaker'),'Reset breaker');assert.deepEqual([...view.faultTargets('power-loss')],['catalog-b']);
+  });
+  check('An active power cap reads as a facility failure',()=>{
+    const cap=view.evidenceResult({kind:'facility',body:{ok:true,simulated:true,pdu:'PDU-A',breaker:'closed',power_cap:{active:true,cpu_limit:0.05},cooling:{crac_2:'failed'},inlet_c:38.4}});
+    assert.equal(cap.tone,'red');assert.match(cap.text,/power cap active/);assert.match(cap.text,/cooling failed/);
+    assert.equal(view.remedyLabel('uncap'),'Lift power cap');
   });
   return {passed,scope:'Pure UI state and timer decisions; frontend JavaScript parsed. No visual/browser validation.'};
 }

@@ -6,13 +6,13 @@ A hands-on lab for practising Linux service troubleshooting. Three small web ser
 > - **[Browser simulator](https://choochootrain23.github.io/aegis-fault-lab/)**: opens in any browser with nothing to install. **Nothing in it is real**: services and measurements are generated in your tab.
 > - **[Full lab](#quick-start)**: real containers, real failures and measured evidence on your own Linux machine. About 10 minutes to set up.
 
-**Status:** a working milestone. Eleven fault types run on real Docker and are validated end to end, with an optional AI investigator that reads only the evidence on the page. See [limitations](#limitations).
+**Status:** a working milestone. Thirteen fault types run on real Docker and are validated end to end, with an optional AI investigator that reads only the evidence on the page. See [limitations](#limitations).
 
 ## Contents
 
 1. [What makes it different](#what-makes-it-different)
 2. [Quick start](#quick-start)
-3. [What you practise](#what-you-practise): [the eleven faults](#the-eleven-faults) and [the twelve checks](#the-twelve-checks)
+3. [What you practise](#what-you-practise): [the thirteen faults](#the-thirteen-faults) and [the thirteen checks](#the-thirteen-checks)
 4. [Your first investigation](#your-first-investigation)
 5. [Optional AI investigator](#optional-ai-investigator)
 6. [Everyday use and troubleshooting](#everyday-use-and-troubleshooting)
@@ -25,7 +25,7 @@ A hands-on lab for practising Linux service troubleshooting. Three small web ser
 - **Real failures, real evidence.** A stopped container is really stopped; a full disk really fails writes with `ENOSPC`; packet loss is a real kernel queue dropping real packets; a memory leak really ends in the kernel's out-of-memory kill. Every check result is a stored measurement you can open and cite.
 - **Faults have look-alikes.** Packet loss resembles network delay, a zero quota or a bad release resembles config drift, a crash-looping leak resembles a stopped service. The fix for the look-alike reports *nothing changed*, so guessing does not pay.
 - **Recovery must be proven.** An accepted fix is not proof. The lab credits recovery only after three healthy cycles in a row, or ten if the failure has already come and gone on its own, so a lucky moment cannot pass a wrong fix.
-- **Safe by design.** The web page never touches Docker. A separate broker accepts eight fixed operations on three named containers, and every service runs read-only, unprivileged and resource-capped.
+- **Safe by design.** The web page never touches Docker. A separate broker accepts ten fixed operations on three named containers, and every service runs read-only, unprivileged and resource-capped.
 
 ## Quick start
 
@@ -91,9 +91,9 @@ Keeping it safe:
 
 The core skill is **finding the boundary of a failure**. Both gateways call the shared catalogue, so a fault on the catalogue reaches both gateways, while a fault on one gateway stays local and the other gateway stays healthy. Comparing the two gateways is the quickest first step.
 
-### The eleven faults
+### The thirteen faults
 
-Eight faults can target any of the three services. The zero quota and the traffic flood only exist on the shared catalogue, which enforces quotas and is the one service a batch client calls directly; the retry storm only exists on a gateway, where app users arrive.
+Eight faults can target any of the three services. The zero quota and the traffic flood only exist on the shared catalogue, which enforces quotas and is the one service a batch client calls directly; the retry storm only exists on a gateway, where app users arrive; the rack power loss is named by the catalogue's rack, R1, which it shares with gateway-a; and thermal throttling affects the whole room, so it is named by the catalogue too.
 
 | Fault | What you see | Evidence that gives it away | Look-alike | Fix |
 | --- | --- | --- | --- | --- |
@@ -105,15 +105,17 @@ Eight faults can target any of the three services. The zero quota and the traffi
 | **Packet loss** | Intermittent: the same request is sometimes instant, sometimes 200–600 ms late, sometimes a timeout | **Network path** shows a `netem` queue dropping 50% of packets and many resent TCP segments | Network delay | **Remove packet loss** |
 | **Quota set to zero** | Both gateways fail with HTTP 429, yet the catalogue is up, fast and green to its own health checks | **Traffic & quotas** shows each gateway rejected against a limit of 0 per second, pushed by the quota system | Config drift (the running config is unchanged) | **Reset client quotas** |
 | **Bad release** | About half of business requests fail with HTTP 500 (`TypeError`); the machine looks fine | **Release history** shows v1.5.0 deployed just before the errors; logs name the version | Config drift (the running config is unchanged) | **Roll back release** |
-| **Traffic flood** | Everything is slow: the catalogue's checks and both gateways' requests take about 450 ms, though nothing fails | **Resource use** shows the catalogue's CPU at its limit, but its logs show no job; **Traffic & quotas** shows one caller, report-exporter, sending about 360 requests a second with no quota | CPU starvation (there is no runaway job to stop) | **Rate-limit top client** |
+| **Traffic flood** | Everything is slow: the catalogue's checks and both gateways' requests take about half a second, though nothing fails | **Resource use** shows the catalogue's CPU at its limit, but its logs show no job; **Traffic & quotas** shows one caller, report-exporter, sending about 480 requests a second with no quota | CPU starvation (there is no runaway job to stop) | **Rate-limit top client** |
 | **Retry storm** | One gateway fails almost every request, long after a short slowdown in the catalogue has ended; the other gateway and the catalogue are fine | **Resource use** shows that gateway at its CPU limit while the catalogue idles; **Traffic & quotas** on it shows most requests are retries | A traffic flood, or a broken gateway (nothing is broken) | **Enable load shedding** |
+| **Rack power loss** | The catalogue and gateway-a stop at the same moment, and starting either reports no power | **Facility** (simulated) shows the PDU-A breaker open and every service it feeds | Two separate stopped services | **Reset breaker** |
+| **Thermal throttling** | Both gateways turn slow even to liveness checks and fail most requests, while the catalogue stays fast | **Resource use** shows each gateway's CPU limit at 0.05 instead of the deployed 0.25; **Facility** (simulated) shows a failed cooling unit, the inlet at 38 °C and a power cap | CPU starvation (there is no job to stop) | **Lift power cap**, refused until cooling recovers after about 75 s |
 | **Memory leak** | The service crash-loops: healthy for about 14 s, then killed, then restarted | **Memory** shows growth of about 12 MiB/s towards the 192 MiB limit and the last exit as an out-of-memory kill; **Release history** shows v1.5.1 re-deployed after every restart | A stopped service (starting it only begins the next loop) | **Roll back release** |
 
-The packet-loss rate is deliberately extreme. Real links already hurt at 1–2% loss; 50% makes the effect show within a minute. The zero-quota fault is inspired by public reports of the December 2020 Google authentication outage, where a quota system reduced capacity to zero. The release faults start a rollout: while it lasts, a **deploy controller** keeps the new version running, restarting a crashed service after three missed health cycles and re-applying the release, as an orchestrator such as Kubernetes would. Rolling back ends the rollout. The traffic flood comes from a separate small `reports` service on the internal network, whose export job honours `Retry-After` with jitter once it is rate-limited, as a well-behaved client should. The retry storm is a metastable failure, the pattern behind many cascading outages: app users retry every failure at once, so an 8-second compaction in the catalogue tips one gateway into an overload that sustains itself. Planned faults (power and cooling events) are listed in the [scenario roadmap](docs/scenario-roadmap.md).
+The packet-loss rate is deliberately extreme. Real links already hurt at 1–2% loss; 50% makes the effect show within a minute. The zero-quota fault is inspired by public reports of the December 2020 Google authentication outage, where a quota system reduced capacity to zero. The release faults start a rollout: while it lasts, a **deploy controller** keeps the new version running, restarting a crashed service after three missed health cycles and re-applying the release, as an orchestrator such as Kubernetes would. Rolling back ends the rollout. The traffic flood comes from a separate small `reports` service on the internal network, whose export job honours `Retry-After` with jitter once it is rate-limited, as a well-behaved client should. The retry storm is a metastable failure, the pattern behind many cascading outages: app users retry every failure at once, so an 8-second compaction in the catalogue tips one gateway into an overload that sustains itself. The facility layer is a clearly labelled simulation: containers have no power supply, so racks, PDUs and breakers are modelled, but a tripped breaker really stops the containers it feeds, and they really stay down until it is reset. Thermal throttling uses the same layer: a simulated cooling failure, a real power cap on every container's CPU and real daytime users, because a cap alone barely slows these light requests (measured: a 2 ms median even at 0.02 CPU). Planned faults (compound incidents, DNS, clock skew, partitions) are listed in the [scenario roadmap](docs/scenario-roadmap.md).
 
 **Practice** mode tells you the fault and lets you choose the service. **Challenge** mode picks both at random and hides them until you reveal them or end the attempt. The 15-minute timer can be extended; if it runs out and you do not respond within 60 seconds, the lab resets itself, even with the browser closed.
 
-### The twelve checks
+### The thirteen checks
 
 Select a service on the live map, then run any check, in any order. Each result goes into the **evidence notebook**, where you can open the raw measurement and tick it as evidence for your diagnosis.
 
@@ -131,6 +133,7 @@ Select a service on the live map, then run any check, in any order. Each result 
 | **Traffic & quotas** | Requests per caller over the last minute, rejections and errors, and the per-caller quotas the service enforces |
 | **Release history** | The running version, and every version deployed to this process, by whom and when |
 | **Memory** | How the container last exited (including out-of-memory kills, from Docker) and, while it runs, memory against its limit over the last minute |
+| **Facility** *(simulated)* | The rack, power feed (PDU), breaker, load and inlet temperature of a service, and every service sharing that feed |
 
 ## Your first investigation
 
@@ -141,7 +144,7 @@ Select a service on the live map, then run any check, in any order. Each result 
 5. Select a service and choose a fix. Trying the wrong one is allowed: it reports that nothing changed and is recorded. Then watch verification: **three healthy, fast cycles in a row**, or **ten** if the failure had already come and gone on its own, before **Recovery verified**.
 6. Optionally write your diagnosis, ticking the evidence that supports it, then press **End & reset** to restore every service. The **incident report** shows how long detection, checks and recovery took, and **Replay** animates every request over time. Past investigations stay in **Investigation history**.
 
-**Keyboard shortcuts:** **A**, **B** and **C** select gateway-a, catalog-b and gateway-c; **1**–**9** and **0** run the selected service's first ten checks; **E** explains the evidence; **P** pauses the notebook; **?** lists them all. Nothing that changes the services has a shortcut.
+**Keyboard shortcuts:** **A**, **B** and **C** select gateway-a, catalog-b and gateway-c; **1**–**9** and **0** run the selected service's first ten checks (the rest are a click away); **E** explains the evidence; **P** pauses the notebook; **?** lists them all. Nothing that changes the services has a shortcut.
 
 **No install?** The [browser simulator](https://choochootrain23.github.io/aegis-fault-lab/) runs the same page against a JavaScript copy of the controller's rules, calibrated against measurements from the real lab. It is clearly marked **SIMULATION** and resets when you reload.
 
@@ -228,7 +231,7 @@ flowchart LR
 - During a release fault, a deploy controller restarts a crashed service after three missed cycles and re-applies the release, using the same broker and maintenance operations as everything else, until a rollback ends the rollout.
 - Actions are recorded before they are sent; after a restart, an unconfirmed action is marked *unknown* and never replayed.
 
-**The broker** is the only part that can touch Docker. It accepts eight fixed operations on the three named containers (inspect, read resource use, start, stop, add or remove the traffic delay, add or remove the packet loss) and checks each container's identity and security settings first.
+**The broker** is the only part that can touch Docker. It accepts ten fixed operations on the three named containers (inspect, read resource use, start, stop, add or remove the traffic delay, add or remove the packet loss, and set the CPU limit to exactly 0.05 or back to exactly 0.25 for the power cap) and checks each container's identity and security settings first.
 
 **Network faults** are applied by a short-lived helper container that the broker starts inside the target's own network namespace. The helper has only the `NET_ADMIN` capability, no mounts and a read-only filesystem, runs one fixed `tc` command and is removed straight away. Removal deletes only a queue with exactly that fault's settings, so removing the delay leaves a loss queue alone (and the reverse), and anything else is refused.
 
@@ -302,7 +305,7 @@ The build copies `web/` unchanged apart from relabelling every real-measurement 
 ## Limitations
 
 - **Scope:** containers share one kernel and the business data is synthetic. Nothing here claims physical hardware repair; planned power and cooling scenarios would use clearly labelled simulated telemetry.
-- **AI investigator:** optional and off by default. In 30 hidden-fault rounds with `gemini-3.5-flash-lite` (before the six newest faults were added) it named the correct fix every time once all inspections had been run, but once guessed too early from thin evidence. Other models are unevaluated. Treat answers as suggestions and check what they cite.
+- **AI investigator:** optional and off by default. In 30 hidden-fault rounds with `gemini-3.5-flash-lite` (before the eight newest faults were added) it named the correct fix every time once all inspections had been run, but once guessed too early from thin evidence. Other models are unevaluated. Treat answers as suggestions and check what they cite.
 - **Not yet validated:** screen-reader use (the automated axe audit passes, but it cannot judge everything). The simulator passes automatically in Chromium, Firefox and WebKit, and has been checked by hand in Safari.
 
 ## Further reading
@@ -310,7 +313,7 @@ The build copies `web/` unchanged apart from relabelling every real-measurement 
 - [Validation](docs/VALIDATION.md): what was measured on real Docker, and what each test layer does and does not establish
 - [Scenario roadmap](docs/scenario-roadmap.md): the planned faults and their look-alikes
 - [Fault catalogue](docs/fault-catalogue.md) and [architecture](docs/architecture.md)
-- [Interview walkthrough](docs/interview-walkthrough.md): one fault end to end, the privilege trade-off, a restart failure and the AI's uncertainty
+- [Interview walkthrough](docs/interview-walkthrough.md): one fault end to end, the privilege trade-off, a restart failure, the AI's uncertainty, and a retry storm that outlived its cause
 - [Example incident exports](docs/examples/) from real challenge runs
 - [Implementation checkpoints](docs/IMPLEMENTATION_STATUS.md), [vision](docs/vision.md) and [roadmap](docs/roadmap.md)
 

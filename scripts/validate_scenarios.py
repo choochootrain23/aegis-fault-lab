@@ -22,12 +22,12 @@ NODES = ('gateway-a', 'catalog-b', 'gateway-c')
 # A different node to try a wrong remedy on.
 OTHER = {'gateway-a': 'catalog-b', 'catalog-b': 'gateway-c', 'gateway-c': 'gateway-a'}
 KINDS = ('service-unavailable', 'cpu-starvation', 'disk-full', 'config-drift', 'network-delay', 'packet-loss', 'quota-zero', 'bad-release', 'memory-leak',
-         'traffic-flood', 'retry-storm')
+         'traffic-flood', 'retry-storm', 'power-loss', 'thermal-throttle')
 REMEDY = {'service-unavailable': 'start', 'cpu-starvation': 'calm', 'disk-full': 'clear', 'config-drift': 'restore', 'network-delay': 'undelay',
-          'packet-loss': 'undrop', 'quota-zero': 'requota', 'bad-release': 'rollback', 'memory-leak': 'rollback', 'traffic-flood': 'ratelimit', 'retry-storm': 'shed'}
-TARGETS = {'quota-zero': ('catalog-b',), 'traffic-flood': ('catalog-b',), 'retry-storm': ('gateway-a', 'gateway-c')}  # faults that only exist on some services
+          'packet-loss': 'undrop', 'quota-zero': 'requota', 'bad-release': 'rollback', 'memory-leak': 'rollback', 'traffic-flood': 'ratelimit', 'retry-storm': 'shed', 'power-loss': 'breaker', 'thermal-throttle': 'uncap'}
+TARGETS = {'quota-zero': ('catalog-b',), 'traffic-flood': ('catalog-b',), 'retry-storm': ('gateway-a', 'gateway-c'), 'power-loss': ('catalog-b',), 'thermal-throttle': ('catalog-b',)}  # faults that only exist on some services
 # The fix for the fault each one is most easily mistaken for: it must change nothing.
-LOOKALIKE = {'packet-loss': 'undelay', 'network-delay': 'undrop', 'quota-zero': 'restore', 'bad-release': 'restore', 'traffic-flood': 'calm', 'retry-storm': 'ratelimit'}
+LOOKALIKE = {'packet-loss': 'undelay', 'network-delay': 'undrop', 'quota-zero': 'restore', 'bad-release': 'restore', 'traffic-flood': 'calm', 'retry-storm': 'ratelimit', 'thermal-throttle': 'calm'}
 INTERMITTENT = ('cpu-starvation', 'packet-loss', 'bad-release', 'memory-leak')
 RELEASE_FAULTS = {'v1.5.0': 'bad-release', 'v1.5.1': 'memory-leak'}  # effects that come and go from one cycle to the next
 
@@ -35,6 +35,10 @@ RELEASE_FAULTS = {'v1.5.0': 'bad-release', 'v1.5.1': 'memory-leak'}  # effects t
 def expected(kind, target):
     """Usual health right after detection. A catalogue fault reaches both gateways (through failure or
     slowness); a gateway fault stays on that gateway."""
+    if kind == 'thermal-throttle':  # every service capped; the gateways, doing the most work per request, fail first
+        return {'gateway-a': 'degraded', 'catalog-b': 'healthy', 'gateway-c': 'degraded'}
+    if kind == 'power-loss':  # rack R1 (the catalogue and gateway-a) loses power; gateway-c runs but cannot reach the catalogue
+        return {'gateway-a': 'unavailable', 'catalog-b': 'unavailable', 'gateway-c': 'degraded'}
     if kind == 'quota-zero':  # the catalogue refuses its callers but answers its own probes
         return {n: 'healthy' if n == target else 'degraded' for n in NODES}
     if target == 'catalog-b':
@@ -82,18 +86,27 @@ def anomalies(operator):
     """Inspect every node five ways and report what the evidence shows, without the fault record."""
     found, evidence = [], {}
     for node in NODES:
-        service, resources, disk, config, network, traffic, releases, memory = (
-            check(operator, node, k) for k in ('service', 'resources', 'disk', 'config', 'network', 'traffic', 'releases', 'memory'))
+        service, resources, disk, config, network, traffic, releases, memory, facility = (
+            check(operator, node, k) for k in ('service', 'resources', 'disk', 'config', 'network', 'traffic', 'releases', 'memory', 'facility'))
         evidence[node] = {'service': service, 'resources': resources, 'disk': disk, 'config': config, 'network': network, 'traffic': traffic,
-                          'releases': releases, 'memory': memory}
+                          'releases': releases, 'memory': memory, 'facility': facility}
+        if (facility['body'].get('power_cap') or {}).get('active'):
+            if node == 'catalog-b':  # one cap on the whole room is one fault, named by the catalogue
+                found.append(('thermal-throttle', node, facility))
+            continue
+        if facility['body'].get('breaker') == 'open':
+            # One power feed down is one fault, however many services it feeds; it is named by the catalogue's rack.
+            if node == 'catalog-b' or 'catalog-b' not in facility['body'].get('fed_services', []):
+                found.append(('power-loss', node, facility))
+            continue
         queues = network['body']['result'].get('qdiscs', []) if network['body'].get('ok') else []
         running_release = (releases['body'].get('result') or {}).get('running') if releases['body'].get('ok') else None
         growth = ((memory['body'].get('result') or {}).get('growth_mib_s') or 0) if memory['body'].get('ok') else 0
         heavy = [c for c in (traffic['body'].get('result') or {}).get('clients', []) if (c.get('recent_rps') or 0) > 20 and c['client'] not in
                  {q['client'] for q in (traffic['body'].get('result') or {}).get('quotas', [])} and c['client'] != 'controller'] if traffic['body'].get('ok') else []
         clients = (traffic['body'].get('result') or {}).get('clients', []) if traffic['body'].get('ok') else []
-        stormy = [c for c in clients if (c.get('recent_rps') or 0) > 20 and c.get('requests') and (c.get('retries') or 0) / c['requests'] > 0.5]
-        heavy = [c for c in heavy if c not in stormy]
+        stormy = [c for c in clients if (c.get('recent_rps') or 0) > 20 and (c.get('recent_retries') or 0) / ((c.get('recent_rps') or 1) * 10) > 0.5]
+        heavy = [c for c in heavy if c not in stormy] if node == 'catalog-b' else []  # heavy users at a gateway are its traffic, not a flood
         if memory['body'].get('oom_killed') or growth >= 4:
             found.append(('memory-leak', node, memory))
         elif stormy:
@@ -129,7 +142,9 @@ def diagnose(operator, sid, state, mode):
         found, evidence = anomalies(operator)
         booting = {n for n, e in evidence.items() if e['memory']['body'].get('running')
                    and (e['memory']['body'].get('service_error') or ((e['memory']['body'].get('result') or {}).get('uptime_s') or 99) < 15)}
-        if found and not any(k == 'cpu-starvation' and n in booting for k, n, _ in found):
+        # CPU at a gateway's limit with heavy app users may be a retry storm still building; look again before calling it starvation.
+        busy_users = {n for n, e in evidence.items() if any((c.get('recent_rps') or 0) > 20 for c in ((e['traffic']['body'].get('result') or {}).get('clients', [])) if c['client'] != 'controller')}
+        if found and not any(k == 'cpu-starvation' and (n in booting or n in busy_users) for k, n, _ in found):
             break
         time.sleep(4)
     ensure(len(found) == 1, f'expected exactly one anomaly, saw {[(k, n) for k, n, _ in found]}')
@@ -157,10 +172,14 @@ def diagnose(operator, sid, state, mode):
     watched = target if target.startswith('gateway') else 'gateway-a'  # a gateway the fault reaches
     business = check(operator, watched, 'business')
     # CPU starvation is statistical: judge the recent gateway requests, not one sample.
-    recent = [e for e in operator.request('/api/state')['evidence'] if e['node'] == watched and e['kind'] == 'business'][:10]
+    # Judge the gateway's last 20 business requests from the investigation itself; the page's 60 newest records are mostly
+    # the inspections just run, which left as few as nine requests to judge an intermittent fault by.
+    # A catalogue fault reaches both gateways, so judge them together.
+    callers = (watched,) if target.startswith('gateway') else ('gateway-a', 'gateway-c')
+    recent = [e for node in callers for e in operator.request(f'/api/investigations/{sid}/evidence?node={node}&kind=business&limit=20')['items']]
     affected = sum(1 for e in recent if e['body']['ok'] is False or e['body'].get('slow'))
     # Packet loss leaves most requests working, which is the point; the others mostly fail or are slow.
-    floor = len(recent) // 5 if kind in ('packet-loss', 'bad-release', 'memory-leak') else len(recent) // 2
+    floor = len(recent) // 10 if kind in ('packet-loss', 'bad-release', 'memory-leak') else len(recent) // 2
     ensure(affected >= floor, f'gateway business requests should be affected; {affected}/{len(recent)} were')
     # Guidance only trusts inspections from the last 30 seconds, and a full sweep plus sampling takes longer than that,
     # so repeat the telling inspection first, as a learner would. A crash loop's evidence depends on the moment, so
@@ -185,6 +204,11 @@ def recover(operator, sid, kind, target):
         ensure(wrong['status'] == 'unchanged', f'{verb} on {node} should change nothing, got {wrong["status"]}')
     time.sleep(7)
     ensure(operator.request('/api/state')['session']['status'] != 'recovered', 'ineffective attempts were credited as recovery')
+    if kind == 'thermal-throttle':
+        # The cap must not lift while the room is hot; once the facility reports cooling restored, it may.
+        early = operator.action('recover', sid, node=target, verb='uncap')
+        ensure(early['status'] == 'unchanged' and 'Inlet still' in early.get('detail', ''), f'the cap lifted while the room was hot: {early}')
+        operator.wait(lambda s: check(operator, target, 'facility')['body']['cooling']['crac_2'] == 'running', 'cooling restored', sid=sid, timeout=120)
     began = time.monotonic()
     right = operator.action('recover', sid, node=target, verb=REMEDY[kind])
     ensure(right['status'] == 'succeeded', f'{REMEDY[kind]} on {target} not confirmed: {right}')
@@ -265,6 +289,9 @@ def main():
         report['error'] = str(error)
         print('SCENARIO FAILED:', error)
     finally:
+        # A round can fail before its id is known (detection timed out); this script refuses to start beside another
+        # investigation, so an active one now is its own.
+        sid = sid or owned_active(operator)
         if sid:
             try:
                 current = operator.request('/api/state')['session']

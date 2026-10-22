@@ -124,6 +124,21 @@ It used the existing evidence volume: the broker deliberately accepts only conta
 - **Connection-pool leak, second cause.** After the middleware fix, a timed-out wait inside the HTTP client's own pool still leaked connections under the storm. Gateways now wait in their own bulkhead of 80 slots, below the pool's 100, so a deadline ends the wait safely.
 - **An experiment's own artefact.** One trial left the catalogue starved after the storm because the trigger's *stop runaway job* had timed out under the overload and was honestly recorded as *unknown*: the job kept running. The shipped trigger is a compaction that stops itself.
 
+**Rack power loss, thermal throttling and a full re-run (23 October 2026).** Two facility faults were added, the layout changed, and the request path changed under every fault (plain ASGI middleware, deadlines, a bulkhead), so the whole matrix was re-run.
+
+- **Rack power loss.** Detected in 4–5 s, recovered in about 7 s once the breaker was reset. *Start service* under an open breaker reported no power and changed nothing.
+- **Thermal throttling, measured.** A CPU cap alone barely slowed these light requests: at 0.05 and even 0.02 CPU the median stayed about 2 ms. Under 32 daytime users a second per gateway it bit. The gateways (most work per request) failed about 85% of business requests, through timeouts, a full upstream bulkhead, or the catalogue dropping calls whose deadline had passed. The catalogue's own checks stayed at about 4 ms. At 25 users a second the gateways sat right on the 300 ms threshold and detection was a coin toss, so the load was raised. The first design restored cooling after 45 s, which detection plus inspection outlasted, so lifting the cap was never refused; it is now 75 s. Lifting while hot was refused with the reason, and worked once cooling recovered.
+- **Recalibration after the middleware change.** Cheaper request handling raised the catalogue's throughput from about 360 to 590 requests a second. With 160 connections, the flood's queue fell to about 275 ms, just under the slow threshold, and one round went unnoticed. The exporter now uses 256 connections: about 480 requests a second, the catalogue's checks at about 575 ms, the gateways' at about 500 ms. Packet loss on the catalogue also became milder: 10–26% of gateway requests failed, against 26–34% before.
+- **Full matrix.** All 30 practice rounds passed: every fault on every service it can target. Detection took 4–20 s (the slowest were faults that come and go, and a leak that has yet to crash), and recovery 5–23 s (the longest needed ten healthy cycles).
+- **Challenge rounds.** 32 hidden-fault rounds passed, and every fault type appeared at least once (retry storms six times). Each diagnosis matched the revealed scenario. Detection took 4–20 s and verified recovery 5–24 s. A reset without recovery followed. Backend tests: 181 pass, 1 skipped. UI logic tests: 36 pass.
+- **Validator and guidance defects found and fixed.**
+  - A detection timeout skipped the clean-up and left the lab capped.
+  - Intermittent faults were judged on as few as nine requests; it is now twenty, and both gateways for a catalogue fault.
+  - A retry storm caught early was taken for a flood, because heavy app users at a gateway looked like an unknown heavy caller. Floods are now judged only at the catalogue, the one service that rate-limits, in guidance, the simulator and the validator.
+  - Facility guidance did not name the service it was about.
+  - A backed-up gateway (a full bulkhead, or an expired deadline at the catalogue) could have been read as packet loss.
+  - A retry storm was read as CPU starvation. Over the full minute only 46% of requests were retries, because the window still held the calm traffic from before the storm. The retry share is now taken from the last ten seconds. A CPU finding on a gateway with busy users is checked again before it is trusted.
+
 ## Reproduce browser reviews
 
 Use a development Python environment with `requirements.lock`, Playwright 1.64.0 and its Chromium headless shell:

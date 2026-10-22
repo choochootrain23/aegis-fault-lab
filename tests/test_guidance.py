@@ -299,3 +299,51 @@ def test_mostly_retries_means_a_retry_storm_and_supports_load_shedding():
     assert 'rate-limiting' not in result['message']
     flood=observation('catalog-b','traffic',result={'clients':[{'client':'report-exporter','requests':21000,'rps':350.0,'recent_rps':355.0,'retries':0}],'quotas':[]})
     assert 'rate-limiting the top client' in explain({('catalog-b','traffic'):flood},'action',now=101)['message']
+
+
+def test_an_open_breaker_supports_resetting_it_not_starting_services():
+    facility=observation('gateway-a','facility',simulated=True,pdu='PDU-A',rack='R1',breaker='open',fed_services=['catalog-b','gateway-a'])
+    stopped=observation('gateway-a','service',running=False,at=100.5)
+    result=explain({('gateway-a','facility'):facility,('gateway-a','service'):stopped},'action',now=101)
+    assert 'resetting the breaker' in result['message'] and 'catalog-b and gateway-a' in result['message'] and 'You can try starting' not in result['message']
+    closed=observation('gateway-c','facility',simulated=True,pdu='PDU-B',rack='R2',breaker='closed',fed_services=['gateway-c'])
+    assert 'No fresh inspection yet supports' in explain({('gateway-c','facility'):closed},'action',now=101)['message']
+
+
+def test_a_lowered_cpu_limit_points_at_the_facility_and_the_cap_lifts_only_after_cooling():
+    capped=observation('catalog-b','resources',cpu_pct_of_limit=100.0,cpu_limit=0.05)
+    result=explain({('catalog-b','resources'):capped},'action',now=101)
+    assert 'below the 0.25' in result['message'] and result['suggested_check']=={'node':'catalog-b','kind':'facility'} and 'runaway job' not in result['message']
+    hot=observation('catalog-b','facility',simulated=True,power_cap={'active':True,'cpu_limit':0.05},cooling={'crac_2':'failed'},inlet_c=38.4)
+    waiting=explain({('catalog-b','facility'):hot},'action',now=101)
+    assert 'no safe fix yet' in waiting['message'] and 'lifting the power cap' not in waiting['message']
+    cooled=observation('catalog-b','facility',simulated=True,power_cap={'active':True,'cpu_limit':0.05},cooling={'crac_2':'running'},inlet_c=24.8)
+    assert 'lifting the power cap' in explain({('catalog-b','facility'):cooled},'action',now=101)['message']
+
+
+def test_a_gateway_slow_even_to_liveness_points_at_its_own_resources():
+    latest={('gateway-a','liveness'):observation('gateway-a','liveness',duration_ms=420.0,slow=True),
+            ('gateway-a','business'):observation('gateway-a','business',False,result={'error':'ReadTimeout'})}
+    result=explain(latest,'evidence',now=101)
+    assert result['suggested_check']=={'node':'gateway-a','kind':'resources'} and 'slow even to liveness' in result['message']
+
+
+def test_a_backed_up_gateway_points_at_its_own_resources_not_the_network():
+    for result in ({'error':'UpstreamBusy'},{'error':'HTTPStatusError','upstream_status':504,'upstream_error':'DeadlineExceeded'}):
+        latest={('gateway-c','liveness'):observation('gateway-c','liveness'),('gateway-c','business'):observation('gateway-c','business',False,result=result),
+                ('catalog-b','business'):observation('catalog-b','business',duration_ms=4)}
+        explained=explain(latest,'evidence',now=101)
+        assert explained['suggested_check']=={'node':'gateway-c','kind':'resources'} and 'backed up' in explained['message'] and 'packets' not in explained['message']
+
+
+def test_heavy_users_at_a_gateway_are_not_called_a_flood():
+    traffic=observation('gateway-a','traffic',result={'clients':[{'client':'mobile-app','requests':2400,'rps':40.0,'recent_rps':60.0,'retries':300}],'quotas':[]})
+    assert 'rate-limiting' not in explain({('gateway-a','traffic'):traffic},'action',now=101)['message']
+
+
+def test_a_storm_is_judged_by_its_recent_retries_not_the_minute_total():
+    early=observation('gateway-a','traffic',result={'clients':[{'client':'mobile-app','requests':4435,'retries':2025,'rps':74.0,'recent_rps':238.8,'recent_retries':1700}],'quotas':[]})
+    assert 'enabling load shedding' in explain({('gateway-a','traffic'):early},'action',now=101)['message']
+    cpu=observation('gateway-a','resources',cpu_pct_of_limit=99.0,cpu_limit=0.25)
+    message=explain({('gateway-a','resources'):cpu},'action',now=101)['message']
+    assert 'load shedding' in message and 'rate-limit' not in message

@@ -28,6 +28,11 @@ globalThis.AegisView = Object.freeze({
       const retrans=resent>=1?` · ${resent}% resent`:'';
       return {text:`Network · connect ${body.median_connect_ms} ms${shaped}${retrans}`,tone:netem||body.median_connect_ms>100||resent>=10?'red':body.median_connect_ms>20||resent>=1?'amber':'green'};
     }
+    if(record.kind==='facility'){
+      return body.breaker==='open'?{text:`Facility (simulated) · ${body.pdu} breaker open · rack ${body.rack} has no power`,tone:'red'}
+        :body.power_cap?.active?{text:`Facility (simulated) · power cap active · inlet ${body.inlet_c} °C${body.cooling?.crac_2==='failed'?' · cooling failed':''}`,tone:'red'}
+        :{text:`Facility (simulated) · ${body.pdu} powered · ${body.load_kw} kW · inlet ${body.inlet_c} °C`,tone:'green'};
+    }
     if(record.kind==='releases'){
       const r=body.result||{}, history=r.history||[], changed=history.length>1&&r.running!==history[0].version;
       return {text:changed?`Release ${r.running} · deployed by ${history[history.length-1].by} after ${history[0].version}`:`Release ${r.running} · unchanged since start`,tone:changed?'amber':'green'};
@@ -71,20 +76,20 @@ globalThis.AegisView = Object.freeze({
     return value>=1048576?`${(value/1048576).toFixed(1)} MiB`:value>=1024?`${Math.round(value/1024)} KiB`:`${value} B`;
   },
   remedyLabel(verb) {
-    return ({start:'Start service',calm:'Stop runaway job',clear:'Clear temp files',restore:'Restore config',undelay:'Remove traffic delay',undrop:'Remove packet loss',requota:'Reset client quotas',rollback:'Roll back release',ratelimit:'Rate-limit top client',shed:'Enable load shedding'})[verb]||verb;
+    return ({start:'Start service',calm:'Stop runaway job',clear:'Clear temp files',restore:'Restore config',undelay:'Remove traffic delay',undrop:'Remove packet loss',requota:'Reset client quotas',rollback:'Roll back release',ratelimit:'Rate-limit top client',shed:'Enable load shedding',breaker:'Reset breaker',uncap:'Lift power cap'})[verb]||verb;
   },
   faultLabel(kind) {
-    return ({'service-unavailable':'Stopped service','cpu-starvation':'CPU starvation','disk-full':'Disk full','config-drift':'Config drift','network-delay':'Network delay','packet-loss':'Packet loss','quota-zero':'Quota set to zero','bad-release':'Bad release','memory-leak':'Memory leak','traffic-flood':'Traffic flood','retry-storm':'Retry storm'})[kind]||kind;
+    return ({'service-unavailable':'Stopped service','cpu-starvation':'CPU starvation','disk-full':'Disk full','config-drift':'Config drift','network-delay':'Network delay','packet-loss':'Packet loss','quota-zero':'Quota set to zero','bad-release':'Bad release','memory-leak':'Memory leak','traffic-flood':'Traffic flood','retry-storm':'Retry storm','power-loss':'Rack power loss','thermal-throttle':'Thermal throttling'})[kind]||kind;
   },
   // The services a fault can target, when it cannot target all three.
   faultTargets(kind) {
-    return ({'quota-zero':['catalog-b'],'traffic-flood':['catalog-b'],'retry-storm':['gateway-a','gateway-c']})[kind]||null;
+    return ({'quota-zero':['catalog-b'],'traffic-flood':['catalog-b'],'retry-storm':['gateway-a','gateway-c'],'power-loss':['catalog-b'],'thermal-throttle':['catalog-b']})[kind]||null;
   },
   // Scenario heading: the selected fault and target, the running practice scenario, or a hidden challenge.
   scenarioCopy(kind, target, mode) {
     if (mode==='challenge') return {number:'??', eyebrow:'Challenge · hidden fault', title:['A ','hidden',' fault'],
-      text:'One of eleven faults on one of the three services, picked at random and kept secret. Find it from the evidence, fix it, then reveal it to check.'};
-    const kinds=['service-unavailable','cpu-starvation','disk-full','config-drift','network-delay','packet-loss','quota-zero','bad-release','memory-leak','traffic-flood','retry-storm'];
+      text:'One of thirteen faults on one of the three services, picked at random and kept secret. Find it from the evidence, fix it, then reveal it to check.'};
+    const kinds=['service-unavailable','cpu-starvation','disk-full','config-drift','network-delay','packet-loss','quota-zero','bad-release','memory-leak','traffic-flood','retry-storm','power-loss','thermal-throttle'];
     const copy={
       'service-unavailable':{title:['When a service ','stops',''], text:'Its container is stopped, so its own checks fail.'},
       'cpu-starvation':{title:['When a service is ','starved',' of CPU'], text:'A runaway job uses its whole CPU limit. It still answers, just slowly.'},
@@ -94,11 +99,15 @@ globalThis.AegisView = Object.freeze({
       'packet-loss':{title:['When packets ','go missing',''], text:'Half the packets it sends are dropped. Requests sometimes work, sometimes stall, sometimes time out.'},
       'quota-zero':{title:['When the quota ','hits zero',''], text:'A quota push lets the gateways make zero requests. The catalogue is up, fast and green to its own probes.'},
       'bad-release':{title:['When a release ','ships a bug',''], text:'A new version fails about half its requests. The machine is fine and the config unchanged; only the code moved.'},
+      'thermal-throttle':{title:['When the room ','overheats',''], text:'A cooling unit fails and the facility caps every server\'s power. Under daytime traffic, everything slows at once. The facility layer is simulated; the cap and the traffic are real.'},
+      'power-loss':{title:['When a rack ','loses power',''], text:'A breaker trips on the power feed of rack R1. Two services stop at the same moment, and neither will start. The facility layer is simulated; the stopped containers are real.'},
       'retry-storm':{title:['When retries ','storm',''], text:'App users retry every failure at once. A short slowdown in the catalogue becomes an overload of this gateway that outlives its cause.'},
       'traffic-flood':{title:['When one client ','floods',' the catalogue'], text:'A report export job sends hundreds of requests a second. Nothing is broken; there is simply too much traffic for one small service.'},
       'memory-leak':{title:['When memory ','leaks',''], text:'A new version never frees what it loads. It runs fine until the kernel kills it, then the rollout restarts it, again and again.'},
     }[kind]||{title:['A ','fault',''], text:''};
-    const scope=kind==='quota-zero'?'Enforced by the shared catalogue: compare what its callers see with what its own checks say.'
+    const scope=kind==='thermal-throttle'?'It reaches every service: look for what they all share.'
+      :kind==='power-loss'?'Rack R1 holds the shared catalogue and gateway-a: look for what failed together.'
+      :kind==='quota-zero'?'Enforced by the shared catalogue: compare what its callers see with what its own checks say.'
       :kind==='traffic-flood'?'Aimed at the shared catalogue: both gateways feel it. Find out who is calling.'
       :target==='catalog-b'?'On the shared catalogue: see whether both gateways are affected too.':`On ${target}, a local fault: see whether the catalogue and the other gateway stay healthy.`;
     return {number:String(kinds.indexOf(kind)+1).padStart(2,'0'), eyebrow:`Scenario ${String(kinds.indexOf(kind)+1).padStart(2,'0')} · ${this.faultLabel(kind)} · ${target}`,
@@ -153,6 +162,7 @@ globalThis.AegisView = Object.freeze({
     else if(body.ok&&record.kind==='config')outcome=body.result?.drifted?.length?'drifted':'matches';
     else if(body.ok&&record.kind==='network')outcome=`connect ${body.median_connect_ms} ms${body.result?.tcp?.retrans_pct>=1?` · ${body.result.tcp.retrans_pct}% resent`:''}`;
     else if(body.ok&&record.kind==='releases')outcome=body.result?.running||'read';
+    else if(body.ok&&record.kind==='facility')outcome=body.breaker==='open'?'no power':body.power_cap?.active?'power capped':'powered';
     else if(body.ok&&record.kind==='memory')outcome=body.running===false?(body.oom_killed?'OOM killed':'stopped'):`${body.result?.current_mib} MiB${(body.result?.growth_mib_s??0)>=1?' ↑':''}`;
     else if(body.ok&&record.kind==='traffic'){const rejected=(body.result?.clients||[]).reduce((a,c)=>a+(c.rejected||0),0);outcome=rejected?`${rejected} rejected`:'no rejections';}
     else if(body.ok&&record.kind==='trace')outcome=body.result?.request_ok===false?'failed':'traced';

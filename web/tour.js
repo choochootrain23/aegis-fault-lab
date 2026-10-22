@@ -2,11 +2,11 @@
 // Optional guided tour: a spotlight and a step card over the real interface. Nothing is clicked for the visitor.
 globalThis.AegisTour = (() => {
 const STEPS = [
-  ['#topology', 'The live map', 'Your three services (two gateways sharing one catalogue), plus the controller that checks them and the broker that can start or stop them. Edges show live state. Drag any node to rearrange the map.'],
+  ['#topology', 'The live map', 'Your three services (two gateways sharing one catalogue), plus the controller that checks them and the broker that can start or stop them. Edges show live state. Drag any node to rearrange the map; the fixes sit just below it.'],
   ['#journey', 'Suggested next', 'This card always shows a sensible next step, and the tracker shows where you are. It is a suggestion: explore in any order.'],
   ['.scenario-strip', 'Start a scenario', 'Practice lets you pick the fault and its target. Challenge picks a hidden fault for you to find. Start once the baseline is healthy.'],
-  ['.checks', 'Run checks', 'Inspect the selected node: liveness, a full business request, container state, CPU, disk, running config, a timed request trace, the network path and logs. Keys 1 to 9 run them too. Each chip shows that check\'s latest result.'],
-  ['.recovery-box', 'Recovery toolbox', 'Try a fix on the selected node. An action that finds nothing to change says so, and recovery only counts after three healthy, fast cycles.'],
+  ['.checks', 'Run checks', 'Thirteen checks on the selected node, from liveness and a full business request to its container, resources, memory, disk, config, releases, network path, traffic and logs, plus a simulated facility check of its rack and power. Keys 1 to 9 and 0 run the first ten. Each chip shows that check\'s latest result.'],
+  ['.recovery-box', 'Recovery toolbox', 'Try a fix on the selected node. An action that finds nothing to change says so. Recovery only counts after three healthy, fast cycles in a row, or ten if the failure has already come and gone on its own.'],
   ['#evidence-section', 'Evidence notebook', 'Every check lands here as a record. Open one for the raw measurement, and tick records to cite them in your diagnosis.'],
   ['.guidance', 'A little direction', 'Stuck? Ask for an explanation, a hint or one suggested action. Help is optional and recorded honestly in your report.'],
   ['#report-section', 'Incident report', 'Your debrief: how long detection, checks and recovery took, plus a replay of every request. Press Replay to watch the incident unfold.'],

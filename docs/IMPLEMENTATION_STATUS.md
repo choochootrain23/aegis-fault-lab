@@ -113,10 +113,19 @@ Reports are under ignored `state/validation/`. The app is running at http://loca
 - **Eleventh fault: retry storm.** App users from the reports service, 60 a second through one gateway, retry every failure at once. An 8-second catalogue compaction tips that gateway into an overload that outlives its cause. Gateways count retries per caller, and **Enable load shedding** caps a gateway's in-flight requests, turning the rest away at once. It only takes effect on a gateway that is actually queuing. The catalogue's per-gateway quota is now 300 a second, room for user traffic.
 - Guidance: a caller whose requests are mostly retries means a retry storm, and supports shedding load rather than rate-limiting.
 
+## Fourteenth checkpoint (23 October 2026)
+
+- **A simulated facility layer.** Racks, PDUs, breakers, cooling and inlet temperature are modelled in the controller and every record says `simulated`; their effects act through the broker's ordinary operations. A new **Facility** check shows them.
+- **Twelfth fault: rack power loss.** PDU-A's breaker trips and the catalogue and gateway-a stop together; starting either reports no power. Remedy: **Reset breaker**, which starts the rack, catalogue first.
+- **Thirteenth fault: thermal throttling.** A cooling failure brings a real power cap (every container's CPU set to exactly 0.05 through a new fixed broker operation) under real daytime users. The gateways fail first while the catalogue stays fast. **Lift power cap** is refused until the simulated cooling recovers.
+- Guidance: a lowered CPU limit points at the facility; a gateway slow even to liveness points at its own resources; an open breaker or an active cap is explained before any service-level fix.
+- Validation: all 30 practice rounds and 32 challenge rounds on real Docker passed, covering every fault on every service it can target. A retry storm is now judged by the share of retries in the last ten seconds, after a storm caught early was taken for CPU starvation.
+- Interface: the fixes moved under the live map in a grid and each check became one compact row, halving the height of the inspector (2,038 to 1,007 pixels at desktop width).
+
 ## Next work
 
-1. Roadmap step 4: facility telemetry, with rack power loss and thermal throttling.
-2. AI evaluation covering the six newest faults, and with other models.
+1. AI evaluation covering all thirteen faults, and with other models.
+2. Compound incidents (for example a heatwave that tips into a retry storm), DNS failure, clock skew and partial partitions from the roadmap.
 3. Screen-reader review; runs measured in days.
 
 ## Boundaries preserved

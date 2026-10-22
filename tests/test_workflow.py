@@ -29,6 +29,8 @@ class Fleet:
         self.release_tick = 0
         self.booting = set()
         self.storming = None       # the gateway the app users overload, if any
+        self.capped = {'gateway-a': False, 'catalog-b': False, 'gateway-c': False}  # power-capped CPU limits
+        self.daytime = False       # steady users through both gateways
         self.shedding = {'gateway-a': False, 'catalog-b': False, 'gateway-c': False}
         self.flooding = False      # the report exporter in the reports service
         self.rate_limited = False  # the catalogue limits it
@@ -42,7 +44,10 @@ class Fleet:
         if verb not in ('inspect', 'resources'):
             if op['generation'] != node + '-generation':
                 return httpx.Response(409)
-            if verb in ('delay', 'undelay', 'drop', 'undrop'):
+            if verb in ('cap', 'uncap'):
+                changed = self.capped[node] != (verb == 'cap')
+                self.capped[node] = verb == 'cap'
+            elif verb in ('delay', 'undelay', 'drop', 'undrop'):
                 state = self.delayed if verb in ('delay', 'undelay') else self.lossy
                 changed = state[node] != (verb in ('delay', 'drop'))
                 state[node] = verb in ('delay', 'drop')
@@ -66,8 +71,13 @@ class Fleet:
                 return httpx.Response(503)
             return self.broker(json.loads(request.content))
         node, path = request.url.host, request.url.path
+        if node == 'reports' and path.rsplit('/', 1)[1] == 'daytime':
+            changed, self.daytime = not self.daytime, True
+            return httpx.Response(200, json={'changed': changed})
         if node == 'reports' and path.rsplit('/', 1)[1] in ('storm', 'unstorm'):
             verb = path.rsplit('/', 1)[1]
+            if verb == 'unstorm':
+                self.daytime = False
             target = request.headers.get('x-aegis-target') if verb == 'storm' else None
             changed = self.storming != target
             self.storming = target
@@ -167,6 +177,8 @@ class Fleet:
             if (self.loss_tick - 1) // 2 % 5 < 3:  # two gateway requests a cycle
                 return httpx.Response(503, json={'ok': False, 'error': 'ReadTimeout'})
         flooded = self.flooding and not self.rate_limited
+        if self.capped[node] and self.daytime and node.startswith('gateway') and path in ('/live', '/summary'):
+            time.sleep(0.06)  # a tiny CPU limit under load: the gateways, doing the most work, queue first
         if self.storming == node and not self.shedding[node] and path == '/summary':
             return httpx.Response(503, json={'ok': False, 'error': 'ReadTimeout'})
         slow = (self.delayed[node] or self.busy[node] or (node == 'catalog-b' and flooded)
@@ -567,7 +579,7 @@ def test_challenge_hides_fault_kind_and_target(lab):
     async def scenario():
         controller, _ = lab
         seen = set()
-        for attempt in range(120):
+        for attempt in range(200):
             await baseline(controller)
             await controller.start(Start(mode='challenge', key=f'challenge-kind-{attempt:03d}'))
             public = controller.state()
@@ -576,10 +588,10 @@ def test_challenge_hides_fault_kind_and_target(lab):
             await controller.reset_locked(f'reset-kind-{attempt:03d}')
             for _ in range(3):
                 await controller.cycle()
-            if len(seen) == 11:
+            if len(seen) == 13:
                 break
         assert seen == {'service-unavailable', 'cpu-starvation', 'disk-full', 'config-drift', 'network-delay', 'packet-loss', 'quota-zero',
-                        'bad-release', 'memory-leak', 'traffic-flood', 'retry-storm'}
+                        'bad-release', 'memory-leak', 'traffic-flood', 'retry-storm', 'power-loss', 'thermal-throttle'}
     run(scenario())
 
 
@@ -991,4 +1003,68 @@ def test_retry_storm_is_local_to_one_gateway_and_needs_load_shedding(lab):
         await controller.reset_locked('reset-storm')
         assert [(r['node'], r['verb']) for r in controller.session['reset']['results']][-2:] == [('gateway-a', 'unstorm'), ('gateway-a', 'unshed')]
         assert fleet.storming is None and not fleet.shedding['gateway-a']
+    run(scenario())
+
+
+def test_rack_power_loss_stops_both_services_and_only_the_breaker_restores_them(lab):
+    async def scenario():
+        controller, fleet = lab
+        await baseline(controller)
+        await controller.start(Start(mode='practice', kind='power-loss', target='catalog-b', key='start-power'))
+        assert not fleet.running['catalog-b'] and not fleet.running['gateway-a'] and fleet.running['gateway-c']
+        assert await investigate(controller) == {'gateway-a': 'unavailable', 'catalog-b': 'unavailable', 'gateway-c': 'degraded'}
+        facility = await controller.check('gateway-a', 'facility')
+        body = facility['body']
+        assert body['simulated'] and body['breaker'] == 'open' and body['pdu'] == 'PDU-A' and set(body['fed_services']) == {'catalog-b', 'gateway-a'}
+        assert (await controller.check('gateway-c', 'facility'))['body']['breaker'] == 'closed'
+        refused = await controller.mutate('start-unpowered', 'catalog-b', 'start')
+        assert refused['status'] == 'unchanged' and 'No power to rack R1' in refused['detail'] and not fleet.running['catalog-b']
+        assert (await controller.mutate('wrong-breaker', 'gateway-c', 'breaker'))['status'] == 'unchanged'
+        await verify(controller, 'breaker', 'gateway-a', 'breaker')
+        assert controller.session['status'] == 'recovered' and fleet.running['catalog-b'] and fleet.running['gateway-a']
+        assert fleet.mutations[-2:] == [('catalog-b', 'start'), ('gateway-a', 'start')]  # the catalogue first
+        assert 'facility' not in controller.public_session() and 'PDU-A' in controller.public_session(controller.session | {'revealed': True})['debrief']
+    run(scenario())
+
+
+def test_reset_after_a_power_loss_closes_the_breaker_before_starting(lab):
+    async def scenario():
+        controller, fleet = lab
+        await baseline(controller)
+        await controller.start(Start(mode='practice', kind='power-loss', target='catalog-b', key='start-power-reset'))
+        await controller.reset_locked('reset-power')
+        verbs = [(r['node'], r['verb'], r['status']) for r in controller.session['reset']['results']]
+        assert verbs[0] == ('catalog-b', 'breaker', 'succeeded') and all(fleet.running.values())
+    run(scenario())
+
+
+def test_thermal_cap_slows_the_gateways_and_lifts_only_once_cooling_recovers(lab):
+    async def scenario():
+        controller, fleet = lab
+        await baseline(controller)
+        await controller.start(Start(mode='practice', kind='thermal-throttle', target='catalog-b', key='start-heat'))
+        assert all(fleet.capped.values()) and fleet.daytime
+        assert await investigate(controller) == {'gateway-a': 'degraded', 'catalog-b': 'healthy', 'gateway-c': 'degraded'}
+        facility = (await controller.check('gateway-c', 'facility'))['body']
+        assert facility['simulated'] and facility['power_cap']['active'] and facility['cooling']['crac_2'] == 'failed' and facility['inlet_c'] > 35
+        hot = await controller.mutate('uncap-hot', 'catalog-b', 'uncap')
+        assert hot['status'] == 'unchanged' and 'Inlet still' in hot['detail'] and all(fleet.capped.values())
+        assert (await controller.mutate('wrong-calm', 'catalog-b', 'calm'))['status'] == 'unchanged'
+        controller.session['facility']['room']['failed_at'] -= 80  # cooling has now recovered
+        assert (await controller.check('gateway-a', 'facility'))['body']['cooling']['crac_2'] == 'running'
+        await verify(controller, 'uncap', 'gateway-a', 'uncap')
+        assert controller.session['status'] == 'recovered' and not any(fleet.capped.values())
+        await controller.reset_locked('reset-heat')
+        steps = [(r['node'], r['verb']) for r in controller.session['reset']['results']]
+        assert steps[0] == ('catalog-b', 'uncap') and steps[-1] == ('catalog-b', 'unstorm') and not fleet.daytime
+    run(scenario())
+
+
+def test_reset_lifts_the_cap_even_while_the_room_is_hot(lab):
+    async def scenario():
+        controller, fleet = lab
+        await baseline(controller)
+        await controller.start(Start(mode='practice', kind='thermal-throttle', target='catalog-b', key='start-heat-reset'))
+        await controller.reset_locked('reset-heat-hot')
+        assert controller.session['reset']['results'][0]['status'] == 'succeeded' and not any(fleet.capped.values())
     run(scenario())

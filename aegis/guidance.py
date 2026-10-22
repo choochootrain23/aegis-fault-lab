@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 import time
 
 SLOW_MS = 300  # request checks slower than this count as degraded, not healthy
-INSPECTIONS = ('service', 'resources', 'disk', 'config', 'trace', 'network', 'traffic', 'releases', 'memory')
+INSPECTIONS = ('service', 'resources', 'disk', 'config', 'trace', 'network', 'traffic', 'releases', 'memory', 'facility')
 TIMEOUTS = ('ConnectTimeout', 'ReadTimeout', 'WriteTimeout', 'PoolTimeout')
 GATEWAYS = ('gateway-a', 'gateway-c')
 
@@ -40,6 +40,11 @@ def explain(latest, level, now=None):
         elif live['body']['ok'] and not business['body']['ok'] and result.get('upstream_status') == 429:
             message = f'{g} is live, but the catalogue refused its request with HTTP 429 (too many requests: {result.get("upstream_error") or "quota exceeded"}). The catalogue is up and answering; it is rejecting this caller. Its own health checks may still pass, because they come from a different caller. Check the catalogue\'s traffic and quotas.'
             suggested = {'node':'catalog-b','kind':'traffic'}
+        elif live['body']['ok'] and not business['body']['ok'] and (result.get('error') == 'UpstreamBusy' or result.get('upstream_error') == 'DeadlineExceeded'):
+            message = (f"{g} is live, but its business request failed because {g} itself is backed up: "
+                       + ("all its slots for calling the catalogue were busy" if result.get('error') == 'UpstreamBusy' else "its call reached the catalogue only after the deadline had passed")
+                       + ". The catalogue is not the bottleneck; something is slowing the gateway. Check its own resources.")
+            suggested = {'node':g,'kind':'resources'}
         elif live['body']['ok'] and not business['body']['ok'] and result.get('error') in TIMEOUTS and catalogue_healthy(fresh):
             ids.append(fresh[('catalog-b', 'business')]['id'])
             message = (f"{g} is live, but its call to the catalogue timed out ({result.get('error')}) rather than being refused, while the catalogue answers its own business requests quickly. "
@@ -58,6 +63,10 @@ def explain(latest, level, now=None):
             ids.append(catalogue['id'])
             message = f"{g} is live but its business request fails, and the catalogue it depends on answers slowly ({catalogue['body'].get('duration_ms')} ms). Slow upstream replies make the gateway's requests time out; compare the catalogue's resource use, traffic and network path."
             suggested = {'node':'catalog-b','kind':'resources'}
+        elif live['body']['ok'] and live['body'].get('slow') and not business['body']['ok']:
+            message = (f"{g}'s business request fails and it is slow even to liveness checks ({live['body'].get('duration_ms')} ms), which do almost no work. "
+                       "Something is holding the gateway itself back: check its own resources before looking further.")
+            suggested = {'node':g,'kind':'resources'}
         elif live['body']['ok'] and not business['body']['ok']:
             message = f'{g} responds to liveness checks but its business request fails. Its own process is reachable; inspect the catalogue dependency before concluding the gateway is down.'
             suggested = {'node':'catalog-b','kind':'service'}
@@ -108,6 +117,7 @@ def started_seconds_before(body, at):
     return at - started
 
 
+DEPLOYED_CPU = 0.25  # every service's deployed CPU limit
 HEAVY_RPS = 20  # a caller without a quota sending more than this a second, now, is flooding a service this small
 
 
@@ -116,15 +126,22 @@ def heavy_callers(record):
     result = (record or {}).get('body', {}).get('result') or {}
     limited = {q.get('client') for q in result.get('quotas', [])}
     return sorted((c for c in result.get('clients', []) if (c.get('recent_rps') or 0) > HEAVY_RPS and c.get('client') not in limited and c.get('client') != 'controller'
-                   and (c.get('retries') or 0) <= (c.get('requests') or 0) / 2),
+                   and retry_share(c) <= 0.5),
                   key=lambda c: -(c.get('requests') or 0))
 
 
 def retry_storm(record):
     """The busiest caller whose requests are mostly retries of failed ones, if it is sending heavily now."""
     result = (record or {}).get('body', {}).get('result') or {}
-    stormy = [c for c in result.get('clients', []) if (c.get('recent_rps') or 0) > HEAVY_RPS and c.get('requests') and (c.get('retries') or 0) / c['requests'] > 0.5]
+    stormy = [c for c in result.get('clients', []) if (c.get('recent_rps') or 0) > HEAVY_RPS and retry_share(c) > 0.5]
     return max(stormy, key=lambda c: c['requests']) if stormy else None
+
+
+def retry_share(caller):
+    """The share of a caller's requests that are retries, over the last 10 seconds when reported, else the last minute."""
+    if caller.get('recent_retries') is not None and caller.get('recent_rps'):
+        return caller['recent_retries'] / (caller['recent_rps'] * 10)
+    return (caller.get('retries') or 0) / caller['requests'] if caller.get('requests') else 0
 
 
 def catalogue_healthy(fresh):
@@ -150,7 +167,24 @@ def remedy(fresh):
         body = record['body']
         if not body.get('ok'):
             continue
-        if kind == 'service' and body.get('running') is False and body.get('oom_killed'):
+        if kind == 'service' and body.get('running') is False and (fresh.get((node, 'facility')) or {}).get('body', {}).get('breaker') == 'open':
+            continue  # the facility check explains it: no power, so starting cannot work
+        if kind == 'facility' and body.get('breaker') == 'open':
+            action = (f"The facility check (simulated) shows the {body.get('pdu')} breaker open: rack {body.get('rack')} has no power, so "
+                      f"{' and '.join(body.get('fed_services', []))} lost power together. Starting them cannot work without power. "
+                      "You can try resetting the breaker, then verify every service it feeds comes back.")
+        elif kind == 'facility' and (body.get('power_cap') or {}).get('active') and (body.get('cooling') or {}).get('crac_2') == 'failed':
+            action = (f"The facility check (simulated) for {node}'s rack shows cooling unit CRAC-2 failed, the inlet at {body.get('inlet_c')} °C and a power cap active on every rack. "
+                      "Lifting the cap while the room is this hot would overheat it, so there is no safe fix yet: check the facility again until cooling is restored.")
+            suggest = 'facility'
+        elif kind == 'facility' and (body.get('power_cap') or {}).get('active'):
+            action = (f"The facility check (simulated) for {node}'s rack shows cooling restored and the inlet back to {body.get('inlet_c')} °C, but the power cap is still active. "
+                      "You can try lifting the power cap, then verify latency returns to normal everywhere.")
+        elif kind == 'resources' and body.get('cpu_limit') and body['cpu_limit'] < DEPLOYED_CPU:
+            action = (f"The resource check shows {node}'s CPU limit at {body['cpu_limit']:g}, below the {DEPLOYED_CPU:g} it was deployed with: something has capped it, "
+                      "which a power or thermal cap does. Check the facility before changing anything on the service.")
+            suggest = 'facility'
+        elif kind == 'service' and body.get('running') is False and body.get('oom_killed'):
             action = f"The recent service-state observation reports {node} stopped by the kernel for running out of memory (OOMKilled, exit code {body.get('exit_code')}). Starting it may only repeat the crash: check its memory trend and release history before choosing a fix."
             suggest = 'memory'
         elif kind == 'service' and body.get('running') is False:
@@ -159,10 +193,13 @@ def remedy(fresh):
             action = f"The resource check shows {node} at {body['cpu_pct_of_limit']:g}% of its CPU limit, but its container started only seconds earlier, and a process uses its whole limit while it boots. That alone is not starvation: check resources again in a few seconds, and its container state and memory to see why it restarted."
             suggest = 'memory'
         elif kind == 'resources' and (body.get('cpu_pct_of_limit') or 0) >= 80:
-            if heavy_callers(fresh.get((node, 'traffic'))):
+            if node == 'catalog-b' and heavy_callers(fresh.get((node, 'traffic'))):
                 continue  # the traffic check explains the CPU better; its own rule recommends the fix
             action = (f"The resource check shows {node} using {body['cpu_pct_of_limit']:g}% of its {body.get('cpu_limit', 0):g}-CPU limit, so the kernel is throttling it. "
-                      f"Something is using that CPU: if its logs show a background job starting, you can try stopping the runaway job; if its traffic shows one caller sending most requests, rate-limit that client instead. Then verify latency returns below {SLOW_MS} ms.")
+                      "Something is using that CPU: if its logs show a background job starting, you can try stopping the runaway job; "
+                      + ("if its traffic shows one caller sending most requests, rate-limit that client instead." if node == 'catalog-b'
+                         else "if its traffic shows most requests are retries, callers are feeding an overload and load shedding is the fix.")
+                      + f" Then verify latency returns below {SLOW_MS} ms.")
             suggest = None if (node, 'traffic') in fresh else 'traffic'
         elif kind == 'disk' and (body.get('result') or {}).get('free_bytes') is not None and body['result']['free_bytes'] < 64 * 1024:
             largest = (body['result'].get('largest') or [{}])[0].get('path', 'one file')
@@ -177,10 +214,10 @@ def remedy(fresh):
             action = f"Traffic leaving {node} passes a netem queue that drops {queue['loss_pct']:g}% of packets{resent}. You can try removing the packet loss, then verify requests succeed reliably, not just once."
         elif kind == 'traffic' and retry_storm(record):
             caller = retry_storm(record)
-            share = round(100 * caller['retries'] / caller['requests'])
+            share = round(100 * retry_share(caller))
             action = (f"{node} received {caller['requests']} requests in the last minute from {caller['client']}, and {share}% of them were retries of requests that had just failed. "
                       f"Callers are retrying faster than it can serve, so the overload feeds itself even if whatever started it has stopped. You can try enabling load shedding on {node}, then verify its requests succeed again.")
-        elif kind == 'traffic' and heavy_callers(record):
+        elif kind == 'traffic' and node == 'catalog-b' and heavy_callers(record):  # only the catalogue rate-limits; heavy users at a gateway are its traffic
             top = heavy_callers(record)[0]
             action = (f"{node} received {top['requests']} requests in the last minute from {top['client']}, about {top['recent_rps']:g} a second right now, from a caller with no quota: "
                       "one client is using most of its capacity. You can try rate-limiting the top client, then verify the other callers' requests are fast again.")

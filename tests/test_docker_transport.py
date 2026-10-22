@@ -208,3 +208,33 @@ def test_each_network_remedy_leaves_the_other_fault_alone():
         run_network('drop', 'qdisc netem 8001: root refcnt 2 limit 1000 delay 600ms\n')
     with pytest.raises(ValueError):
         run_network('undrop', 'qdisc netem 8003: root refcnt 2 limit 1000 loss 5%\n')
+
+
+def run_cap(verb, current):
+    async def exercise():
+        inspected = target(); inspected.update(Id='a' * 64, State={'Running': True, 'Status': 'running', 'ExitCode': 0})
+        inspected['HostConfig']['NanoCpus'] = current
+        updates = []
+        def transport(request):
+            path = request.url.path
+            if path.endswith('/containers/json'):
+                return httpx.Response(200, json=[{'Id': inspected['Id']}])
+            if path.endswith('/update'):
+                updates.append(json.loads(request.content))
+                inspected['HostConfig']['NanoCpus'] = updates[-1]['NanoCpus']
+                return httpx.Response(200, json={'Warnings': []})
+            return httpx.Response(200, json=copy.deepcopy(inspected))
+        async with httpx.AsyncClient(transport=httpx.MockTransport(transport), base_url='http://docker') as client:
+            result = await Docker(client).operate(Operation(target='catalog-b', verb=verb, generation='a' * 64))
+        return result, updates
+    return asyncio.run(exercise())
+
+
+def test_power_cap_sets_only_the_two_fixed_cpu_limits():
+    result, updates = run_cap('cap', 250_000_000)
+    assert result['changed'] is True and updates == [{'NanoCpus': 50_000_000}]
+    result, updates = run_cap('uncap', 50_000_000)
+    assert result['changed'] is True and updates == [{'NanoCpus': 250_000_000}]
+    result, updates = run_cap('cap', 50_000_000)
+    assert result['changed'] is False and updates == []  # already capped: nothing sent
+    assert run_cap('uncap', 250_000_000)[0]['changed'] is False

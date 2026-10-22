@@ -448,13 +448,16 @@ async def traffic():
             entry['rejected'] += rejected
             entry['errors'] += errors
             entry['retries'] += retries
-    recent = {}
+    recent, recent_retries = {}, {}
     for second, counts in traffic_since(time.time() - RECENT_S):
-        for client, (requests, *_) in counts.items():
+        for client, (requests, _, _, _, retries) in counts.items():
             recent[client] = recent.get(client, 0) + requests
+            recent_retries[client] = recent_retries.get(client, 0) + retries
     for entry in callers.values():
         entry['rps'] = round(entry['requests'] / TRAFFIC_WINDOW_S, 2)
-        entry['recent_rps'] = round(recent.get(entry['client'], 0) / RECENT_S, 2)  # what it is sending now, not a minute ago
+        # What it is sending now, not a minute ago: a storm or a flood is judged by its current rate.
+        entry['recent_rps'] = round(recent.get(entry['client'], 0) / RECENT_S, 2)
+        entry['recent_retries'] = recent_retries.get(entry['client'], 0)
     quotas = [{'client': client, 'limit_rps': limit, 'deployed_rps': QUOTA_DEPLOYED.get(client), 'changed': limit != QUOTA_DEPLOYED.get(client)}
               for client, limit in quota.items()]
     return {'window_s': TRAFFIC_WINDOW_S, 'clients': sorted(callers.values(), key=lambda e: -e['requests']), 'quotas': quotas,
@@ -681,8 +684,10 @@ async def rollback(x_aegis_fleet_token: str = Header(default='')):
 
 # The report exporter: a batch client that, when started, pulls the catalogue as fast as it can over many keep-alive
 # connections, as a misconfigured export job would. It only ever calls the catalogue on the internal network, stops
-# itself after JOB_MAX_S, and honours Retry-After like a well-behaved client, so rate-limiting it works.
-FLOOD_CONNECTIONS = 160
+# itself after JOB_MAX_S, and honours Retry-After like a well-behaved client, so rate-limiting it works. 256
+# connections queue each request about half a second behind the flood (measured; at 160, cheaper request handling had
+# brought the wait just under the 300 ms slow threshold).
+FLOOD_CONNECTIONS = 256
 FLOOD_REQUEST = b'GET /catalog HTTP/1.1\r\nHost: catalog-b\r\nX-Aegis-Client: report-exporter\r\n\r\n'
 flood_stop = threading.Event()
 flood_threads = []
@@ -797,6 +802,7 @@ USER_RPS = 60          # new users a second, all through the target gateway: abo
 USER_RETRIES = 3
 USER_DEADLINE_S = 2
 HICCUP_S = 8           # how long the catalogue's compaction job runs
+DAYTIME_RPS = 32       # steady users a second through each gateway while a power cap is active: clearly over a capped gateway
 HICCUP_AFTER_S = 6     # how long the users run normally before it
 users_stop = threading.Event()
 users_threads = []
@@ -821,25 +827,26 @@ async def user_attempt(host, attempt):
 STORM_TARGETS = ('gateway-a', 'gateway-c')
 
 
-async def app_user(host):
+async def app_user(host, retries):
     users_stats['users'] += 1
-    for attempt in range(1, USER_RETRIES + 2):
+    for attempt in range(1, retries + 2):
         if await user_attempt(host, attempt):
             users_stats['succeeded'] += 1
             return
     users_stats['gave_up'] += 1
 
 
-def run_users(deadline, host):
+def run_users(deadline, hosts, rate, retries):
     async def main():
         tasks, began, sent = set(), time.monotonic(), 0
         while not users_stop.is_set() and time.monotonic() < deadline:
-            if len(tasks) < 2000:  # a hard ceiling, whatever happens downstream
-                task = asyncio.create_task(app_user(host))
-                tasks.add(task)
-                task.add_done_callback(tasks.discard)
+            for host in hosts:
+                if len(tasks) < 2000:  # a hard ceiling, whatever happens downstream
+                    task = asyncio.create_task(app_user(host, retries))
+                    tasks.add(task)
+                    task.add_done_callback(tasks.discard)
             sent += 1
-            await asyncio.sleep(max(0.0, began + sent / USER_RPS - time.monotonic()))
+            await asyncio.sleep(max(0.0, began + sent / rate - time.monotonic()))
         for task in list(tasks):
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
@@ -858,7 +865,7 @@ async def storm(x_aegis_fleet_token: str = Header(default=''), x_aegis_target: s
     for worker in users_threads:
         worker.join(timeout=5)
     users_stop.clear()
-    users_threads[:] = [threading.Thread(target=run_users, args=(time.monotonic() + JOB_MAX_S, x_aegis_target), name='app-users', daemon=True)]
+    users_threads[:] = [threading.Thread(target=run_users, args=(time.monotonic() + JOB_MAX_S, (x_aegis_target,), USER_RPS, USER_RETRIES), name='app-users', daemon=True)]
     users_threads[0].start()
     asyncio.get_running_loop().call_later(HICCUP_AFTER_S, lambda: asyncio.ensure_future(trigger_hiccup()))
     LOGS.append({'at': time.time(), 'ok': True, 'event': 'app users started', 'gateway': x_aegis_target, 'rps': USER_RPS, 'retries': USER_RETRIES, 'generation': BOOT})
@@ -868,6 +875,21 @@ async def storm(x_aegis_fleet_token: str = Header(default=''), x_aegis_target: s
 async def trigger_hiccup():
     with contextlib.suppress(httpx.HTTPError):
         await app.state.client.post('http://catalog-b:8000/maintenance/hiccup', headers={'X-Aegis-Fleet-Token': FLEET_TOKEN}, timeout=5)
+
+
+@app.post('/maintenance/daytime')
+async def daytime(x_aegis_fleet_token: str = Header(default='')):
+    """Fault injection support: steady daytime users through both gateways, with no retry flaw. Reports service only."""
+    authorize(x_aegis_fleet_token)
+    if ROLE != 'reports' or (any(t.is_alive() for t in users_threads) and not users_stop.is_set()):
+        return {'changed': False}
+    for worker in users_threads:
+        worker.join(timeout=5)
+    users_stop.clear()
+    users_threads[:] = [threading.Thread(target=run_users, args=(time.monotonic() + JOB_MAX_S, STORM_TARGETS, DAYTIME_RPS, 0), name='daytime-users', daemon=True)]
+    users_threads[0].start()
+    LOGS.append({'at': time.time(), 'ok': True, 'event': 'daytime users started', 'rps_per_gateway': DAYTIME_RPS, 'generation': BOOT})
+    return {'changed': True}
 
 
 @app.post('/maintenance/unstorm')

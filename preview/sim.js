@@ -97,13 +97,13 @@ function memoryReport(node) {
     growth_mib_s: span >= 4 ? Math.round((recent[recent.length - 1].mib - recent[0].mib) / span * 100) / 100 : null,
     samples: samples.reverse().slice(0, 30).reverse(), oom_kills: 0, uptime_s: Math.round((t - boot) * 10) / 10, version: n.version, generation: n.process};
 }
-// The report exporter's flood, as the reports service runs it. Measured on the real lab (22 October 2026): about 360
-// requests a second held the catalogue at its CPU limit, its own checks took a median 420 ms (p90 506 ms) and the
-// gateways' 456 ms, with no failures. Rate-limited, it is refused with 429 and backs off with jitter, about 11 a second.
+// The report exporter's flood, as the reports service runs it. Measured on the real lab (23 October 2026, 256
+// connections): about 480 requests a second held the catalogue at its CPU limit, its own checks took about 575 ms and
+// the gateways' about 500 ms, with no failures. Rate-limited, it is refused with 429 and backs off with jitter.
 const flood = {start: null, limitedAt: null, stoppedAt: null};
-const FLOOD_RPS = 360, LIMITED_RPS = 11;
+const FLOOD_RPS = 480, LIMITED_RPS = 11;
 const flooded = () => flood.start != null && flood.stoppedAt == null && flood.limitedAt == null;
-const floodMs = () => between(380, 510);
+const floodMs = () => between(500, 600);
 function exporterTraffic(t) {
   if (flood.start == null) return null;
   const from = t - 60, overlap = (a, b) => Math.max(0, Math.min(b, t) - Math.max(a, from));
@@ -129,7 +129,39 @@ function usersTraffic(node, t) {
   const heavy = overlap(stormFrom, stormTo), calm = overlap(storm.start, end) - heavy;
   const requests = Math.round(heavy * STORM_RPS + calm * USER_RPS), retries = Math.round(heavy * STORM_RPS * 0.7);
   const recent = storm.stoppedAt != null ? 0 : storming(node) ? STORM_RPS : USER_RPS;
-  return requests ? {client: 'mobile-app', requests, rejected: 0, errors: Math.round(heavy * STORM_RPS * 0.95), retries, rps: Math.round(requests / 60 * 100) / 100, recent_rps: recent} : null;
+  return requests ? {client: 'mobile-app', requests, rejected: 0, errors: Math.round(heavy * STORM_RPS * 0.95), retries, rps: Math.round(requests / 60 * 100) / 100,
+    recent_rps: recent, recent_retries: storming(node) ? Math.round(STORM_RPS * 10 * 0.7) : 0} : null;
+}
+// The facility layer, simulated in the real lab too: racks, PDUs and breakers. A tripped breaker stops every service
+// it feeds, and none can start until it is reset.
+const RACKS = {'PDU-A': {rack: 'R1', nodes: ['catalog-b', 'gateway-a']}, 'PDU-B': {rack: 'R2', nodes: ['gateway-c']}};
+const PDU_OF = Object.fromEntries(Object.entries(RACKS).flatMap(([pdu, r]) => r.nodes.map(n => [n, pdu])));
+const facility = {};
+// The thermal fault: a failed cooling unit, a power cap of 0.05 CPU on every container and steady daytime users.
+// Measured on the real lab (23 October 2026, 32 users a second per gateway): the gateways ran out first, their liveness
+// slowed to a median of about 160 ms (p90 200-500 ms) and about 85% of business requests failed, while the catalogue's
+// simple answers stayed fast.
+const COOLING_RECOVERY = 75, HOT_INLET = 38.4, DAYTIME_RPS = 32;
+const room = {failedAt: null, capped: false, liftedAt: null};
+const roomHot = () => room.failedAt != null && now() < room.failedAt + COOLING_RECOVERY;
+const capped = () => room.capped;
+const cappedGateway = node => capped() && isGateway(node);
+const pick3 = () => { const r = Math.random(); return r < 0.25 ? 0 : r < 0.62 ? 1 : 2; };  // measured mix: timeouts, busy, dropped
+const breakerOpen = node => facility[PDU_OF[node]]?.breaker === 'open';
+function facilityReport(node) {
+  const pdu = PDU_OF[node], state = facility[pdu] || {}, powered = state.breaker !== 'open';
+  const drawn = RACKS[pdu].nodes.filter(n => powered && fleet[n].running).length;
+  const events = [...(state.at ? [{at: state.at, event: 'breaker tripped', pdu, cause: 'overcurrent on circuit 3'}] : []), ...(state.closedAt ? [{at: state.closedAt, event: 'breaker reset', pdu}] : [])];
+  const hot = roomHot();
+  if (room.failedAt != null) {
+    events.push({at: room.failedAt, event: 'cooling unit CRAC-2 failed'}, {at: room.failedAt + 1, event: 'power cap applied to racks R1 and R2', cpu_limit: 0.05});
+    if (!hot) events.push({at: room.failedAt + COOLING_RECOVERY, event: 'cooling unit CRAC-2 restored'});
+  }
+  if (room.liftedAt != null) events.push({at: room.liftedAt, event: 'power cap lifted'});
+  return {ok: true, simulated: true, rack: RACKS[pdu].rack, pdu, breaker: powered ? 'closed' : 'open', fed_services: [...RACKS[pdu].nodes],
+    load_kw: Math.round((0.11 * drawn + (powered ? 0.04 : 0)) * 100) / 100, inlet_c: hot ? HOT_INLET : pdu === 'PDU-A' ? 24.8 : 25.3,
+    cooling: {crac_2: hot ? 'failed' : 'running'}, power_cap: {active: room.capped, cpu_limit: room.capped ? 0.05 : null},
+    ups: {on_battery: false, charge_pct: 100}, events: events.sort((a, b) => a.at - b.at), duration_ms: between(1, 3)};
 }
 const busyMs = () => Math.round(Math.min(1600, 110 + Math.random() ** 1.6 * 1100) * 10) / 10;
 const diskFull = node => ({ok: false, error: 'OSError', errno: 'ENOSPC', detail: 'No space left on device', path: 'receipt write', generation: fleet[node].process});
@@ -181,19 +213,21 @@ function probe(node, kind) {
   const container = {generation: n.container, running: n.running, status: n.running ? 'running' : 'exited', exit_code: n.exitCode, oom_killed: n.oomKilled,
     started_at: iso(n.startedAt), finished_at: n.finishedAt ? iso(n.finishedAt) : '0001-01-01T00:00:00Z'};
   if (kind === 'service') return {ok: true, target: node, ...container, duration_ms: between(9, 30)};
+  if (kind === 'facility') return facilityReport(node);
   if (kind === 'memory') {
     if (!n.running) return {ok: true, ...container, duration_ms: between(9, 30)};
     if (!answering(node)) return {ok: true, ...container, service_error: 'ConnectError', duration_ms: between(9, 30)};
     return {ok: true, ...container, http_status: 200, result: memoryReport(node), duration_ms: between(12, 40)};
   }
   if (kind === 'resources') {
-    const base = {ok: true, target: node, ...container, cpu_limit: 0.25};
+    const base = {ok: true, target: node, ...container, cpu_limit: capped() ? 0.05 : 0.25};
     if (!n.running) return {...base, duration_ms: between(9, 30)};
     // A process that has just started uses its whole limit while it boots, as on the real lab.
     const booting = now() - n.startedAt < 4;
-    const cores = Math.round((n.busy || booting || (node === 'catalog-b' && (flooded() || hiccup())) || storming(node) ? 0.24 + Math.random() * 0.01 : 0.004 + Math.random() * 0.016) * 1000) / 1000;
+    const limit = capped() ? 0.05 : 0.25;
+    const cores = Math.round((cappedGateway(node) ? limit * (0.96 + Math.random() * 0.04) : capped() ? limit * (0.25 + Math.random() * 0.15) : n.busy || booting || (node === 'catalog-b' && (flooded() || hiccup())) || storming(node) ? 0.24 + Math.random() * 0.01 : 0.004 + Math.random() * 0.016) * 1000) / 1000;
     n.periods += 10; if (n.busy) n.throttled += 9;
-    return {...base, cpu_cores: cores, cpu_pct_of_limit: Math.round(cores / 0.25 * 1000) / 10, periods: n.periods, throttled_periods: n.throttled,
+    return {...base, cpu_cores: cores, cpu_pct_of_limit: Math.round(cores / limit * 1000) / 10, periods: n.periods, throttled_periods: n.throttled,
             throttled_ms: Math.round(n.throttled * 75 * 10) / 10, memory_mib: memoryAt(node, now()), memory_limit_mib: MEMORY_LIMIT, duration_ms: between(1000, 1250)};
   }
   if (!answering(node)) return {ok: false, error: kind === 'network' ? 'ConnectionRefusedError' : 'ConnectError', detail: 'Check unavailable or failed', duration_ms: between(0.8, 4)};
@@ -228,7 +262,7 @@ function probe(node, kind) {
 function answered(node, kind) {
   const n = fleet[node];
   const role = isGateway(node) ? 'gateway' : 'catalog';
-  const quick = (low, high) => n.busy || (node === 'catalog-b' && hiccup()) ? busyMs() : node === 'catalog-b' && flooded() ? floodMs() : storming(node) || settling(node) ? between(300, 900) : between(low, high);
+  const quick = (low, high) => cappedGateway(node) ? (Math.random() < 0.8 ? between(120, 220) : between(220, 520)) : n.busy || (node === 'catalog-b' && hiccup()) ? busyMs() : node === 'catalog-b' && flooded() ? floodMs() : storming(node) || settling(node) ? between(300, 900) : between(low, high);
   if (kind === 'liveness') return reply({live: true, role, generation: n.process, version: n.version}, quick(3, 13));
   if (kind === 'releases') return reply({running: n.version, note: RELEASE_NOTES[n.version], history: n.history.slice(-10), uptime_s: Math.round((now() - n.startedAt) * 10) / 10, generation: n.process}, quick(3, 9));
   if (kind === 'logs') return reply({entries: n.logs.slice(-200), bounded_to: 200, generation: n.process, truncated: false, omitted_retained_entries: 0}, quick(3, 9));
@@ -246,7 +280,8 @@ function answered(node, kind) {
       const c = callers[e.client] ||= {client: e.client, requests: 0, rejected: 0, errors: 0, retries: 0};
       c.requests += 1; c.rejected += e.status === 429; c.errors += e.status >= 500;
     }
-    const exporter = role === 'catalog' ? exporterTraffic(t) : usersTraffic(node, t);
+    const daytime = role !== 'catalog' && room.failedAt != null && room.daytimeStoppedAt == null ? {client: 'mobile-app', requests: Math.round(Math.min(60, t - room.failedAt) * DAYTIME_RPS), rejected: 0, errors: 0, retries: 0, rps: DAYTIME_RPS * Math.min(60, t - room.failedAt) / 60, recent_rps: DAYTIME_RPS} : null;
+    const exporter = role === 'catalog' ? exporterTraffic(t) : usersTraffic(node, t) || daytime;
     const recentCount = client => n.traffic.filter(e => e.client === client && t - e.at <= 10).length;
     const clients = [...Object.values(callers).map(c => ({...c, rps: Math.round(c.requests / 60 * 100) / 100, recent_rps: Math.round(recentCount(c.client) / 10 * 100) / 100})),
       ...(exporter ? [exporter] : [])].sort((a, b) => b.requests - a.requests);
@@ -261,6 +296,14 @@ function answered(node, kind) {
     if (n.drifted) { const failure = {...sourceMissing(node), duration_ms: quick(2, 6)}; log(node, failure); return {ok: false, http_status: 500, result: failure, duration_ms: failure.duration_ms}; }
     if (n.full) { const failure = diskFull(node); log(node, failure); return {ok: false, http_status: 507, result: failure, duration_ms: quick(4, 10)}; }
     return reply(catalogue(), quick(5, 12));
+  }
+  // A power-capped gateway under daytime load fails most requests: timeouts, a busy upstream bulkhead, or the
+  // catalogue dropping a request whose deadline had already passed.
+  if (cappedGateway(node) && Math.random() < 0.85) {
+    const kindOfFailure = pick3(), result = {ok: false, dependency: 'catalog-b', correlation: crypto.randomUUID(), generation: n.process, duration_ms: between(300, 1000),
+      ...(kindOfFailure === 0 ? {error: 'ReadTimeout'} : kindOfFailure === 1 ? {error: 'UpstreamBusy'} : {error: 'HTTPStatusError', upstream_status: 504, upstream_error: 'DeadlineExceeded'})};
+    log(node, result); count(node, 'controller', 503);
+    return {ok: false, http_status: 503, result, duration_ms: Math.round((result.duration_ms + between(150, 700)) * 10) / 10};
   }
   // An overloaded gateway in a retry storm fails most requests: its queue outlasts the callers' deadlines.
   if ((storming(node) && Math.random() < 0.9) || (settling(node) && Math.random() < 0.5)) {
@@ -428,10 +471,10 @@ function state() {
 // changes nothing and says so, as the real broker and services do; a stopped service cannot confirm maintenance.
 const FAULTS = {'service-unavailable': ['stop', 'start'], 'cpu-starvation': ['burn', 'calm'], 'disk-full': ['fill', 'clear'], 'config-drift': ['drift', 'restore'],
   'network-delay': ['delay', 'undelay'], 'packet-loss': ['drop', 'undrop'], 'quota-zero': ['squeeze', 'requota'], 'bad-release': ['ship', 'rollback'], 'memory-leak': ['leak', 'rollback'],
-  'traffic-flood': ['flood', 'ratelimit'], 'retry-storm': ['storm', 'shed']};
-const FAULT_TARGETS = {'quota-zero': ['catalog-b'], 'traffic-flood': ['catalog-b'], 'retry-storm': ['gateway-a', 'gateway-c']};  // faults that only exist on some services
+  'traffic-flood': ['flood', 'ratelimit'], 'retry-storm': ['storm', 'shed'], 'power-loss': ['trip', 'breaker'], 'thermal-throttle': ['heat', 'uncap']};
+const FAULT_TARGETS = {'quota-zero': ['catalog-b'], 'traffic-flood': ['catalog-b'], 'retry-storm': ['gateway-a', 'gateway-c'], 'power-loss': ['catalog-b'], 'thermal-throttle': ['catalog-b']};  // faults that only exist on some services
 // Reset normally reapplies the remedy; a flood is undone by stopping its source and removing any limit.
-const RESET_CLEANUP = {'traffic-flood': ['unflood', 'requota'], 'retry-storm': ['unstorm', 'unshed']};
+const RESET_CLEANUP = {'traffic-flood': ['unflood', 'requota'], 'retry-storm': ['unstorm', 'unshed'], 'thermal-throttle': ['unstorm']};
 const UNCHANGED = {start: 'Already running; nothing changed', stop: 'Already stopped; nothing changed', calm: 'No background job running; nothing changed',
   burn: 'A background job was already running; nothing changed', clear: 'No filler file present; nothing changed', fill: 'Nothing changed',
   restore: 'Running config already matches the deployed settings; nothing changed', drift: 'Setting already overridden; nothing changed',
@@ -441,7 +484,9 @@ const UNCHANGED = {start: 'Already running; nothing changed', stop: 'Already sto
   rollback: 'Already running the stable release; nothing changed', ship: 'Release already deployed; nothing changed', leak: 'Release already deployed; nothing changed',
   ratelimit: 'No heavy caller without a quota to limit; nothing changed', flood: 'Export job already running; nothing changed', unflood: 'No export job running; nothing changed',
   shed: 'Load shedding already on, or not available here; nothing changed', unshed: 'Load shedding already off; nothing changed',
-  storm: 'App users already running; nothing changed', unstorm: 'No app users running; nothing changed'};
+  storm: 'App users already running; nothing changed', unstorm: 'No app users running; nothing changed',
+  breaker: 'The breaker feeding this service is already closed; nothing changed', trip: 'Breaker already open; nothing changed',
+  uncap: 'No power cap is active; nothing changed', heat: 'Cooling already failed; nothing changed'};
 const DEBRIEFS = {
   "service-unavailable": "The scenario requested stopping {target}. When that succeeds, its container state reads stopped and its own probes fail. When the catalogue stops, both gateways stay live but their business requests fail, so the failure spreads; when one gateway stops, the catalogue and the other gateway stay healthy, so it does not. Starting the stopped service restores the request path.",
   "cpu-starvation": "The scenario requested a runaway background job inside {target}. When that succeeds, the service keeps running and answering, but slowly: the job uses the container's whole 0.25-CPU limit, the kernel throttles it, and requests queue behind it, crossing the 300 ms threshold. Its log records the job starting. A slow catalogue makes both gateways slow, and sometimes time out, too. Stopping the job returns normal latency.",
@@ -451,8 +496,10 @@ const DEBRIEFS = {
   "quota-zero": "The scenario requested a quota push that set both gateways' request quotas on {target} to zero, as a faulty quota system might. Quotas are enforced by the shared catalogue for each named caller and come from the quota system, not the service's own config. When that succeeds, the catalogue is up, fast and idle, and its own checks pass, because the controller's health probes have no quota: the monitoring is green while every gateway request is refused with HTTP 429. Both gateways stay live but fail every business request. The running config matches what was deployed, so restoring config changes nothing; the traffic check shows each gateway's requests rejected against a limit of 0 per second, and the log records the quota push. Resetting the client quotas restores service.",
   "bad-release": "The scenario requested a rollout of release v1.5.0 to {target}, whose new price-conversion code fails about half of business requests with a TypeError (HTTP 500). The process stays live and its container, CPU, disk, network and running config all look normal: nothing about the machine changed, only the code. A bad catalogue release fails about half of both gateways' requests with an upstream 500, which looks like a drifted catalogue config until the config is found unchanged; a bad gateway release affects only that gateway. Because failures come and go, recovery has to hold for ten healthy cycles. Release history shows v1.5.0 deployed moments before the errors began, and the log records each TypeError with the version. Rolling back to v1.4.2 restores service; restoring config changes nothing.",
   "memory-leak": "The scenario requested a rollout of release v1.5.1 to {target}, whose background cache warmer keeps everything it loads, about 12 MiB a second. When that succeeds, the service works normally while its memory climbs, until it reaches the container's 192 MiB limit and the kernel kills it (OOMKilled, exit code 137). The rollout's deploy controller then restarts it after a few seconds and re-applies v1.5.1, as an orchestrator would, so the service crash-loops: healthy, then down, then healthy again. Starting it by hand only begins the next loop. While it is down a stopped catalogue fails both gateways' requests and a stopped gateway only its own. The memory check shows memory growing about 12 MiB a second towards the limit and the last exit as an OOM kill; release history shows v1.5.1 re-deployed after every restart. Rolling back to v1.4.2 stops the leak and keeps it stopped.",
-  "traffic-flood": "The scenario requested starting a report export job that pulls {target} as fast as 160 keep-alive connections allow, from a separate reports service on the internal network. When that succeeds, the catalogue handles several hundred requests a second at its 0.25-CPU limit, so its own checks and both gateways' requests queue behind the flood and turn slow, sometimes past the gateways' 1-second timeout. Nothing is broken or misconfigured: resource use shows the CPU at its limit, which looks like CPU starvation, but there is no runaway job, so stopping one changes nothing. The traffic check shows one caller, report-exporter, sending most of the requests without a quota. Rate-limiting it makes the catalogue answer that caller with HTTP 429 and Retry-After, the exporter backs off as a well-behaved client should, and latency returns to normal.",
+  "traffic-flood": "The scenario requested starting a report export job that pulls {target} as fast as 256 keep-alive connections allow, from a separate reports service on the internal network. When that succeeds, the catalogue handles several hundred requests a second at its 0.25-CPU limit, so its own checks and both gateways' requests queue behind the flood and turn slow, sometimes past the gateways' 1-second timeout. Nothing is broken or misconfigured: resource use shows the CPU at its limit, which looks like CPU starvation, but there is no runaway job, so stopping one changes nothing. The traffic check shows one caller, report-exporter, sending most of the requests without a quota. Rate-limiting it makes the catalogue answer that caller with HTTP 429 and Retry-After, the exporter backs off as a well-behaved client should, and latency returns to normal.",
   "retry-storm": "The scenario requested app users, 60 a second through {target}, whose app retries a failed request at once up to three times, and then a short index compaction that took the catalogue's whole CPU for 8 seconds. The compaction made requests time out; every timeout became up to four attempts; the extra attempts overloaded {target}, so its requests kept failing after the compaction had ended. That is a metastable failure: the overload outlives its cause, and it sits in a different service from the trigger. The other gateway recovers as soon as the compaction ends. Nothing is broken, stopped or misconfigured, and no unknown caller floods anything, so restarting, stopping a job or rate-limiting a client changes nothing. Resource use shows {target} at its CPU limit while the catalogue is idle, and its traffic shows most requests are retries. Enabling load shedding on {target} caps the requests it keeps in flight and turns the rest away at once, so the ones it accepts finish in time, users stop retrying, and the load falls back to normal.",
+  "thermal-throttle": "The scenario requested a simulated failure of cooling unit CRAC-2, which raised the inlet temperature of both racks to 38 \u00b0C; the facility responded with a power cap that lowered every container's CPU limit from 0.25 to 0.05, and steady daytime users, 32 a second through each gateway, kept the services busy. The facility layer is simulated, but the cap and the users were real. A CPU cap alone barely slows these light requests; under load it does. The gateways, which do the most work per request, ran out first: both turned slow even to liveness checks and failed most business requests, while the catalogue's simple answers stayed fast. Resource use showed each gateway throttled against a limit far below its deployed 0.25, which looks like CPU starvation, but there is no job to stop and no caller to limit. The facility check showed the failed cooling unit, the hot inlet and the active cap. Lifting the cap while the room is still hot is refused, as a facilities team would refuse it; once cooling recovered after about 75 seconds, lifting the power cap restored normal latency.",
+  "power-loss": "The scenario requested a simulated breaker trip on PDU-A, the power distribution unit feeding rack R1, where {target} and gateway-a are installed. The facility layer is simulated, but its effect was real: both containers were stopped, as servers are when their power is cut, and neither can be started while the breaker is open. Two services failed at the same moment, which on its own could look like two separate faults; what they share is not software but a power feed. gateway-c, on PDU-B, kept running, but its business requests fail because the catalogue is down. Starting either service reports no power and changes nothing. The facility check shows the open breaker, the rack and every service it feeds. Resetting the breaker restores power and starts the rack's services, the catalogue first because the gateways depend on it.",
   "network-delay": "The scenario requested a 600 ms delay on all traffic leaving {target}, applied with a Linux netem queue inside its own network namespace. When that succeeds, the process stays live and its CPU and disk stay normal, but everything it sends waits in the queue: its own checks take about 600 ms longer. A delayed catalogue slows both gateways' requests by the same amount; a delayed gateway pays the delay twice, on its call to the catalogue and on its reply, while the catalogue and the other gateway stay fast. Requests still succeed, because each wait stays under the gateways' 1-second upstream timeout. The network path check shows TCP connections taking about 600 ms and the netem queue itself, and a request trace shows a fast handler with the time spent outside it. Removing the delay, or restarting the container, restores normal latency.",
 };
 const debrief = s => DEBRIEFS[s.fault_kind].replaceAll('{target}', s.fault_target) + ' Injection outcome: ' + (s.fault_action?.status || 'not recorded') + '. The action record explains the exercise but was not evidence available during the investigation. Other evidence-supported investigation orders are valid.';
@@ -473,6 +520,21 @@ function apply(node, verb) {
     let changed = target.running && deploy(node, STABLE, 'rollback');
     if (ours) { delete s.rollout; if (!target.running) apply(node, 'start'); changed = true; }
     return changed;
+  }
+  if (verb === 'heat') { if (room.capped) return false; Object.assign(room, {failedAt: now(), capped: true, liftedAt: null, daytimeStoppedAt: null}); return true; }
+  if (verb === 'uncap') {
+    if (!room.capped || (roomHot() && lab.session?.status !== 'resetting')) return false;
+    Object.assign(room, {capped: false, liftedAt: now()});
+    return true;
+  }
+  if (verb === 'unstorm' && room.failedAt != null && room.daytimeStoppedAt == null) { room.daytimeStoppedAt = now(); if (storm.start == null || storm.stoppedAt != null) return true; }
+  if (verb === 'trip' || verb === 'breaker') {
+    const pdu = PDU_OF[node], state = facility[pdu] ||= {};
+    if ((state.breaker === 'open') === (verb === 'trip')) return false;
+    if (verb === 'breaker') state.breaker = 'closed';  // power first, so the starts below are not refused
+    for (const member of RACKS[pdu].nodes) if (fleet[member].running !== (verb === 'breaker')) apply(member, verb === 'trip' ? 'stop' : 'start');
+    if (verb === 'trip') Object.assign(state, {breaker: 'open', at: now(), closedAt: null}); else state.closedAt = now();
+    return true;
   }
   // The app users run in the reports service too; the compaction that triggers the storm stops by itself.
   if (verb === 'storm') {
@@ -523,14 +585,18 @@ function mutate(key, node, verb) {
     if (previous.request !== request || previous.session_id !== (lab.session?.id ?? null)) throw new HttpError(409, 'Idempotency key reused for a different operation');
     return previous.body;
   }
-  const changed = apply(node, verb);
+  const unpowered = verb === 'start' && breakerOpen(node), tooHot = verb === 'uncap' && room.capped && roomHot() && lab.session?.status !== 'resetting';
+  const changed = unpowered ? false : apply(node, verb);
+  const detail = unpowered ? `No power to rack ${RACKS[PDU_OF[node]].rack}: the ${PDU_OF[node]} breaker is open; nothing changed`
+    : tooHot ? `Inlet still ${HOT_INLET} °C: cooling unit CRAC-2 has not recovered, and lifting the cap now would overheat the room; nothing changed` : UNCHANGED[verb];
   const body = changed === null ? {status: 'unknown', node, verb, detail: 'Inspect actual state before retrying; completion was not confirmed'}
-    : {status: changed ? 'succeeded' : 'unchanged', node, verb, result: {target: node, changed}, ...(changed ? {} : {detail: UNCHANGED[verb]})};
+    : {status: changed ? 'succeeded' : 'unchanged', node, verb, result: {target: node, changed}, ...(changed ? {} : {detail})};
   actions.set(key, {request, session_id: lab.session?.id ?? null, at: now(), body});
   return body;
 }
 
-const resetPlan = s => [...NODES.map(n => [n, 'start']), ...(RESET_CLEANUP[s.fault_kind] ? RESET_CLEANUP[s.fault_kind].map(v => [s.fault_target, v])
+const RESET_FIRST = {'power-loss': ['breaker'], 'thermal-throttle': ['uncap']};  // steps a reset takes before starting the services
+const resetPlan = s => [...(RESET_FIRST[s.fault_kind] || []).map(v => [s.fault_target, v]), ...NODES.map(n => [n, 'start']), ...(RESET_FIRST[s.fault_kind] ? (RESET_CLEANUP[s.fault_kind] || []).map(v => [s.fault_target, v]) : RESET_CLEANUP[s.fault_kind] ? RESET_CLEANUP[s.fault_kind].map(v => [s.fault_target, v])
   : FAULTS[s.fault_kind][1] !== 'start' ? [[s.fault_target, FAULTS[s.fault_kind][1]]] : [])];
 
 function save(s) { sessions.set(s.id, s); }
@@ -584,7 +650,7 @@ function active(sessionId) {
 // Port of aegis/guidance.py: fresh observations only, never the fault record.
 const TIMEOUTS = ['ConnectTimeout', 'ReadTimeout', 'WriteTimeout', 'PoolTimeout'];
 function explain(level) {
-  const t = now(), sid = lab.session.id, inspections = ['service', 'resources', 'disk', 'config', 'trace', 'network', 'traffic', 'releases', 'memory'];
+  const t = now(), sid = lab.session.id, inspections = ['service', 'resources', 'disk', 'config', 'trace', 'network', 'traffic', 'releases', 'memory', 'facility'];
   const fresh = new Map([...lab.latest].filter(([key, e]) => e.session_id === sid && t - e.at >= 0 && t - e.at <= (inspections.includes(key.split('|')[1]) ? 30 : 6)));
   let ids = [], message = 'There is not enough fresh evidence yet. Start with a liveness check, then compare it with a business request.';
   let suggested = {node: 'gateway-a', kind: 'liveness'};
@@ -613,6 +679,9 @@ function explain(level) {
     } else if (live.body.ok && !business.body.ok && result.upstream_status === 429) {
       message = `${g} is live, but the catalogue refused its request with HTTP 429 (too many requests: ${result.upstream_error || 'quota exceeded'}). The catalogue is up and answering; it is rejecting this caller. Its own health checks may still pass, because they come from a different caller. Check the catalogue's traffic and quotas.`;
       suggested = {node: 'catalog-b', kind: 'traffic'};
+    } else if (live.body.ok && !business.body.ok && (result.error === 'UpstreamBusy' || result.upstream_error === 'DeadlineExceeded')) {
+      message = `${g} is live, but its business request failed because ${g} itself is backed up: ${result.error === 'UpstreamBusy' ? 'all its slots for calling the catalogue were busy' : 'its call reached the catalogue only after the deadline had passed'}. The catalogue is not the bottleneck; something is slowing the gateway. Check its own resources.`;
+      suggested = {node: g, kind: 'resources'};
     } else if (live.body.ok && !business.body.ok && TIMEOUTS.includes(result.error) && catalogue?.body.ok && !catalogue.body.slow) {
       ids.push(catalogue.id);
       message = `${g} is live, but its call to the catalogue timed out (${result.error}) rather than being refused, while the catalogue answers its own business requests quickly. A timeout without a slow service means packets went missing on the way: a lost connection setup or reply. If the same request sometimes works, compare the network path of both ends.`;
@@ -628,6 +697,9 @@ function explain(level) {
       ids.push(slowCatalogue.id);
       message = `${g} is live but its business request fails, and the catalogue it depends on answers slowly (${slowCatalogue.body.duration_ms} ms). Slow upstream replies make the gateway's requests time out; compare the catalogue's resource use, traffic and network path.`;
       suggested = {node: 'catalog-b', kind: 'resources'};
+    } else if (live.body.ok && live.body.slow && !business.body.ok) {
+      message = `${g}'s business request fails and it is slow even to liveness checks (${live.body.duration_ms} ms), which do almost no work. Something is holding the gateway itself back: check its own resources before looking further.`;
+      suggested = {node: g, kind: 'resources'};
     } else if (live.body.ok && !business.body.ok) {
       message = `${g} responds to liveness checks but its business request fails. Its own process is reachable; inspect the catalogue dependency before concluding the gateway is down.`;
       suggested = {node: 'catalog-b', kind: 'service'};
@@ -672,12 +744,14 @@ function explain(level) {
 // Callers sending heavily with no quota of any kind, busiest first, as aegis/guidance.py finds them.
 function heavyCallers(record) {
   const result = record?.body?.result || {}, limited = new Set((result.quotas || []).map(q => q.client));
-  return (result.clients || []).filter(c => (c.recent_rps || 0) > 20 && !limited.has(c.client) && c.client !== 'controller' && (c.retries || 0) <= (c.requests || 0) / 2).sort((a, b) => b.requests - a.requests);
+  return (result.clients || []).filter(c => (c.recent_rps || 0) > 20 && !limited.has(c.client) && c.client !== 'controller' && retryShare(c) <= 0.5).sort((a, b) => b.requests - a.requests);
 }
 
+// The share of a caller's requests that are retries: over the last 10 seconds when reported, else the last minute.
+const retryShare = c => (c.recent_retries != null && c.recent_rps ? c.recent_retries / (c.recent_rps * 10) : c.requests ? (c.retries || 0) / c.requests : 0);
 // The busiest caller whose requests are mostly retries, if it is sending heavily now, as aegis/guidance.py finds it.
 function retryStorm(record) {
-  const stormy = (record?.body?.result?.clients || []).filter(c => (c.recent_rps || 0) > 20 && c.requests && (c.retries || 0) / c.requests > 0.5);
+  const stormy = (record?.body?.result?.clients || []).filter(c => (c.recent_rps || 0) > 20 && retryShare(c) > 0.5);
   return stormy.length ? stormy.reduce((a, b) => (b.requests > a.requests ? b : a)) : null;
 }
 
@@ -688,14 +762,19 @@ function remedyFor(fresh) {
     if (!body.ok) continue;
     let action;
     let then = null;
-    if (kind === 'service' && body.running === false && body.oom_killed) { action = `The recent service-state observation reports ${node} stopped by the kernel for running out of memory (OOMKilled, exit code ${body.exit_code}). Starting it may only repeat the crash: check its memory trend and release history before choosing a fix.`; then = 'memory'; }
+    if (kind === 'service' && body.running === false && fresh.get(node + '|facility')?.body.breaker === 'open') continue;  // no power: starting cannot work
+    if (kind === 'facility' && body.power_cap?.active && body.cooling?.crac_2 === 'failed') { action = `The facility check (simulated) for ${node}'s rack shows cooling unit CRAC-2 failed, the inlet at ${body.inlet_c} °C and a power cap active on every rack. Lifting the cap while the room is this hot would overheat it, so there is no safe fix yet: check the facility again until cooling is restored.`; then = 'facility'; }
+    else if (kind === 'facility' && body.power_cap?.active) action = `The facility check (simulated) for ${node}'s rack shows cooling restored and the inlet back to ${body.inlet_c} °C, but the power cap is still active. You can try lifting the power cap, then verify latency returns to normal everywhere.`;
+    else if (kind === 'resources' && body.cpu_limit && body.cpu_limit < 0.25) { action = `The resource check shows ${node}'s CPU limit at ${body.cpu_limit}, below the 0.25 it was deployed with: something has capped it, which a power or thermal cap does. Check the facility before changing anything on the service.`; then = 'facility'; }
+    else if (kind === 'facility' && body.breaker === 'open') action = `The facility check (simulated) shows the ${body.pdu} breaker open: rack ${body.rack} has no power, so ${body.fed_services.join(' and ')} lost power together. Starting them cannot work without power. You can try resetting the breaker, then verify every service it feeds comes back.`;
+    else if (kind === 'service' && body.running === false && body.oom_killed) { action = `The recent service-state observation reports ${node} stopped by the kernel for running out of memory (OOMKilled, exit code ${body.exit_code}). Starting it may only repeat the crash: check its memory trend and release history before choosing a fix.`; then = 'memory'; }
     else if (kind === 'service' && body.running === false) action = `The recent service-state observation reports ${node} stopped. You can try starting that selected service, then verify fresh business requests. This does not establish why it stopped.`;
     else if (kind === 'resources' && (body.cpu_pct_of_limit || 0) >= 80 && record.at - Date.parse(body.started_at) / 1000 < 15) {
       action = `The resource check shows ${node} at ${body.cpu_pct_of_limit}% of its CPU limit, but its container started only seconds earlier, and a process uses its whole limit while it boots. That alone is not starvation: check resources again in a few seconds, and its container state and memory to see why it restarted.`;
       then = 'memory';
     } else if (kind === 'resources' && (body.cpu_pct_of_limit || 0) >= 80) {
-      if (heavyCallers(fresh.get(node + '|traffic')).length) continue;  // the traffic check explains the CPU better
-      action = `The resource check shows ${node} using ${body.cpu_pct_of_limit}% of its ${body.cpu_limit}-CPU limit, so the kernel is throttling it. Something is using that CPU: if its logs show a background job starting, you can try stopping the runaway job; if its traffic shows one caller sending most requests, rate-limit that client instead. Then verify latency returns below ${SLOW_MS} ms.`;
+      if (node === 'catalog-b' && heavyCallers(fresh.get(node + '|traffic')).length) continue;  // the traffic check explains the CPU better
+      action = `The resource check shows ${node} using ${body.cpu_pct_of_limit}% of its ${body.cpu_limit}-CPU limit, so the kernel is throttling it. Something is using that CPU: if its logs show a background job starting, you can try stopping the runaway job; ${node === 'catalog-b' ? 'if its traffic shows one caller sending most requests, rate-limit that client instead.' : 'if its traffic shows most requests are retries, callers are feeding an overload and load shedding is the fix.'} Then verify latency returns below ${SLOW_MS} ms.`;
       if (!fresh.has(node + '|traffic')) then = 'traffic';
     }
     else if (kind === 'disk' && body.result?.free_bytes != null && body.result.free_bytes < 64 * 1024) action = `Disk usage shows ${node}'s /tmp full, mostly ${body.result.largest?.[0]?.path || 'one file'}. You can try clearing its temporary files, then verify business requests write receipts again.`;
@@ -707,9 +786,9 @@ function remedyFor(fresh) {
       const resent = tcp.retrans_pct != null ? `, and ${tcp.retrans_pct}% of the TCP segments it sent had to be resent` : '';
       action = `Traffic leaving ${node} passes a netem queue that drops ${queue.loss_pct}% of packets${resent}. You can try removing the packet loss, then verify requests succeed reliably, not just once.`;
     } else if (kind === 'traffic' && retryStorm(record)) {
-      const caller = retryStorm(record), share = Math.round(100 * caller.retries / caller.requests);
+      const caller = retryStorm(record), share = Math.round(100 * retryShare(caller));
       action = `${node} received ${caller.requests} requests in the last minute from ${caller.client}, and ${share}% of them were retries of requests that had just failed. Callers are retrying faster than it can serve, so the overload feeds itself even if whatever started it has stopped. You can try enabling load shedding on ${node}, then verify its requests succeed again.`;
-    } else if (kind === 'traffic' && heavyCallers(record).length) {
+    } else if (kind === 'traffic' && node === 'catalog-b' && heavyCallers(record).length) {  // only the catalogue rate-limits
       const top = heavyCallers(record)[0];
       action = `${node} received ${top.requests} requests in the last minute from ${top.client}, about ${top.recent_rps} a second right now, from a caller with no quota: one client is using most of its capacity. You can try rate-limiting the top client, then verify the other callers' requests are fast again.`;
     } else if (kind === 'traffic' && body.result?.quotas?.some(q => q.limit_rps === 0)) {
@@ -781,7 +860,7 @@ function timeline(id) {
 
 // ---- Routing, shaped like the FastAPI handlers ----
 const nodeOk = value => NODES.includes(value);
-const kindOk = value => ['liveness', 'readiness', 'business', 'logs', 'service', 'resources', 'disk', 'config', 'trace', 'network', 'traffic', 'releases', 'memory'].includes(value);
+const kindOk = value => ['liveness', 'readiness', 'business', 'logs', 'service', 'resources', 'disk', 'config', 'trace', 'network', 'traffic', 'releases', 'memory', 'facility'].includes(value);
 const invalid = () => { throw new HttpError(422, [{msg: 'Invalid request'}]); };
 
 const routes = {
@@ -795,7 +874,7 @@ const routes = {
     const s = active(d.session_id);
     if (s.status === 'resetting') throw new HttpError(409, 'Reset is in progress. Wait for verification or retry reset.');
     const verb = d.verb || 'start';
-    if (!['start', 'calm', 'clear', 'restore', 'undelay', 'undrop', 'requota', 'rollback', 'ratelimit', 'shed'].includes(verb)) invalid();
+    if (!['start', 'calm', 'clear', 'restore', 'undelay', 'undrop', 'requota', 'rollback', 'ratelimit', 'shed', 'breaker', 'uncap'].includes(verb)) invalid();
     const result = mutate(d.key, d.node || 'catalog-b', verb);
     if (!s.recovery_attempts.some(a => a.key === d.key)) {
       s.recovery_attempts.push({key: d.key, at: now(), ...result});
