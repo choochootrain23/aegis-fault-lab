@@ -477,6 +477,33 @@ def main():
             expect(page.locator('#session-status')).to_have_text('ended', timeout=15000)
             page.select_option('#practice-kind', 'service-unavailable')
 
+            # A DNS failure exists only on a gateway: its resolver is repointed, so it cannot find the healthy catalogue
+            # by name. Guidance points at its network path, which shows the refused lookup; restoring config does nothing.
+            page.select_option('#practice-kind', 'dns-failure')
+            assert page.locator('#practice-target option[value="catalog-b"]').evaluate('o => o.disabled')
+            page.select_option('#practice-target', 'gateway-a')
+            expect(page.locator('#scenario-title')).to_have_text('When a name stops resolving')
+            expect(page.locator('#start')).to_be_enabled(timeout=20000)
+            page.click('#start')
+            expect(page.locator('#session-status')).to_have_text('investigating', timeout=25000)
+            expect(page.locator('#node-catalog-b .node-state')).to_have_text('healthy')
+            expect(page.locator('#node-gateway-a .node-state')).to_have_text('degraded')
+            page.click('[data-help="evidence"]')
+            expect(page.locator('#help-result')).to_contain_text('could not resolve')
+            page.click('#suggested-check')
+            expect(page.locator('#inspector-title')).to_have_text('gateway-a')
+            expect(page.locator('[data-check="network"] .check-result')).to_contain_text('DNS failing')
+            expect(page.locator('.evidence-row').filter(has_text='cannot resolve catalog-b').first.locator('.config-table').last).to_contain_text('127.0.0.53')
+            page.click('[data-help="action"]')
+            expect(page.locator('#help-result')).to_contain_text('restoring the resolver')
+            page.click('[data-remedy="restore"]')
+            expect(page.locator('#toast')).to_contain_text('Running config already matches')
+            page.click('[data-remedy="resolver"]')
+            expect(page.locator('#session-status')).to_have_text('recovered', timeout=25000)
+            page.click('#reset')
+            expect(page.locator('#session-status')).to_have_text('ended', timeout=15000)
+            page.select_option('#practice-kind', 'service-unavailable')
+
             # A stopped gateway-c is local: gateway-a and the catalogue stay healthy, and guidance says so.
             page.select_option('#practice-kind', 'service-unavailable')
             page.select_option('#practice-target', 'gateway-c')
@@ -518,7 +545,7 @@ def main():
             expect(page.locator('#scenario-reveal')).to_contain_text('Known scenario:')
             page.click('#reset')
             expect(page.locator('#session-status')).to_have_text('ended', timeout=15000)
-            expect(page.locator('#history .history-item')).to_have_count(15)
+            expect(page.locator('#history .history-item')).to_have_count(16)
 
             mobile = browser.new_page(viewport={'width': 390, 'height': 844})
             mobile.on('pageerror', lambda error: errors.append(str(error)))

@@ -118,6 +118,15 @@ export function run(){
     assert.equal(cap.tone,'red');assert.match(cap.text,/power cap active/);assert.match(cap.text,/cooling failed/);
     assert.equal(view.remedyLabel('uncap'),'Lift power cap');
   });
+  check('A failed name lookup reads as a network failure and the DNS fault is gateway-only',()=>{
+    const failing={kind:'network',body:{ok:true,median_connect_ms:0.4,result:{qdiscs:[],dns:{name:'catalog-b',ok:false,changed:true,nameserver:'127.0.0.53',error:'catalog-b: connection refused by nameserver 127.0.0.53'}}}};
+    const result=view.evidenceResult(failing);
+    assert.equal(result.tone,'red');assert.match(result.text,/cannot resolve catalog-b \(resolver 127.0.0.53\)/);
+    assert.match(view.checkSummary(failing).text,/DNS failing/);
+    assert.equal(view.evidenceResult({kind:'network',body:{ok:true,median_connect_ms:0.4,result:{qdiscs:[],dns:{name:'catalog-b',ok:true}}}}).tone,'green');
+    assert.deepEqual([...view.faultTargets('dns-failure')],['gateway-a','gateway-c']);assert.equal(view.remedyLabel('resolver'),'Restore resolver');
+    assert.equal(view.scenarioCopy('dns-failure','gateway-a','practice').number,'14');
+  });
   return {passed,scope:'Pure UI state and timer decisions; frontend JavaScript parsed. No visual/browser validation.'};
 }
 if(typeof process!=='undefined' && process.argv[1] && import.meta.url===new URL('file://'+process.argv[1]).href) console.log(run());

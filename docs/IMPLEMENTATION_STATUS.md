@@ -123,10 +123,16 @@ Reports are under ignored `state/validation/`. The app is running at http://loca
 - Interface: the fixes moved under the live map in a grid and each check became one compact row, halving the height of the inspector (2,038 to 1,007 pixels at desktop width).
 - AI investigator: the prompt now says what each fix does. With full evidence, its answers went from 22 to 30 correct out of 30 in challenge rounds across all thirteen faults.
 
+## Fifteenth checkpoint (23 October 2026)
+
+- **Real name resolution.** Gateways resolve the catalogue with their own DNS queries to Docker's resolver, caching each answer for 5 seconds; the **Network path** check on a gateway adds a fresh lookup, the resolver beside the one deployed, and a TCP connection to the last address that resolved. The request trace gains a DNS lookup step.
+- **Fourteenth fault: DNS failure.** A settings sync points one gateway's resolver at 127.0.0.53, where nothing listens inside a container. Remedy: **Restore resolver**.
+- **Found on the way:** a stopped catalogue's name stops resolving too. Docker answers SERVFAIL for a stopped container, which the generic `ConnectError` used to hide. Guidance now checks whether the catalogue is running before blaming the resolver, and restoring the resolver is suggested only when it changed or the catalogue is still reachable.
+
 ## Next work
 
 1. AI evaluation with other models and question wordings; more samples of the rarer faults.
-2. Compound incidents (for example a heatwave that tips into a retry storm), DNS failure, clock skew and partial partitions from the roadmap.
+2. Compound incidents (for example a heatwave that tips into a retry storm), brownouts, clock skew and partial partitions from the roadmap.
 3. Screen-reader review; runs measured in days.
 
 ## Boundaries preserved

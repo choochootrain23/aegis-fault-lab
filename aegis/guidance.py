@@ -40,6 +40,12 @@ def explain(latest, level, now=None):
         elif live['body']['ok'] and not business['body']['ok'] and result.get('upstream_status') == 429:
             message = f'{g} is live, but the catalogue refused its request with HTTP 429 (too many requests: {result.get("upstream_error") or "quota exceeded"}). The catalogue is up and answering; it is rejecting this caller. Its own health checks may still pass, because they come from a different caller. Check the catalogue\'s traffic and quotas.'
             suggested = {'node':'catalog-b','kind':'traffic'}
+        elif live['body']['ok'] and not business['body']['ok'] and result.get('error') == 'NameResolutionError':
+            message = (f"{g} is live, but its business request failed before reaching the catalogue: it could not resolve the catalogue's name ({result.get('detail') or 'no address'}). "
+                       "A name stops resolving when the resolver is broken, and also when the service behind it is gone: Docker's resolver drops the name of a stopped container. "
+                       + (f"The catalogue answers its own requests, so look at {g}'s resolver in its network path." if catalogue_healthy(fresh)
+                          else "Check whether the catalogue is running before blaming the resolver."))
+            suggested = {'node':g,'kind':'network'} if catalogue_healthy(fresh) else {'node':'catalog-b','kind':'service'}
         elif live['body']['ok'] and not business['body']['ok'] and (result.get('error') == 'UpstreamBusy' or result.get('upstream_error') == 'DeadlineExceeded'):
             message = (f"{g} is live, but its business request failed because {g} itself is backed up: "
                        + ("all its slots for calling the catalogue were busy" if result.get('error') == 'UpstreamBusy' else "its call reached the catalogue only after the deadline had passed")
@@ -144,6 +150,12 @@ def retry_share(caller):
     return (caller.get('retries') or 0) / caller['requests'] if caller.get('requests') else 0
 
 
+def resolver_broken(dns):
+    """A lookup that failed at a changed resolver, or while the service behind the name still answers: a broken resolver
+    rather than a name that is gone, as a stopped container's is."""
+    return bool(dns and dns.get('ok') is False and (dns.get('changed') or dns.get('connect_last_good_ms') is not None))
+
+
 def catalogue_healthy(fresh):
     record = fresh.get(('catalog-b', 'business'))
     return bool(record and record['body'].get('ok') and not record['body'].get('slow'))
@@ -207,6 +219,14 @@ def remedy(fresh):
         elif kind == 'config' and (body.get('result') or {}).get('drifted'):
             setting = next(s for s in body['result']['settings'] if s['drifted'])
             action = f"The running config on {node} differs from its deployed settings: {setting['key']} is {setting['value']} but {setting['deployed']} was deployed. You can try restoring the deployed config, then verify business requests succeed again."
+        elif kind == 'network' and resolver_broken((body.get('result') or {}).get('dns')):
+            dns = body['result']['dns']
+            reachable = (f" A TCP connection to its last known address, {dns['last_good_address']}, took {dns['connect_last_good_ms']:g} ms, so the service itself is reachable; only the name fails."
+                         if dns.get('connect_last_good_ms') is not None else '')
+            changed = (f" The resolver uses {dns['nameserver']}, set by {dns.get('pushed_by')}, rather than the {dns['deployed_nameserver']} it was deployed with."
+                       if dns.get('changed') else '')
+            action = (f"{node} cannot resolve {dns['name']}: {dns.get('error')}.{changed}{reachable} "
+                      "You can try restoring the resolver, then verify business requests succeed again.")
         elif kind == 'network' and any(q.get('kind') == 'netem' and q.get('loss_pct') for q in (body.get('result') or {}).get('qdiscs', [])):
             queue = next(q for q in body['result']['qdiscs'] if q.get('kind') == 'netem')
             tcp = body['result'].get('tcp') or {}

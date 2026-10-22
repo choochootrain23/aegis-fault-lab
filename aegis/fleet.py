@@ -7,6 +7,8 @@ import os
 import json
 import random
 import re
+import socket
+import struct
 import subprocess
 import threading
 import time
@@ -14,6 +16,7 @@ import uuid
 from contextlib import asynccontextmanager
 from collections import deque
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import httpx
 from fastapi import FastAPI, Header, HTTPException
@@ -70,6 +73,28 @@ release = {'version': STABLE, 'history': [{'version': STABLE, 'at': time.time(),
 leak_store = []
 leak_stop = threading.Event()
 MEMORY = deque(maxlen=31)    # (at, bytes) sampled every 2 seconds from this container's cgroup
+# Name resolution. A gateway resolves the catalogue's name itself, as a stub resolver does: a real DNS query over UDP
+# to the nameserver in its resolv.conf (Docker's embedded DNS), each answer cached for at most DNS_TTL_S. The DNS
+# fault repoints it at 127.0.0.53, systemd-resolved's stub address, a setting easily copied from a host image;
+# nothing listens there inside a container, so every lookup is refused once the cached answer expires.
+DNS_PORT = 53
+DNS_TTL_S = 5
+DNS_NEGATIVE_S = 1    # a failed lookup is retried after this, so a broken resolver is not asked on every request
+BROKEN_NAMESERVER = '127.0.0.53'
+
+
+def system_nameserver():
+    try:
+        return next((line.split()[1] for line in Path('/etc/resolv.conf').read_text().splitlines()
+                     if len(line.split()) >= 2 and line.split()[0] == 'nameserver'), None)
+    except OSError:
+        return None
+
+
+SYSTEM_NAMESERVER = system_nameserver()
+resolver = {'nameserver': SYSTEM_NAMESERVER, 'pushed_by': 'deployment', 'at': time.time()}
+dns_cache = {}   # name -> {'address', 'expires', 'error', 'last_good'}
+dns_lookups = {}  # name -> the lookup in flight, shared by every request waiting on it
 
 
 def cgroup_memory():
@@ -270,6 +295,89 @@ async def catalog(x_aegis_client: str = Header(default='unidentified')):
     return {'items': items, 'generation': BOOT}
 
 
+class NameResolutionError(Exception):
+    """A lookup that produced no address; the message says why."""
+
+
+def dns_query(name, nameserver, timeout=1.0):
+    """One real DNS query for name's A record over UDP; returns (address, ttl)."""
+    ident = random.randrange(65536)
+    question = b''.join(bytes([len(label)]) + label.encode() for label in name.split('.')) + b'\0\0\x01\0\x01'
+    packet = struct.pack('>HHHHHH', ident, 0x0100, 1, 0, 0, 0) + question
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        sock.settimeout(timeout)
+        sock.connect((nameserver, DNS_PORT))
+        sock.send(packet)
+        reply = sock.recv(512)
+    if len(reply) < 12 or reply[:2] != packet[:2]:
+        raise NameResolutionError(f'{name}: malformed reply from nameserver {nameserver}')
+    if (code := reply[3] & 0x0F):
+        raise NameResolutionError(f"{name}: {({2: 'SERVFAIL', 3: 'NXDOMAIN', 5: 'REFUSED'}).get(code, f'rcode {code}')} from nameserver {nameserver}")
+    offset = 12 + len(question)
+    for _ in range(struct.unpack('>H', reply[6:8])[0]):
+        if reply[offset] & 0xC0 == 0xC0:  # a compressed name is a two-byte pointer
+            offset += 2
+        else:
+            while reply[offset]:
+                offset += reply[offset] + 1
+            offset += 1
+        kind, _, ttl, length = struct.unpack('>HHIH', reply[offset:offset + 10])
+        offset += 10
+        if kind == 1 and length == 4:
+            return socket.inet_ntoa(reply[offset:offset + 4]), ttl
+        offset += length
+    raise NameResolutionError(f'{name}: no address in the reply from nameserver {nameserver}')
+
+
+def lookup_failure(name, nameserver, error):
+    if isinstance(error, NameResolutionError):
+        return str(error)
+    if isinstance(error, ConnectionRefusedError):
+        return f'{name}: connection refused by nameserver {nameserver}'
+    if isinstance(error, TimeoutError):
+        return f'{name}: no answer from nameserver {nameserver}'
+    return f'{name}: {type(error).__name__} from nameserver {nameserver}'
+
+
+def literal_address(host):
+    try:
+        socket.inet_aton(host)
+        return True
+    except OSError:
+        return host == 'localhost'
+
+
+async def resolve(host):
+    """The address for host: from the cache while its answer is fresh, otherwise from one shared real lookup."""
+    if literal_address(host) or not resolver['nameserver']:
+        return host
+    entry = dns_cache.get(host) or {}
+    if entry.get('expires', 0) > time.monotonic():
+        if entry.get('error'):
+            raise NameResolutionError(entry['error'])
+        return entry['address']
+    nameserver = resolver['nameserver']
+    task = dns_lookups.get(host)
+    if task is None or task.done():
+        task = dns_lookups[host] = asyncio.ensure_future(asyncio.to_thread(dns_query, host, nameserver))
+    try:
+        address, ttl = await asyncio.shield(task)  # one caller's deadline must not cancel everyone's lookup
+    except (OSError, NameResolutionError) as error:
+        detail = lookup_failure(host, nameserver, error)
+        dns_cache[host] = {**entry, 'address': None, 'error': detail, 'expires': time.monotonic() + DNS_NEGATIVE_S}
+        raise NameResolutionError(detail) from error
+    dns_cache[host] = {'address': address, 'error': None, 'last_good': address, 'expires': time.monotonic() + min(ttl, DNS_TTL_S)}
+    return address
+
+
+async def upstream_request(path, headers, timeout):
+    """GET path from the configured upstream, resolving its name first, as every gateway call to the catalogue does."""
+    target = urlsplit(config['upstream'])
+    address = await resolve(target.hostname)
+    url = f'{target.scheme}://{address}' + (f':{target.port}' if target.port else '') + path
+    return await app.state.client.get(url, headers={**headers, 'Host': target.netloc}, timeout=timeout)
+
+
 # A bulkhead for calls to the catalogue: fewer slots than the HTTP client's pool, so requests wait here, where a
 # deadline can safely end the wait, and never inside the client's pool, where a timed-out wait leaked connections
 # for good under a retry storm (measured: every gateway stuck on PoolTimeout after the load stopped).
@@ -278,11 +386,12 @@ UPSTREAM_SLOTS = asyncio.Semaphore(80)
 
 async def call_catalogue(correlation, upstream_deadline):
     try:
-        response = await app.state.client.get(config['upstream'] + '/catalog', headers={'X-Correlation-ID': correlation, 'X-Aegis-Client': NAME,
-                                                                                         'X-Aegis-Deadline': f'{upstream_deadline:.3f}'},
-                                              timeout=config['upstream_timeout_s'])
+        response = await upstream_request('/catalog', {'X-Correlation-ID': correlation, 'X-Aegis-Client': NAME, 'X-Aegis-Deadline': f'{upstream_deadline:.3f}'},
+                                          config['upstream_timeout_s'])
         response.raise_for_status()
         return {'ok': True, 'dependency': 'catalog-b', 'correlation': correlation, 'catalog': response.json()}, 200
+    except NameResolutionError as error:
+        return {'ok': False, 'dependency': 'catalog-b', 'correlation': correlation, 'error': 'NameResolutionError', 'detail': str(error)}, 503
     except httpx.HTTPStatusError as error:
         return {'ok': False, 'dependency': 'catalog-b', 'correlation': correlation, 'error': 'HTTPStatusError',
                 'upstream_status': error.response.status_code, 'upstream_error': upstream_error(error.response)}, 503
@@ -406,9 +515,36 @@ def retransmissions():
             'out_segs': sent, 'retrans_segs': again, 'retrans_pct': round(100 * again / sent, 1) if sent else 0.0}
 
 
+async def dns_report():
+    """A fresh lookup of the upstream's name through the configured nameserver, bypassing the cache. When it fails,
+    a TCP connection to the last address that resolved shows whether the service itself is still reachable."""
+    target = urlsplit(config['upstream'])
+    if literal_address(target.hostname) or not resolver['nameserver']:
+        return None
+    nameserver, began = resolver['nameserver'], time.monotonic()
+    report = {'name': target.hostname, 'nameserver': nameserver, 'deployed_nameserver': SYSTEM_NAMESERVER, 'changed': nameserver != SYSTEM_NAMESERVER,
+              'pushed_by': resolver['pushed_by']}
+    try:
+        address, ttl = await asyncio.to_thread(dns_query, target.hostname, nameserver)
+        report.update(ok=True, address=address, ttl_s=ttl)
+    except (OSError, NameResolutionError) as error:
+        report.update(ok=False, error=lookup_failure(target.hostname, nameserver, error))
+    report['lookup_ms'] = round((time.monotonic() - began) * 1000, 1)
+    last_good = (dns_cache.get(target.hostname) or {}).get('last_good')
+    if not report['ok'] and last_good:
+        began = time.monotonic()
+        try:
+            _, writer = await asyncio.wait_for(asyncio.open_connection(last_good, target.port or 80), 1)
+            writer.close()
+            report.update(last_good_address=last_good, connect_last_good_ms=round((time.monotonic() - began) * 1000, 1))
+        except (OSError, TimeoutError) as error:
+            report.update(last_good_address=last_good, connect_last_good_error=type(error).__name__)
+    return report
+
+
 @app.get('/diagnostics/network')
 async def network():
-    return {**read_qdiscs(), 'tcp': retransmissions(), 'generation': BOOT}
+    return {**read_qdiscs(), 'tcp': retransmissions(), **({'dns': await dns_report()} if ROLE == 'gateway' else {}), 'generation': BOOT}
 
 
 @app.get('/diagnostics/releases')
@@ -477,12 +613,19 @@ async def trace():
 
     began = time.monotonic()
     if ROLE == 'gateway':
-        name = 'upstream ' + config['upstream'].split('//')[-1] + '/catalog'
+        host = urlsplit(config['upstream']).hostname
         try:
-            response = await app.state.client.get(config['upstream'] + '/catalog', headers={'X-Aegis-Client': NAME}, timeout=config['upstream_timeout_s'])
-            ok = span(name, began, response.is_success, status=response.status_code)
-        except httpx.HTTPError as error:
-            ok = span(name, began, False, error=type(error).__name__)
+            await resolve(host)
+            ok = span('dns lookup ' + host, began, True)
+        except NameResolutionError as error:
+            ok = span('dns lookup ' + host, began, False, error='NameResolutionError', detail=str(error))
+        if ok:
+            name, began = 'upstream ' + config['upstream'].split('//')[-1] + '/catalog', time.monotonic()
+            try:
+                response = await upstream_request('/catalog', {'X-Aegis-Client': NAME}, config['upstream_timeout_s'])
+                ok = span(name, began, response.is_success, status=response.status_code)
+            except (httpx.HTTPError, NameResolutionError) as error:
+                ok = span(name, began, False, error=type(error).__name__)
     else:
         try:
             load_catalogue()
@@ -583,6 +726,32 @@ async def drift(x_aegis_fleet_token: str = Header(default='')):
     config[key] = value
     LOGS.append({'at': time.time(), 'ok': True, 'event': 'configuration reloaded', 'changed': {key: value}, 'generation': BOOT})
     return {'changed': True, 'key': key}
+
+
+@app.post('/maintenance/repoint')
+async def repoint(x_aegis_fleet_token: str = Header(default='')):
+    """Fault injection: a node-settings sync that points this gateway's resolver at a nameserver that is not there."""
+    authorize(x_aegis_fleet_token)
+    if ROLE != 'gateway' or not SYSTEM_NAMESERVER or literal_address(urlsplit(config['upstream']).hostname):
+        raise HTTPException(409, 'Only a gateway that resolves its upstream by name has a resolver to repoint')
+    if resolver['nameserver'] == BROKEN_NAMESERVER:
+        return {'changed': False}
+    resolver.update(nameserver=BROKEN_NAMESERVER, pushed_by='node-settings-sync', at=time.time())
+    LOGS.append({'at': time.time(), 'ok': True, 'event': 'resolver settings updated', 'nameserver': BROKEN_NAMESERVER, 'pushed_by': 'node-settings-sync', 'generation': BOOT})
+    return {'changed': True, 'nameserver': BROKEN_NAMESERVER}
+
+
+@app.post('/maintenance/resolver')
+async def restore_resolver(x_aegis_fleet_token: str = Header(default='')):
+    """Recovery: point the resolver back at the nameserver this service booted with, and forget failed lookups."""
+    authorize(x_aegis_fleet_token)
+    if resolver['nameserver'] == SYSTEM_NAMESERVER:
+        return {'changed': False}
+    resolver.update(nameserver=SYSTEM_NAMESERVER, pushed_by='operator', at=time.time())
+    for name in [name for name, entry in dns_cache.items() if entry.get('error')]:
+        dns_cache.pop(name)
+    LOGS.append({'at': time.time(), 'ok': True, 'event': 'resolver settings restored', 'nameserver': SYSTEM_NAMESERVER, 'generation': BOOT})
+    return {'changed': True, 'nameserver': SYSTEM_NAMESERVER}
 
 
 @app.post('/maintenance/squeeze')

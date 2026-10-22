@@ -235,3 +235,85 @@ def test_work_whose_caller_gave_up_is_dropped_without_doing_it(service, tmp_path
     assert service('GET', '/catalog', headers={'X-Aegis-Deadline': 'not-a-time'}).status_code == 200
     traffic = {c['client']: c for c in service('GET', '/diagnostics/traffic').json()['clients']}
     assert traffic['gateway-a']['errors'] == 1
+
+
+class Nameserver:
+    """A tiny real DNS server on a loopback UDP port: answers every A query with one address, or with an error code."""
+    def __init__(self, address='127.0.0.1', code=0):
+        import socket
+        import struct
+        import threading
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.bind(('127.0.0.1', 0))
+        self.port, self.queries = self.sock.getsockname()[1], 0
+
+        def serve():
+            while True:
+                try:
+                    query, peer = self.sock.recvfrom(512)
+                except OSError:
+                    return
+                self.queries += 1
+                header = query[:2] + struct.pack('>HHHHH', 0x8180 | code, 1, 0 if code else 1, 0, 0)
+                answer = b'' if code else b'\xc0\x0c' + struct.pack('>HHIH', 1, 1, 600, 4) + socket.inet_aton(address)
+                self.sock.sendto(header + query[12:] + answer, peer)
+        threading.Thread(target=serve, daemon=True).start()
+
+    def close(self):
+        self.sock.close()
+
+
+@pytest.fixture
+def gateway(service, monkeypatch):
+    server = Nameserver()
+    monkeypatch.setattr(fleet, 'ROLE', 'gateway')
+    monkeypatch.setattr(fleet, 'DNS_PORT', server.port)
+    monkeypatch.setattr(fleet, 'SYSTEM_NAMESERVER', '127.0.0.1')
+    monkeypatch.setitem(fleet.config, 'upstream', 'http://catalog-b:9')
+    fleet.resolver.update(nameserver='127.0.0.1', pushed_by='deployment')
+    fleet.dns_cache.clear()
+    yield server
+    server.close()
+    fleet.resolver.update(nameserver=fleet.system_nameserver(), pushed_by='deployment')
+    fleet.dns_cache.clear()
+
+
+def test_a_real_dns_query_reads_the_address_and_error_codes():
+    server, refusing = Nameserver('10.1.2.3'), Nameserver(code=3)
+    try:
+        fleet_port = fleet.DNS_PORT
+        fleet.DNS_PORT = server.port
+        assert fleet.dns_query('catalog-b', '127.0.0.1') == ('10.1.2.3', 600)
+        fleet.DNS_PORT = refusing.port
+        with pytest.raises(fleet.NameResolutionError, match='NXDOMAIN'):
+            fleet.dns_query('catalog-b', '127.0.0.1')
+    finally:
+        fleet.DNS_PORT = fleet_port
+        server.close()
+        refusing.close()
+
+
+def test_gateway_caches_lookups_and_a_repointed_resolver_fails_once_the_answer_expires(gateway, monkeypatch):
+    assert asyncio.run(fleet.resolve('catalog-b')) == '127.0.0.1'
+    assert asyncio.run(fleet.resolve('catalog-b')) == '127.0.0.1' and gateway.queries == 1  # served from the cache
+    assert asyncio.run(fleet.resolve('127.0.0.1')) == '127.0.0.1' and gateway.queries == 1  # an address needs no lookup
+    service = lambda method, path: asyncio.run(httpx.AsyncClient(transport=httpx.ASGITransport(app=fleet.app), base_url='http://gateway-a').request(method, path, headers=TOKEN))
+    assert service('POST', '/maintenance/repoint').json() == {'changed': True, 'nameserver': '127.0.0.53'}
+    assert service('POST', '/maintenance/repoint').json()['changed'] is False
+    assert asyncio.run(fleet.resolve('catalog-b')) == '127.0.0.1'  # the cached answer still works
+    fleet.dns_cache['catalog-b']['expires'] = 0
+    with pytest.raises(fleet.NameResolutionError, match='refused by nameserver 127.0.0.53'):
+        asyncio.run(fleet.resolve('catalog-b'))
+    report = service('GET', '/diagnostics/network').json()['dns']
+    assert report['ok'] is False and report['changed'] and report['pushed_by'] == 'node-settings-sync' and report['last_good_address'] == '127.0.0.1'
+    assert 'connect_last_good_ms' in report or 'connect_last_good_error' in report
+    assert any(e.get('event') == 'resolver settings updated' for e in fleet.LOGS)
+    assert service('POST', '/maintenance/resolver').json() == {'changed': True, 'nameserver': '127.0.0.1'}
+    assert asyncio.run(fleet.resolve('catalog-b')) == '127.0.0.1'
+    assert service('GET', '/diagnostics/network').json()['dns']['ok'] is True
+    assert service('POST', '/maintenance/resolver').json()['changed'] is False
+
+
+def test_only_a_gateway_has_a_resolver_to_repoint(service):
+    assert service('POST', '/maintenance/repoint', headers=TOKEN).status_code == 409
+    assert 'dns' not in service('GET', '/diagnostics/network').json()

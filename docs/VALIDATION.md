@@ -157,6 +157,13 @@ It used the existing evidence volume: the broker deliberately accepts only conta
 - **After.** With full evidence the model chose the right fix in **30 of 30** rounds, covering all thirteen faults on 18 fault and service combinations. Each answer cited evidence. Wrong guesses from business checks alone fell from 11 to 3. After its own fix was verified, the model answered "no action" in all 29 rounds where that question was asked.
 - **Limits.** Traffic flood, memory leak, rack power loss and thermal throttling appeared only once each in the second run, so their results are single samples, not rates. The result holds for one model and one question wording.
 
+**DNS failure and a full re-run (23 October 2026).** Every gateway call now passes through the new resolver, so the whole matrix was run again on real Docker.
+
+- **DNS failure.** Inside a gateway, a real query to Docker's resolver (127.0.0.11) returned the catalogue's address, and a query to 127.0.0.53 was refused. The fault was detected in 5–10 s, the spread coming from how long the cached answer had left, and verified recovered in about 5 s after restoring the resolver. *Start service* on the catalogue, *Restore config* on the gateway and *Restore resolver* on the wrong service all reported *unchanged*.
+- **A finding.** With the catalogue stopped, the gateways' lookups failed too: Docker answered SERVFAIL for the stopped container, and a TCP connection to its last address timed out. The generic `ConnectError` had hidden this before. Guidance now checks whether the catalogue is running before suggesting the resolver.
+- **Full matrix.** All 32 practice rounds passed, every fault on every service it can target. Then 52 challenge rounds passed, until every fault and service had appeared, followed by a reset without recovery. Detection took 5–38 s and verified recovery 5–22 s. The slowest detections were a bad release on a gateway (34 and 38 s): only about half its requests fail, so three failing cycles in five can take a while.
+- **Tests.** Backend tests: 187 pass, 1 skipped, including the resolver against a real local DNS server. UI logic tests: 37 pass. The simulator walkthrough passes with a DNS round in Chromium, Firefox and WebKit.
+
 ## Reproduce browser reviews
 
 Use a development Python environment with `requirements.lock`, Playwright 1.64.0 and its Chromium headless shell:

@@ -21,6 +21,7 @@ class Fleet:
         self.delayed = {'gateway-a': False, 'catalog-b': False, 'gateway-c': False}
         self.lossy = {'gateway-a': False, 'catalog-b': False, 'gateway-c': False}
         self.squeezed = {'gateway-a': False, 'catalog-b': False, 'gateway-c': False}  # only the catalogue has quotas
+        self.unresolved = {'gateway-a': False, 'catalog-b': False, 'gateway-c': False}  # a gateway's resolver repointed
         self.loss_tick = 0  # a lossy path repeats three failing cycles, then two working ones
         self.version = {'gateway-a': 'v1.4.2', 'catalog-b': 'v1.4.2', 'gateway-c': 'v1.4.2'}
         self.leaking = {'gateway-a': 0, 'catalog-b': 0, 'gateway-c': 0}  # probes since the leaky build started; 0 when not leaking
@@ -122,9 +123,9 @@ class Fleet:
                     self.mutations.append((node, verb))
                 return httpx.Response(200, json={'changed': changed, 'version': self.version[node]})
             state = {'fill': self.full, 'clear': self.full, 'burn': self.busy, 'calm': self.busy, 'drift': self.drifted, 'restore': self.drifted,
-                     'squeeze': self.squeezed, 'requota': self.squeezed}[verb]
-            on = verb in ('fill', 'burn', 'drift', 'squeeze')
-            changed = state[node] != on and (state is not self.squeezed or node == 'catalog-b')
+                     'squeeze': self.squeezed, 'requota': self.squeezed, 'repoint': self.unresolved, 'resolver': self.unresolved}[verb]
+            on = verb in ('fill', 'burn', 'drift', 'squeeze', 'repoint')
+            changed = state[node] != on and (state is not self.squeezed or node == 'catalog-b') and (state is not self.unresolved or node.startswith('gateway'))
             if changed:
                 state[node] = on
             if changed:
@@ -158,7 +159,11 @@ class Fleet:
             queue = ({'kind': 'netem', 'dev': 'eth0', 'root': True, 'delay_ms': 600.0, 'loss_pct': None} if self.delayed[node] else
                      {'kind': 'netem', 'dev': 'eth0', 'root': True, 'delay_ms': None, 'loss_pct': 50.0} if self.lossy[node] else
                      {'kind': 'noqueue', 'dev': 'eth0', 'root': True, 'delay_ms': None, 'loss_pct': None})
-            return httpx.Response(200, json={'available': True, 'qdiscs': [queue], 'tcp': {'available': True, 'retrans_pct': 25.0 if self.lossy[node] else 0.0}})
+            dns = ({'dns': {'name': 'catalog-b', 'ok': False, 'error': 'catalog-b: connection refused by nameserver 127.0.0.53', 'nameserver': '127.0.0.53',
+                            'deployed_nameserver': '127.0.0.11', 'changed': True, 'pushed_by': 'node-settings-sync', 'last_good_address': '172.18.0.4', 'connect_last_good_ms': 0.4}}
+                   if self.unresolved[node] else {'dns': {'name': 'catalog-b', 'ok': True, 'address': '172.18.0.4', 'nameserver': '127.0.0.11', 'deployed_nameserver': '127.0.0.11',
+                                                          'changed': False}} if node.startswith('gateway') else {})
+            return httpx.Response(200, json={'available': True, 'qdiscs': [queue], 'tcp': {'available': True, 'retrans_pct': 25.0 if self.lossy[node] else 0.0}, **dns})
         if path == '/diagnostics/traffic':
             quotas = [{'client': g, 'limit_rps': 0 if self.squeezed[node] else 100, 'deployed_rps': 100, 'changed': self.squeezed[node]}
                       for g in ('gateway-a', 'gateway-c')] if node == 'catalog-b' else []
@@ -189,6 +194,8 @@ class Fleet:
             return httpx.Response(200, json={'live': True, 'version': self.version[node]})
         if self.full[node]:
             return httpx.Response(507, json={'ok': False, 'errno': 'ENOSPC'})
+        if self.unresolved[node] and path == '/summary':
+            return httpx.Response(503, json={'ok': False, 'error': 'NameResolutionError', 'detail': 'catalog-b: connection refused by nameserver 127.0.0.53'})
         if self.drifted[node]:
             return httpx.Response(503 if node.startswith('gateway') else 500, json={'ok': False, 'error': 'ConnectError' if node.startswith('gateway') else 'FileNotFoundError'})
         if node.startswith('gateway') and self.squeezed['catalog-b']:
@@ -588,10 +595,10 @@ def test_challenge_hides_fault_kind_and_target(lab):
             await controller.reset_locked(f'reset-kind-{attempt:03d}')
             for _ in range(3):
                 await controller.cycle()
-            if len(seen) == 13:
+            if len(seen) == 14:
                 break
         assert seen == {'service-unavailable', 'cpu-starvation', 'disk-full', 'config-drift', 'network-delay', 'packet-loss', 'quota-zero',
-                        'bad-release', 'memory-leak', 'traffic-flood', 'retry-storm', 'power-loss', 'thermal-throttle'}
+                        'bad-release', 'memory-leak', 'traffic-flood', 'retry-storm', 'power-loss', 'thermal-throttle', 'dns-failure'}
     run(scenario())
 
 
@@ -851,6 +858,30 @@ def test_quota_zero_is_catalogue_only_and_hides_behind_green_probes(lab):
         await verify(controller, 'requota', 'catalog-b', 'requota')
         assert controller.session['status'] == 'recovered'
         assert 'HTTP 429' in controller.public_session(controller.session | {'revealed': True})['debrief']
+    run(scenario())
+
+
+def test_dns_failure_is_gateway_only_and_restoring_the_resolver_recovers(lab):
+    async def scenario():
+        controller, fleet = lab
+        async def connect(host, port):
+            return None, Writer()
+        controller.connect = connect
+        await baseline(controller)
+        with pytest.raises(HTTPException) as refused:
+            await controller.start(Start(mode='practice', kind='dns-failure', target='catalog-b', key='start-dns-catalogue'))
+        assert refused.value.status_code == 422 and controller.session is None
+        await controller.start(Start(mode='practice', kind='dns-failure', target='gateway-c', key='start-dns'))
+        assert fleet.unresolved['gateway-c']
+        assert await investigate(controller) == {'gateway-a': 'healthy', 'catalog-b': 'healthy', 'gateway-c': 'degraded'}
+        assert controller.latest[('gateway-c', 'business')]['body']['result']['error'] == 'NameResolutionError'
+        network = await controller.check('gateway-c', 'network')
+        assert network['body']['result']['dns']['ok'] is False
+        for node, verb in (('catalog-b', 'start'), ('gateway-c', 'restore'), ('gateway-a', 'resolver'), ('catalog-b', 'resolver')):
+            assert (await controller.mutate(f'wrong-dns-{node}-{verb}', node, verb))['status'] == 'unchanged'
+        await verify(controller, 'resolver', 'gateway-c', 'resolver')
+        assert controller.session['status'] == 'recovered' and not fleet.unresolved['gateway-c']
+        assert '127.0.0.53' in controller.public_session(controller.session | {'revealed': True})['debrief']
     run(scenario())
 
 

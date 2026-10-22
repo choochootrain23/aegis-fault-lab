@@ -42,7 +42,7 @@ FAULTS = {'service-unavailable': ('stop', 'start'), 'cpu-starvation': ('burn', '
           'config-drift': ('drift', 'restore'), 'network-delay': ('delay', 'undelay'), 'packet-loss': ('drop', 'undrop'),
           'quota-zero': ('squeeze', 'requota'), 'bad-release': ('ship', 'rollback'), 'memory-leak': ('leak', 'rollback'),
           'traffic-flood': ('flood', 'ratelimit'), 'retry-storm': ('storm', 'shed'), 'power-loss': ('trip', 'breaker'),
-          'thermal-throttle': ('heat', 'uncap')}
+          'thermal-throttle': ('heat', 'uncap'), 'dns-failure': ('repoint', 'resolver')}
 # The facility layer is simulated: containers have no power supply, so racks, PDUs and breakers are modelled here and
 # every facility record says simulated. The effects on the services are real: a tripped breaker stops the containers
 # it feeds through the broker, and they cannot be started until the breaker is reset.
@@ -62,11 +62,12 @@ ROLLOUTS = {'bad-release': ('ship', 'v1.5.0'), 'memory-leak': ('leak', 'v1.5.1')
 ROLLBACK_ATTEMPTS = 6  # one-second tries to roll back a target that is booting or being killed
 ROLLOUT_BACKOFF_CYCLES = 3  # health cycles (6 s) a crashed service stays down before the deploy controller restarts it
 # Faults that only exist on some services; every other fault can target any of the three.
-FAULT_TARGETS = {'quota-zero': ('catalog-b',), 'traffic-flood': ('catalog-b',), 'retry-storm': ('gateway-a', 'gateway-c'), 'power-loss': ('catalog-b',), 'thermal-throttle': ('catalog-b',)}
+FAULT_TARGETS = {'quota-zero': ('catalog-b',), 'traffic-flood': ('catalog-b',), 'retry-storm': ('gateway-a', 'gateway-c'), 'power-loss': ('catalog-b',), 'thermal-throttle': ('catalog-b',),
+                 'dns-failure': ('gateway-a', 'gateway-c')}
 # Steps a reset must take before starting the services, rather than reapplying the remedy afterwards.
 RESET_FIRST = {'power-loss': ('breaker',), 'thermal-throttle': ('uncap',)}
 REMEDIES = {remedy for _, remedy in FAULTS.values()}
-NODE_VERBS = {'fill', 'clear', 'burn', 'calm', 'drift', 'restore', 'squeeze', 'requota', 'ship', 'leak', 'ratelimit', 'shed', 'unshed'}  # applied through the service's token-protected maintenance endpoint
+NODE_VERBS = {'fill', 'clear', 'burn', 'calm', 'drift', 'restore', 'squeeze', 'requota', 'ship', 'leak', 'ratelimit', 'shed', 'unshed', 'repoint', 'resolver'}  # applied through the service's token-protected maintenance endpoint
 DETECT_FAILING = 3     # failing cycles among the last DETECT_WINDOW that open an investigation
 DETECT_WINDOW = 5
 VERIFY_STREAK = 3      # consecutive healthy cycles that verify recovery or reset
@@ -85,9 +86,10 @@ UNCHANGED = {'start': 'Already running; nothing changed', 'stop': 'Already stopp
              'unshed': 'Load shedding already off; nothing changed', 'storm': 'App users already running; nothing changed',
              'unstorm': 'No app users running; nothing changed', 'breaker': 'The breaker feeding this service is already closed; nothing changed',
              'trip': 'Breaker already open; nothing changed', 'uncap': 'No power cap is active; nothing changed',
-             'heat': 'Cooling already failed; nothing changed', 'daytime': 'Users already running; nothing changed'}
+             'heat': 'Cooling already failed; nothing changed', 'daytime': 'Users already running; nothing changed',
+             'resolver': 'Resolver already uses the nameserver it was deployed with; nothing changed', 'repoint': 'Resolver already repointed; nothing changed'}
 DEBRIEFS = {
-    'service-unavailable': 'The scenario requested stopping {target}. When that succeeds, its container state reads stopped and its own probes fail. When the catalogue stops, both gateways stay live but their business requests fail, so the failure spreads; when one gateway stops, the catalogue and the other gateway stay healthy, so it does not. Starting the stopped service restores the request path.',
+    'service-unavailable': 'The scenario requested stopping {target}. When that succeeds, its container state reads stopped and its own probes fail. When the catalogue stops, both gateways stay live but their business requests fail, so the failure spreads; once their cached answer expires they cannot even resolve its name, because Docker\'s resolver drops the name of a stopped container, which looks like a DNS fault until the catalogue is checked; when one gateway stops, the catalogue and the other gateway stay healthy, so it does not. Starting the stopped service restores the request path.',
     'cpu-starvation': 'The scenario requested a runaway background job inside {target}. When that succeeds, the service keeps running and answering, but slowly: the job uses the container\'s whole 0.25-CPU limit, the kernel throttles it, and requests queue behind it, crossing the {slow} ms threshold. Its log records the job starting. A slow catalogue makes both gateways slow, and sometimes time out, too. Stopping the job returns normal latency.',
     'disk-full': 'The scenario requested filling {target}\'s 8 MiB /tmp with one large file. When that succeeds, the process stays live, but every business request must write a small receipt, so writes fail with ENOSPC (HTTP 507). A full catalogue fails both gateways\' requests too; a full gateway fails only its own. Disk usage shows 100% and the filler as the largest file. Clearing it restores writes.',
     'config-drift': 'The scenario requested a bad runtime configuration reload on {target}. When that succeeds, the process stays live and its container keeps running, so liveness, container state, CPU and disk all look normal. On a gateway, the upstream address points at a port nothing listens on, so every business request fails to connect, which looks like a stopped catalogue until the catalogue is checked directly. On the catalogue, the data source points at a dataset that was never deployed, so its business requests fail with HTTP 500 and both gateways\' fail with them. The running config shows the drifted setting next to its deployed value, and the log records the reload. Restoring the deployed config fixes it.',
@@ -99,6 +101,7 @@ DEBRIEFS = {
     'retry-storm': 'The scenario requested app users, 60 a second through {target}, whose app retries a failed request at once up to three times, and then a short index compaction that took the catalogue\'s whole CPU for 8 seconds. The compaction made requests time out; every timeout became up to four attempts; the extra attempts overloaded {target}, so its requests kept failing after the compaction had ended. That is a metastable failure: the overload outlives its cause, and it sits in a different service from the trigger. The other gateway recovers as soon as the compaction ends. Nothing is broken, stopped or misconfigured, and no unknown caller floods anything, so restarting, stopping a job or rate-limiting a client changes nothing. Resource use shows {target} at its CPU limit while the catalogue is idle, and its traffic shows most requests are retries. Enabling load shedding on {target} caps the requests it keeps in flight and turns the rest away at once, so the ones it accepts finish in time, users stop retrying, and the load falls back to normal.',
     'thermal-throttle': 'The scenario requested a simulated failure of cooling unit CRAC-2, which raised the inlet temperature of both racks to 38 °C; the facility responded with a power cap that lowered every container\'s CPU limit from 0.25 to 0.05, and steady daytime users, 32 a second through each gateway, kept the services busy. The facility layer is simulated, but the cap and the users were real. A CPU cap alone barely slows these light requests; under load it does. The gateways, which do the most work per request, ran out first: both turned slow even to liveness checks and failed most business requests, while the catalogue\'s simple answers stayed fast. Resource use showed each gateway throttled against a limit far below its deployed 0.25, which looks like CPU starvation, but there is no job to stop and no caller to limit. The facility check showed the failed cooling unit, the hot inlet and the active cap. Lifting the cap while the room is still hot is refused, as a facilities team would refuse it; once cooling recovered after about 75 seconds, lifting the power cap restored normal latency.',
     'power-loss': 'The scenario requested a simulated breaker trip on PDU-A, the power distribution unit feeding rack R1, where {target} and gateway-a are installed. The facility layer is simulated, but its effect was real: both containers were stopped, as servers are when their power is cut, and neither can be started while the breaker is open. Two services failed at the same moment, which on its own could look like two separate faults; what they share is not software but a power feed. gateway-c, on PDU-B, kept running, but its business requests fail because the catalogue is down. Starting either service reports no power and changes nothing. The facility check shows the open breaker, the rack and every service it feeds. Resetting the breaker restores power and starts the rack\'s services, the catalogue first because the gateways depend on it.',
+    'dns-failure': 'The scenario requested a node-settings sync that pointed {target}\'s resolver at 127.0.0.53, the address of systemd-resolved\'s stub on an ordinary Linux host. That setting is easily copied from a host image, but nothing listens there inside a container, so every DNS query is refused. The gateway resolves the catalogue\'s name with real DNS queries and caches each answer for 5 seconds, so it kept working until the cached answer expired, then failed every business request with a name resolution error. Its process, CPU, disk, release and running config were all normal, and the catalogue and the other gateway stayed healthy. A failing call to the catalogue looks like a stopped catalogue, or like config drift, which also breaks the upstream address; but the catalogue answered its own checks, the config matched what was deployed, and the network path check showed the lookup refused by 127.0.0.53 while a TCP connection to the catalogue\'s last known address still succeeded. Restoring the resolver fixed it at once; restarting the catalogue or restoring config changed nothing.',
     'network-delay': 'The scenario requested a {delay} ms delay on all traffic leaving {target}, applied with a Linux netem queue inside its own network namespace. When that succeeds, the process stays live and its CPU and disk stay normal, but everything it sends waits in the queue: its own checks take about {delay} ms longer. A delayed catalogue slows both gateways\' requests by the same amount; a delayed gateway pays the delay twice, on its call to the catalogue and on its reply, while the catalogue and the other gateway stay fast. Requests still succeed, because each wait stays under the gateways\' 1-second upstream timeout. The network path check shows TCP connections taking about {delay} ms and the netem queue itself, and a request trace shows a fast handler with the time spent outside it. Removing the delay, or restarting the container, restores normal latency.',
 }
 
@@ -109,7 +112,7 @@ def debrief(s):
 
 
 FaultKind = Literal['service-unavailable', 'cpu-starvation', 'disk-full', 'config-drift', 'network-delay', 'packet-loss', 'quota-zero', 'bad-release', 'memory-leak',
-                    'traffic-flood', 'retry-storm', 'power-loss', 'thermal-throttle']
+                    'traffic-flood', 'retry-storm', 'power-loss', 'thermal-throttle', 'dns-failure']
 NodeName = Literal['gateway-a', 'catalog-b', 'gateway-c']
 CheckKind = Literal['liveness', 'readiness', 'business', 'logs', 'service', 'resources', 'disk', 'config', 'trace', 'network', 'traffic', 'releases', 'memory',
                     'facility']
@@ -141,7 +144,7 @@ class Action(SessionInput):
 
 
 class Recover(Action):
-    verb: Literal['start', 'calm', 'clear', 'restore', 'undelay', 'undrop', 'requota', 'rollback', 'ratelimit', 'shed', 'breaker', 'uncap'] = 'start'
+    verb: Literal['start', 'calm', 'clear', 'restore', 'undelay', 'undrop', 'requota', 'rollback', 'ratelimit', 'shed', 'breaker', 'uncap', 'resolver'] = 'start'
 
 
 class Note(SessionInput):

@@ -347,3 +347,28 @@ def test_a_storm_is_judged_by_its_recent_retries_not_the_minute_total():
     cpu=observation('gateway-a','resources',cpu_pct_of_limit=99.0,cpu_limit=0.25)
     message=explain({('gateway-a','resources'):cpu},'action',now=101)['message']
     assert 'load shedding' in message and 'rate-limit' not in message
+
+
+def test_a_name_that_does_not_resolve_points_at_the_gateways_network_path():
+    latest={('gateway-c','liveness'):observation('gateway-c','liveness'),
+            ('gateway-c','business'):observation('gateway-c','business',False,result={'error':'NameResolutionError','detail':'catalog-b: connection refused by nameserver 127.0.0.53'})}
+    unknown=explain(latest,'evidence',now=101)  # a stopped catalogue's name stops resolving too, so check it first
+    assert unknown['suggested_check']=={'node':'catalog-b','kind':'service'} and 'drops the name of a stopped container' in unknown['message']
+    latest[('catalog-b','business')]=observation('catalog-b','business',duration_ms=3)
+    result=explain(latest,'evidence',now=101)
+    assert result['suggested_check']=={'node':'gateway-c','kind':'network'}
+    assert 'could not resolve' in result['message'] and '127.0.0.53' in result['message']
+
+
+def test_a_failed_lookup_supports_restoring_the_resolver_but_a_working_one_does_not():
+    dns={'name':'catalog-b','ok':False,'error':'catalog-b: connection refused by nameserver 127.0.0.53','nameserver':'127.0.0.53','deployed_nameserver':'127.0.0.11',
+         'changed':True,'pushed_by':'node-settings-sync','last_good_address':'172.18.0.4','connect_last_good_ms':0.4}
+    failing=observation('gateway-a','network',result={'qdiscs':[],'dns':dns})
+    result=explain({('gateway-a','network'):failing},'action',now=101)
+    assert result['evidence_ids']==[failing['id']] and 'restoring the resolver' in result['message']
+    assert 'node-settings-sync' in result['message'] and 'took 0.4 ms' in result['message']
+    gone=observation('gateway-a','network',result={'qdiscs':[],'dns':{**dns,'error':'catalog-b: SERVFAIL from nameserver 127.0.0.11','nameserver':'127.0.0.11','changed':False,
+                                                                     'connect_last_good_ms':None,'connect_last_good_error':'TimeoutError'}})
+    assert 'No fresh inspection' in explain({('gateway-a','network'):gone},'action',now=101)['message']  # a stopped catalogue, not the resolver
+    working=observation('gateway-a','network',result={'qdiscs':[],'dns':{**dns,'ok':True,'error':None,'changed':False}})
+    assert 'No fresh inspection' in explain({('gateway-a','network'):working},'action',now=101)['message']

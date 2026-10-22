@@ -23,7 +23,7 @@ New faults modelled on the kinds of incident that public data-centre reports des
 | 7 | **Rack power loss**: two services on one PDU stop together | Two separate stopped services | Reset breaker | **Done** (F12), with a simulated facility layer |
 | 8 | **Brownout and restart loops** | Memory leak (memory flat here) | Move to the redundant feed | Planned |
 | 9 | **Clock skew** on one gateway: signed requests rejected | Bad release, config drift | Resync clock | Planned: needs request signing |
-| 10 | **DNS resolution failure** on one gateway | Stopped catalogue (it is fine, and reachable by IP) | Restore resolver | Planned |
+| 10 | **DNS resolution failure** on one gateway: its resolver points at a nameserver that is not there | Stopped catalogue (it is fine, and reachable at its last known address); config drift | Restore resolver | **Done** (F14), with real DNS queries from the gateways |
 | 11 | **Partial partition**: one gateway cannot reach the catalogue | Stopped catalogue | Restore route | Planned: new fixed helper rule, needs review |
 | 13–16 | Gray failure, heatwave compound incident, read-only disk, path MTU black hole | | | Later |
 
