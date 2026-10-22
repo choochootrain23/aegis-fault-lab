@@ -101,12 +101,26 @@ async def lifespan(app):
 app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None)
 
 
-@app.middleware('http')
-async def count_traffic(request, call_next):
-    response = await call_next(request)
-    if request.url.path in ('/summary', '/catalog', '/ready'):
-        tally(request.headers.get('x-aegis-client', 'unidentified')[:40], response.status_code)
-    return response
+class CountTraffic:
+    """Counts business requests per caller from the response status. A plain ASGI middleware on purpose: Starlette's
+    decorator-style middleware cancels the handler when a caller disconnects, which left the gateways' pooled
+    connections to the catalogue marked in use for good (measured: a retry storm exhausted the pool permanently)."""
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope['type'] != 'http' or scope['path'] not in ('/summary', '/catalog', '/ready'):
+            return await self.app(scope, receive, send)
+        client = dict(scope['headers']).get(b'x-aegis-client', b'unidentified').decode('latin-1')[:40]
+
+        async def counted(message):
+            if message['type'] == 'http.response.start':
+                tally(client, message['status'])
+            await send(message)
+        await self.app(scope, receive, counted)
+
+
+app.add_middleware(CountTraffic)
 
 
 def tally(client, status):

@@ -7,6 +7,9 @@ x-common: &common
   security_opt: [no-new-privileges:true]
   restart: 'no'
   pids_limit: 64
+  # Overload must not wedge a service: at Docker's default 1,024 open files, a retry storm exhausted every
+  # descriptor and left the services spinning on failed accepts long after the load stopped.
+  ulimits: {nofile: {soft: 65536, hard: 65536}}
   mem_limit: 192m
   memswap_limit: 192m
   cpus: 0.25

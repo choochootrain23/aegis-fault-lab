@@ -18,7 +18,7 @@ New faults modelled on the kinds of incident that public data-centre reports des
 | 5 | **Bad release**: a new version fails about half of requests | Config drift | Roll back release | **Done** (F8) |
 | 4 | **Memory leak and repeated OOM kills**: the service crash-loops as the kernel kills it and the deploy controller restarts it | Stopped service ("start" seems to work, then it fails again) | Roll back release | **Done** (F9) |
 | 1 | **Traffic flood from one client**: high CPU from serving requests | CPU starvation (no runaway job to stop) | Rate-limit top client | **Done** (F10) |
-| 2 | **Retry storm**: a brief catalogue failure is kept alive by gateways retrying without backoff | A catalogue that is still broken | Enable retry backoff on the gateways | Planned |
+| 2 | **Retry storm**: a brief slowdown is kept alive by clients retrying without backoff | A catalogue that is still broken | Enable load shedding | **Paused**: reproduced on the real lab, but the services drain abandoned work too slowly to recover; needs server-side request deadlines first (see [validation](VALIDATION.md)) |
 | 6 | **Thermal throttling / power capping**: everything slower at once, CPU throttled but usage low | CPU starvation on every node | Shed load, then lift the cap once cooling recovers | Planned: needs facility telemetry and a reversible "power cap" broker operation |
 | 7 | **Rack power loss**: two services on one PDU stop together | Two separate faults | Reset the breaker, start in dependency order | Planned: facility telemetry |
 | 8 | **Brownout and restart loops** | Memory leak (memory flat here) | Move to the redundant feed | Planned |

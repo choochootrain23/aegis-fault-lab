@@ -107,6 +107,15 @@ It used the existing evidence volume: the broker deliberately accepts only conta
   - *A finished flood still looked like one.* The traffic check's one-minute totals still showed the previous round's flood after reset, and the validator reported two faults. Each caller's current rate over the last 10 seconds is now reported, and guidance, the simulator and the validator judge floods by it.
 - **Measurement lesson.** Early attempts to size the flood were misleading. An `httpx` client spent its own CPU before loading the catalogue, and a probe run inside a throttled container timed its own throttling (a constant 100 ms, the scheduler period). The figures above come from a lean raw-socket client and the lab's own business checks.
 
+**Retry-storm prototype, paused (22 October 2026).** The next roadmap fault was meant to show a metastable failure: a brief slowdown amplified by client retries into an overload that outlives its cause. A prototype ran on the real lab with temporary open-loop "app users", 35 a second through each gateway, retrying failures immediately up to three times. An 8-second CPU burst on the catalogue was the trigger.
+
+- **The storm is real.** Within seconds every user request failed, each user made four attempts, and about 560 requests stayed in flight. The overload continued unchanged for more than 70 seconds after the trigger was removed, until the test users stopped.
+- **It also exposed three robustness problems, two now fixed.**
+  - *A connection leak (fixed).* The traffic counter used Starlette's decorator-style middleware, which cancels a handler when its caller disconnects. Under the storm that leaked every pooled gateway-to-catalogue connection, leaving the gateways failing with `PoolTimeout` for good. It is now a plain ASGI middleware that never cancels.
+  - *Descriptor exhaustion (fixed).* At Docker's default 1,024 open files, all three services ran out of descriptors (`EMFILE`) and spun on failed accepts after the load stopped. Every container now allows 65,536.
+  - *A slow drain (open).* Even with both fixes, the gateways held thousands of abandoned connections in `CLOSE_WAIT` and stayed pinned at their CPU limit for minutes after the load stopped. A uvicorn concurrency cap made it worse.
+- **Decision.** A fault the learner's correct fix cannot recover, and reset cannot clear, would break the lab, so the retry storm is not shipped. Making it safe needs server-side request deadlines, or a different server stack, so abandoned work is dropped rather than drained. That is recorded in the [roadmap](scenario-roadmap.md). The ten shipped faults still pass with both fixes (quota, flood and stopped-service rounds re-run on real Docker).
+
 ## Reproduce browser reviews
 
 Use a development Python environment with `requirements.lock`, Playwright 1.64.0 and its Chromium headless shell:

@@ -104,12 +104,14 @@ Reports are under ignored `state/validation/`. The app is running at http://loca
 ## Twelfth checkpoint (22 October 2026)
 
 - **Tenth fault: traffic flood.** A new `reports` service (hardened like the others, internal network only, never touched by the broker) runs a report export job that floods the catalogue over 160 keep-alive connections. The catalogue's CPU sits at its limit with no job to stop. The traffic check now reports each caller's current rate, and **Rate-limit top client** limits heavy callers without a quota, answering them with HTTP 429 and `Retry-After`; the exporter backs off with jitter. Traffic accounting moved to one-second buckets so a flood cannot push other callers out of the window.
+- Robustness found while prototyping a retry storm: the traffic counter no longer cancels in-flight requests (it had leaked every pooled connection under overload), and every container allows 65,536 open files instead of 1,024.
 - Guidance: CPU at the limit names both possible causes (a job, or one heavy caller) and defers to the traffic check when it shows a flood.
 
 ## Next work
 
-1. Roadmap step 3, continued: a retry storm (a brief slowdown amplified by client retries into a self-sustaining overload), fixed by load shedding.
-2. AI evaluation covering the four newest faults, and with other models.
+1. Server-side request deadlines, so overloaded services drop abandoned work; then the paused retry storm.
+2. Roadmap step 4: facility telemetry, with thermal throttling and rack power loss.
+3. AI evaluation covering the five newest faults, and with other models.
 3. Screen-reader review; runs measured in days.
 
 ## Boundaries preserved
