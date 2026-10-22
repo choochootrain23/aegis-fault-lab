@@ -112,7 +112,7 @@ Reports are under ignored `state/validation/`. The app is running at http://loca
 1. Server-side request deadlines, so overloaded services drop abandoned work; then the paused retry storm.
 2. Roadmap step 4: facility telemetry, with thermal throttling and rack power loss.
 3. AI evaluation covering the five newest faults, and with other models.
-3. Screen-reader review; runs measured in days.
+4. Screen-reader review; runs measured in days.
 
 ## Boundaries preserved
 
