@@ -139,6 +139,24 @@ It used the existing evidence volume: the broker deliberately accepts only conta
   - A backed-up gateway (a full bulkhead, or an expired deadline at the catalogue) could have been read as packet loss.
   - A retry storm was read as CPU starvation. Over the full minute only 46% of requests were retries, because the window still held the calm traffic from before the storm. The retry share is now taken from the last ten seconds. A CPU finding on a gateway with busy users is checked again before it is trusted.
 
+**AI investigator across all thirteen faults (23 October 2026, `scripts/evaluate_ai.py --run --rounds 30`, `gemini-3.5-flash-lite`).** Each run had thirty challenge rounds, and two runs were compared.
+
+- **Before.** With full evidence the model chose the right fix in 22 of 30 rounds. It confused fixes that share a symptom:
+  - every traffic flood (3 of 3) was answered with *calm*, as if CPU at its limit meant a runaway job;
+  - both retry storms were answered with *calm* or *ratelimit*;
+  - one packet loss was answered with *undelay*;
+  - one memory leak, caught while the service looked healthy between restarts, was answered with *none yet*.
+
+  From business checks alone it guessed a fix in 11 rounds.
+- **Changes.**
+  - The prompt now says, in one line each, what every fix does and the evidence it needs. It names no fault as active.
+  - It says that business results alone rarely establish a cause.
+  - The traffic summary keeps each caller's recent retries.
+  - The evaluation also reads the logs, where a runaway job records itself.
+  - Grading accepts equivalent fixes: a breaker reset from either service on the rack, or lifting the cap from any service. It also accepts *none yet* while cooling has failed, because no fix is safe then.
+- **After.** With full evidence the model chose the right fix in **30 of 30** rounds, covering all thirteen faults on 18 fault and service combinations. Each answer cited evidence. Wrong guesses from business checks alone fell from 11 to 3. After its own fix was verified, the model answered "no action" in all 29 rounds where that question was asked.
+- **Limits.** Traffic flood, memory leak, rack power loss and thermal throttling appeared only once each in the second run, so their results are single samples, not rates. The result holds for one model and one question wording.
+
 ## Reproduce browser reviews
 
 Use a development Python environment with `requirements.lock`, Playwright 1.64.0 and its Chromium headless shell:

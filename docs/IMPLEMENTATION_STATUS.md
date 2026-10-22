@@ -121,10 +121,11 @@ Reports are under ignored `state/validation/`. The app is running at http://loca
 - Guidance: a lowered CPU limit points at the facility; a gateway slow even to liveness points at its own resources; an open breaker or an active cap is explained before any service-level fix.
 - Validation: all 30 practice rounds and 32 challenge rounds on real Docker passed, covering every fault on every service it can target. A retry storm is now judged by the share of retries in the last ten seconds, after a storm caught early was taken for CPU starvation.
 - Interface: the fixes moved under the live map in a grid and each check became one compact row, halving the height of the inspector (2,038 to 1,007 pixels at desktop width).
+- AI investigator: the prompt now says what each fix does. With full evidence, its answers went from 22 to 30 correct out of 30 in challenge rounds across all thirteen faults.
 
 ## Next work
 
-1. AI evaluation covering all thirteen faults, and with other models.
+1. AI evaluation with other models and question wordings; more samples of the rarer faults.
 2. Compound incidents (for example a heatwave that tips into a retry storm), DNS failure, clock skew and partial partitions from the roadmap.
 3. Screen-reader review; runs measured in days.
 

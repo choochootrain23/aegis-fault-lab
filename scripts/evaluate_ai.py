@@ -22,7 +22,7 @@ from validate_scenarios import KINDS, NODES, REMEDY, Operator, check, owned_acti
 ROOT = Path(__file__).resolve().parents[1]
 QUESTION = ('What is most likely wrong, and is there one recovery action the evidence clearly supports? '
             "Finish with exactly one line: 'Action: <start|calm|clear|restore|undelay|undrop|requota|rollback|ratelimit|shed|breaker|uncap> on <node>' or 'Action: none yet'.")
-INSPECTIONS = ('service', 'resources', 'disk', 'config', 'network', 'traffic', 'releases', 'memory', 'facility')
+INSPECTIONS = ('service', 'resources', 'disk', 'config', 'network', 'traffic', 'releases', 'memory', 'logs', 'facility')
 ACTION = re.compile(r'Action:\s*\**\s*(start|calm|clear|restore|undelay|undrop|requota|rollback|ratelimit|shed|breaker|uncap)\b\W+(?:on\s+)?\W*(gateway-a|catalog-b|gateway-c)', re.I)
 
 
@@ -40,8 +40,18 @@ def ask(operator, sid):
             time.sleep(30 * (attempt + 1))
 
 
-def grade(answer, truth):
-    """correct / none / wrong / unparsed, from the answer's final Action line."""
+def accepted(kind, target):
+    """Every (remedy, node) pair that is the same fix: a breaker serves its whole rack, the power cap the whole room."""
+    if kind == 'power-loss':
+        return {(REMEDY[kind], node) for node in ('catalog-b', 'gateway-a')}
+    if kind == 'thermal-throttle':
+        return {(REMEDY[kind], node) for node in NODES}
+    return {(REMEDY[kind], target)}
+
+
+def grade(answer, truth, wait_ok=False):
+    """correct / none / wrong / unparsed, from the answer's final Action line; truth is a set of equivalent fixes.
+    With wait_ok (no safe fix existed yet), 'none yet' is the correct answer."""
     lines = [line for line in answer.splitlines() if 'action:' in line.lower()]
     if not lines:
         return 'unparsed', None
@@ -49,8 +59,10 @@ def grade(answer, truth):
     found = ACTION.search(last)
     if found:
         said = (found.group(1).lower(), found.group(2).lower())
-        return ('correct' if said == truth else 'wrong'), f'{said[0]} on {said[1]}'
-    return ('none' if re.search(r'none', last, re.I) else 'unparsed'), None
+        return ('correct' if said in truth else 'wrong'), f'{said[0]} on {said[1]}'
+    if re.search(r'none', last, re.I):
+        return ('correct' if wait_ok else 'none'), None
+    return 'unparsed', None
 
 
 def main():
@@ -78,7 +90,9 @@ def main():
             partial, partial_s = ask(operator, sid)
             for node in NODES:
                 for kind in INSPECTIONS:
-                    check(operator, node, kind)
+                    found = check(operator, node, kind)
+            # The last check is the gateway-c facility record: while cooling has failed, no fix is safe yet.
+            cooling_failed = (found['body'].get('cooling') or {}).get('crac_2') == 'failed'
             full, full_s = ask(operator, sid)
             healthy = healthy_s = None
             said = ACTION.search(([l for l in full['answer'].splitlines() if 'action:' in l.lower()] or [''])[-1])
@@ -94,13 +108,14 @@ def main():
             operator.action('reset', sid)
             operator.wait(lambda s: s['session']['status'] == 'ended', 'verified reset', sid=sid, timeout=90)
             sid = None
-            truth = (REMEDY[scenario['kind']], scenario['target'])
-            row = {'kind': scenario['kind'], 'target': scenario['target'], 'expected': f'{truth[0]} on {truth[1]}'}
+            truth = accepted(scenario['kind'], scenario['target'])
+            row = {'kind': scenario['kind'], 'target': scenario['target'], 'cooling_failed': cooling_failed,
+                   'expected': ' or '.join(sorted(f'{v} on {n}' for v, n in truth))}
             for label, reply, seconds in (('partial', partial, partial_s), ('full', full, full_s), ('healthy', healthy, healthy_s)):
                 if reply is None:
                     row[label] = {'verdict': 'skipped'}
                     continue
-                verdict, said = grade(reply['answer'], truth)
+                verdict, said = grade(reply['answer'], truth, wait_ok=label == 'full' and cooling_failed)
                 if label == 'healthy':
                     verdict = {'none': 'correct', 'unparsed': 'unparsed'}.get(verdict, 'overreach')
                 row[label] = {'verdict': verdict, 'said': said, 'seconds': seconds, 'cited': len(reply['evidence_ids']),
