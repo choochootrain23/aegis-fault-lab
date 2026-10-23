@@ -321,12 +321,25 @@ def test_only_a_gateway_has_a_resolver_to_repoint(service):
 
 def test_the_compaction_logs_its_start_and_its_end(service, monkeypatch):
     import time
-    monkeypatch.setattr(fleet, 'HICCUP_S', 0.2)
-    assert service('POST', '/maintenance/hiccup', headers=TOKEN).json() == {'changed': True, 'seconds': 0.2}
+    monkeypatch.setattr(fleet, 'HICCUP_S', 1.0)
+    assert service('POST', '/maintenance/hiccup', headers=TOKEN).json() == {'changed': True, 'seconds': 1.0}
     assert service('POST', '/maintenance/hiccup', headers=TOKEN).json()['changed'] is False  # one at a time
-    for _ in range(50):
+    for _ in range(100):
         events = [e.get('event') for e in fleet.LOGS]
         if 'background job finished' in events:
             break
         time.sleep(0.05)
     assert events[-2:] == ['background job started', 'background job finished']
+
+
+def test_network_report_reads_a_partition_filter_and_probes_the_upstream(gateway, monkeypatch):
+    import subprocess
+    shown = {('qdisc',): 'qdisc prio 1: dev eth0 root refcnt 2 bands 3 priomap 1 2 2 2 1 2 0 0 1 1 1 1 1 1 1 1\n',
+             ('filter',): ('filter parent 1: protocol ip pref 1 u32 chain 0 fh 800::800 order 2048 key ht 800 bkt 0 terminal flowid not_in_hw \n'
+                           '  match ac140003/ffffffff at 16\n\taction order 1: gact action drop\n')}
+    monkeypatch.setattr(fleet.subprocess, 'run', lambda argv, **kwargs: subprocess.CompletedProcess(argv, 0, shown[(argv[1],)], ''))
+    service = lambda: asyncio.run(httpx.AsyncClient(transport=httpx.ASGITransport(app=fleet.app), base_url='http://gateway-a').get('/diagnostics/network'))
+    report = service().json()
+    assert report['qdiscs'][0]['kind'] == 'prio' and report['filters'] == [{'kind': 'u32', 'dst': '172.20.0.3/32', 'action': 'drop'}]
+    # The upstream (catalog-b:9 here) resolves through the gateway's own resolver; nothing listens on port 9, so it is refused.
+    assert report['upstream_connect']['name'] == 'catalog-b' and report['upstream_connect']['ok'] is False and report['dns']['ok'] is True

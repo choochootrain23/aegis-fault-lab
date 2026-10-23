@@ -25,7 +25,7 @@ class HttpError extends Error {
 const SLOW_MS = 300;
 const DISK = 8 * 1024 * 1024;
 const fleet = Object.fromEntries(NODES.map(id => [id, {container: hex(64), process: 'sim-' + crypto.randomUUID(), running: true, readyAt: 0,
-  busy: false, full: false, drifted: false, delayed: false, lossy: false, squeezed: false, unresolved: false, dnsFailsAt: null, periods: 4000, throttled: 0, logs: [], traffic: [],
+  busy: false, full: false, drifted: false, delayed: false, lossy: false, squeezed: false, unresolved: false, dnsFailsAt: null, partitioned: false, periods: 4000, throttled: 0, logs: [], traffic: [],
   version: 'v1.4.2', history: [{version: 'v1.4.2', at: now(), by: 'deployment', note: 'stable build'}], leakAt: null, oomKilled: false, exitCode: 0, startedAt: now(), finishedAt: null}]));
 const answering = id => { tick(id); return fleet[id].running && now() >= fleet[id].readyAt; };
 const catalogue = () => ({items: [{sku: 'LAB-001', name: 'Synthetic component', quantity: 12}], generation: fleet['catalog-b'].process});
@@ -208,6 +208,7 @@ function trace(node) {
     const failed = dnsBroken(node) ? lookupError() : nameGone() ? goneError() : null;
     const lookup = span('dns lookup catalog-b', between(0.2, 0.9), !failed, failed ? {error: 'NameResolutionError', detail: failed} : {});
     if (!lookup) ok = false;
+    else if (n.partitioned) ok = span(name, 1000, false, {error: 'ConnectTimeout'});  // the handshake is never answered
     else if (n.drifted || !answering('catalog-b')) ok = span(name, between(0.8, 3), false, {error: 'ConnectError'});
     else if (net.error) ok = span(name, net.extra, false, {error: net.error});
     else if (cat.squeezed) { count('catalog-b', node, 429); ok = span(name, between(1.5, 4), false, {status: 429}); }
@@ -263,16 +264,19 @@ function probe(node, kind) {
     const connect = [0, 1, 2].map(() => { const r = Math.random();
       return n.delayed ? DELAY + between(0.3, 1.5) : !n.lossy || r < 0.45 ? between(0.2, 0.9) : r < 0.8 ? between(1020, 1070) : r < 0.93 ? between(2040, 2070) : 3000; });
     const timeouts = connect.filter(ms => ms === 3000).length;
-    const queue = n.delayed ? {kind: 'netem', dev: 'eth0', root: true, delay_ms: DELAY, loss_pct: null, line: `qdisc netem 8001: dev eth0 root refcnt 2 limit 1000 delay ${DELAY}ms`}
+    const queue = n.partitioned ? {kind: 'prio', dev: 'eth0', root: true, delay_ms: null, loss_pct: null, line: 'qdisc prio 1: dev eth0 root refcnt 2 bands 3 priomap 1 2 2 2 1 2 0 0 1 1 1 1 1 1 1 1'}
+      : n.delayed ? {kind: 'netem', dev: 'eth0', root: true, delay_ms: DELAY, loss_pct: null, line: `qdisc netem 8001: dev eth0 root refcnt 2 limit 1000 delay ${DELAY}ms`}
       : n.lossy ? {kind: 'netem', dev: 'eth0', root: true, delay_ms: null, loss_pct: LOSS, line: `qdisc netem 8001: dev eth0 root refcnt 2 limit 1000 loss ${LOSS}% seed 12772983829579208008`}
       : {kind: 'noqueue', dev: 'eth0', root: true, delay_ms: null, loss_pct: null, line: 'qdisc noqueue 0: dev eth0 root refcnt 2'};
     // Retransmissions show at both ends: the lossy service resends a third to a half of its segments, and its peers
     // resend a few when their acknowledgements are lost.
     const peerLossy = isGateway(node) ? fleet['catalog-b'].lossy : NODES.some(g => isGateway(g) && fleet[g].lossy);
-    const sent = Math.round(between(20, 110)), resent = n.lossy ? between(31, 60) : peerLossy ? (Math.random() < 0.4 ? 0 : between(2, 19)) : 0;
+    // A partitioned gateway resends every unanswered connection setup to the catalogue.
+    const sent = Math.round(between(20, 110)), resent = n.lossy ? between(31, 60) : n.partitioned ? between(40, 70) : peerLossy ? (Math.random() < 0.4 ? 0 : between(2, 19)) : 0;
     const tcp = {available: true, since: 'previous network check', interval_s: between(4, 30), out_segs: sent, retrans_segs: Math.round(sent * resent / 100), retrans_pct: Math.round(resent * 10) / 10};
     return {ok: true, http_status: 200, connect_ms: connect, connect_timeouts: timeouts, median_connect_ms: [...connect].sort((a, b) => a - b)[1],
-      result: {available: true, qdiscs: [queue], tcp, ...(isGateway(node) ? {dns: dnsReport(node)} : {}), generation: n.process},
+      result: {available: true, qdiscs: [queue], filters: n.partitioned ? [{kind: 'u32', dst: CATALOGUE_ADDRESS + '/32', action: 'drop'}] : [], tcp,
+        ...(isGateway(node) ? {dns: dnsReport(node), upstream_connect: upstreamConnect(node)} : {}), generation: n.process},
       duration_ms: Math.round(connect.reduce((a, b) => a + b, 0) * 10) / 10 + between(3, 9)};
   }
   const answer = answered(node, kind);
@@ -280,6 +284,15 @@ function probe(node, kind) {
   if (n.delayed) answer.duration_ms = Math.round((answer.duration_ms + lag(node)) * 10) / 10;
   if (n.lossy) answer.duration_ms = Math.round((answer.duration_ms + replyHop.extra) * 10) / 10;
   return answer;
+}
+
+// A TCP connection from a gateway to the address its upstream name resolves to, as aegis/fleet.py makes it.
+function upstreamConnect(node) {
+  if (dnsBroken(node)) return {name: 'catalog-b', ok: false, error: 'NameResolutionError', detail: lookupError()};
+  if (nameGone()) return {name: 'catalog-b', ok: false, error: 'NameResolutionError', detail: goneError()};
+  const base = {name: 'catalog-b', address: CATALOGUE_ADDRESS, port: 8000};
+  if (fleet[node].partitioned) return {...base, ok: false, error: 'TimeoutError', waited_ms: between(1000, 1003)};
+  return answering('catalog-b') ? {...base, ok: true, connect_ms: between(0.2, 0.9)} : {...base, ok: false, error: 'ConnectionRefusedError', waited_ms: between(0.2, 0.6)};
 }
 
 function dnsReport(node) {
@@ -349,6 +362,12 @@ function answered(node, kind) {
     const failure = {ok: false, dependency: 'catalog-b', correlation: crypto.randomUUID(), error: 'NameResolutionError', detail: lookupError(), generation: n.process, duration_ms: quick(0.3, 1.2)};
     log(node, failure); count(node, 'controller', 503);
     return {ok: false, http_status: 503, result: failure, duration_ms: Math.round((failure.duration_ms + between(1, 4)) * 10) / 10};
+  }
+  // A partitioned gateway's connection setup to the catalogue is never answered, so every call gives up after 1 second.
+  if (n.partitioned) {
+    const failure = {ok: false, dependency: 'catalog-b', correlation: crypto.randomUUID(), error: 'ConnectTimeout', generation: n.process, duration_ms: between(1000, 1004)};
+    log(node, failure); count(node, 'controller', 503);
+    return {ok: false, http_status: 503, result: failure, duration_ms: Math.round((failure.duration_ms + between(2, 6)) * 10) / 10};
   }
   const correlation = crypto.randomUUID(), cat = fleet['catalog-b'], net = call(node), catFails = releaseFails('catalog-b');
   let result, status = 503;
@@ -526,8 +545,8 @@ function state() {
 // changes nothing and says so, as the real broker and services do; a stopped service cannot confirm maintenance.
 const FAULTS = {'service-unavailable': ['stop', 'start'], 'cpu-starvation': ['burn', 'calm'], 'disk-full': ['fill', 'clear'], 'config-drift': ['drift', 'restore'],
   'network-delay': ['delay', 'undelay'], 'packet-loss': ['drop', 'undrop'], 'quota-zero': ['squeeze', 'requota'], 'bad-release': ['ship', 'rollback'], 'memory-leak': ['leak', 'rollback'],
-  'traffic-flood': ['flood', 'ratelimit'], 'retry-storm': ['storm', 'shed'], 'power-loss': ['trip', 'breaker'], 'thermal-throttle': ['heat', 'uncap'], 'dns-failure': ['repoint', 'resolver'], 'brownout': ['sag', 'transfer']};
-const FAULT_TARGETS = {'quota-zero': ['catalog-b'], 'traffic-flood': ['catalog-b'], 'retry-storm': ['gateway-a', 'gateway-c'], 'power-loss': ['catalog-b'], 'thermal-throttle': ['catalog-b'], 'dns-failure': ['gateway-a', 'gateway-c'], 'brownout': ['gateway-c']};  // faults that only exist on some services
+  'traffic-flood': ['flood', 'ratelimit'], 'retry-storm': ['storm', 'shed'], 'power-loss': ['trip', 'breaker'], 'thermal-throttle': ['heat', 'uncap'], 'dns-failure': ['repoint', 'resolver'], 'brownout': ['sag', 'transfer'], 'partition': ['isolate', 'route']};
+const FAULT_TARGETS = {'quota-zero': ['catalog-b'], 'traffic-flood': ['catalog-b'], 'retry-storm': ['gateway-a', 'gateway-c'], 'power-loss': ['catalog-b'], 'thermal-throttle': ['catalog-b'], 'dns-failure': ['gateway-a', 'gateway-c'], 'brownout': ['gateway-c'], 'partition': ['gateway-a', 'gateway-c']};  // faults that only exist on some services
 // Reset normally reapplies the remedy; a flood is undone by stopping its source and removing any limit.
 const RESET_CLEANUP = {'traffic-flood': ['unflood', 'requota'], 'retry-storm': ['unstorm', 'unshed'], 'thermal-throttle': ['unstorm']};
 const UNCHANGED = {start: 'Already running; nothing changed', stop: 'Already stopped; nothing changed', calm: 'No background job running; nothing changed',
@@ -543,7 +562,8 @@ const UNCHANGED = {start: 'Already running; nothing changed', stop: 'Already sto
   breaker: 'The breaker feeding this service is already closed; nothing changed', trip: 'Breaker already open; nothing changed',
   uncap: 'No power cap is active; nothing changed', heat: 'Cooling already failed; nothing changed',
   resolver: 'Resolver already uses the nameserver it was deployed with; nothing changed', repoint: 'Resolver already repointed; nothing changed',
-  transfer: "This service's rack already runs on a healthy feed; nothing changed", sag: 'Feed already sagging; nothing changed'};
+  transfer: "This service's rack already runs on a healthy feed; nothing changed", sag: 'Feed already sagging; nothing changed',
+  route: 'No partition rule on this service; nothing changed', isolate: 'Partition rule already present; nothing changed'};
 const DEBRIEFS = {
   "service-unavailable": "The scenario requested stopping {target}. When that succeeds, its container state reads stopped and its own probes fail. When the catalogue stops, both gateways stay live but their business requests fail, so the failure spreads; once their cached answer expires they cannot even resolve its name, because Docker's resolver drops the name of a stopped container, which looks like a DNS fault until the catalogue is checked; when one gateway stops, the catalogue and the other gateway stay healthy, so it does not. Starting the stopped service restores the request path.",
   "cpu-starvation": "The scenario requested a runaway background job inside {target}. When that succeeds, the service keeps running and answering, but slowly: the job uses the container's whole 0.25-CPU limit, the kernel throttles it, and requests queue behind it, crossing the 300 ms threshold. Its log records the job starting. A slow catalogue makes both gateways slow, and sometimes time out, too. Stopping the job returns normal latency.",
@@ -559,6 +579,7 @@ const DEBRIEFS = {
   "power-loss": "The scenario requested a simulated breaker trip on PDU-A, the power distribution unit feeding rack R1, where {target} and gateway-a are installed. The facility layer is simulated, but its effect was real: both containers were stopped, as servers are when their power is cut, and neither can be started while the breaker is open. Two services failed at the same moment, which on its own could look like two separate faults; what they share is not software but a power feed. gateway-c, on PDU-B, kept running, but its business requests fail because the catalogue is down. Starting either service reports no power and changes nothing. The facility check shows the open breaker, the rack and every service it feeds. Resetting the breaker restores power and starts the rack's services, the catalogue first because the gateways depend on it.",
   "brownout": "The scenario requested a simulated brownout on utility feed A to PDU-B, the power distribution unit feeding rack R2, where {target} is installed: the voltage sagged to about 186 V, below the 200 V its power supply tolerates. The facility layer is simulated, but its effect was real: whenever the voltage dipped, the server lost power, so the lab stopped the container, rebooted it a few seconds later, and stopped it again about ten seconds after that. A container has no power supply to lose, so it was stopped cleanly (exit code 0). The service crash-looped like a memory leak, but memory stayed flat, there was no out-of-memory kill and the release had not changed, so rolling back changed nothing; starting it only lasted until the next dip, and the breaker was closed, so resetting it changed nothing. The catalogue and gateway-a, on PDU-A, stayed healthy. The facility check showed feed A sagging, the redundant feed B normal, and a power-supply dropout at every restart. Moving the rack to the redundant feed ended the dropouts, and recovery had to hold for ten healthy cycles because the failures had come and gone.",
   "dns-failure": "The scenario requested a node-settings sync that pointed {target}'s resolver at 127.0.0.53, the address of systemd-resolved's stub on an ordinary Linux host. That setting is easily copied from a host image, but nothing listens there inside a container, so every DNS query is refused. The gateway resolves the catalogue's name with real DNS queries and caches each answer for 5 seconds, so it kept working until the cached answer expired, then failed every business request with a name resolution error. Its process, CPU, disk, release and running config were all normal, and the catalogue and the other gateway stayed healthy. A failing call to the catalogue looks like a stopped catalogue, or like config drift, which also breaks the upstream address; but the catalogue answered its own checks, the config matched what was deployed, and the network path check showed the lookup refused by 127.0.0.53 while a TCP connection to the catalogue's last known address still succeeded. Restoring the resolver fixed it at once; restarting the catalogue or restoring config changed nothing.",
+  "partition": "The scenario requested a partial network partition: a filter on {target}'s own network interface that drops every packet addressed to the catalogue, and nothing else, applied by a short-lived broker helper with only NET_ADMIN, as a bad firewall or routing change would. When that succeeds, {target} stays live, its CPU, disk, config and release are normal, and its resolver still finds the catalogue's name, but every connection to the catalogue's address goes unanswered, so its business requests time out after 1 second. The catalogue answers its own checks quickly and the other gateway reaches it without trouble, so the catalogue is not down; only one path is cut. That looks like a stopped catalogue from {target}'s side, like packet loss because requests time out, or like a DNS failure; but there is no netem queue, the name resolves, and the loss is total and to one destination. The network path check on {target} shows the drop filter under a prio queue and a TCP connection to the catalogue's address timing out. Restoring the route removes the filter; restarting the catalogue, removing packet loss or restoring the resolver changes nothing.",
   "network-delay": "The scenario requested a 600 ms delay on all traffic leaving {target}, applied with a Linux netem queue inside its own network namespace. When that succeeds, the process stays live and its CPU and disk stay normal, but everything it sends waits in the queue: its own checks take about 600 ms longer. A delayed catalogue slows both gateways' requests by the same amount; a delayed gateway pays the delay twice, on its call to the catalogue and on its reply, while the catalogue and the other gateway stay fast. Requests still succeed, because each wait stays under the gateways' 1-second upstream timeout. The network path check shows TCP connections taking about 600 ms and the netem queue itself, and a request trace shows a fast handler with the time spent outside it. Removing the delay, or restarting the container, restores normal latency."
 };
 const debrief = s => DEBRIEFS[s.fault_kind].replaceAll('{target}', s.fault_target) + ' Injection outcome: ' + (s.fault_action?.status || 'not recorded') + '. The action record explains the exercise but was not evidence available during the investigation. Other evidence-supported investigation orders are valid.';
@@ -568,7 +589,7 @@ function apply(node, verb) {
   if (verb === 'start' || verb === 'stop') {
     if ((verb === 'start') === target.running) return false;
     target.running = verb === 'start';
-    if (target.running) Object.assign(target, {readyAt: now() + START_DELAY, process: 'sim-' + crypto.randomUUID(), busy: false, full: false, drifted: false, delayed: false, lossy: false, squeezed: false, unresolved: false, dnsFailsAt: null, logs: [], traffic: [],
+    if (target.running) Object.assign(target, {readyAt: now() + START_DELAY, process: 'sim-' + crypto.randomUUID(), busy: false, full: false, drifted: false, delayed: false, lossy: false, squeezed: false, unresolved: false, dnsFailsAt: null, partitioned: false, logs: [], traffic: [],
       version: STABLE, history: [{version: STABLE, at: now(), by: 'deployment', note: RELEASE_NOTES[STABLE]}], leakAt: null, oomKilled: false, exitCode: 0, startedAt: now()});
     else Object.assign(target, {finishedAt: now(), exitCode: 0, oomKilled: false, leakAt: null});
     return true;
@@ -639,6 +660,14 @@ function apply(node, verb) {
   if (verb === 'requota' && node === 'catalog-b' && target.running && flood.limitedAt != null && !target.squeezed) { flood.limitedAt = null; return true; }
   if (verb === 'ship' || verb === 'leak') return target.running ? deploy(node, verb === 'ship' ? BAD_RELEASE : LEAKY_RELEASE, 'release-bot') : null;
   if (!target.running) return null;  // maintenance endpoint unreachable
+  if (verb === 'isolate' || verb === 'route') {
+    // The broker's partition rule: only a gateway, never beside a netem queue, and removing it only removes it.
+    const on = verb === 'isolate';
+    if (on && (!isGateway(node) || target.delayed || target.lossy)) return null;
+    if (target.partitioned === on) return false;
+    target.partitioned = on;
+    return true;
+  }
   if (verb === 'repoint' || verb === 'resolver') {
     const on = verb === 'repoint';
     if (!isGateway(node) || target.unresolved === on) return false;  // only a gateway resolves a name
@@ -773,6 +802,12 @@ function explain(level) {
       ids.push(catalogue.id);
       message = `${g} is live, but its call to the catalogue timed out (${result.error}) rather than being refused, while the catalogue answers its own business requests quickly. A timeout without a slow service means packets went missing on the way: a lost connection setup or reply. If the same request sometimes works, compare the network path of both ends.`;
       suggested = {node: 'catalog-b', kind: 'network'};
+      const other = NODES.find(n => isGateway(n) && n !== g), otherLive = fresh.get(other + '|liveness'), otherBusiness = fresh.get(other + '|business');
+      if (result.error === 'ConnectTimeout' && otherLive && otherBusiness && healthy(otherLive, otherBusiness)) {
+        // Only this gateway cannot even open a connection to a catalogue that serves everyone else: look at its own path.
+        message += ` Only ${g} is affected, so start with its own network path.`;
+        suggested = {node: g, kind: 'network'};
+      }
     } else if (live.body.ok && !business.body.ok && result.upstream_status === 500) {
       message = `${g} is live, but the catalogue answered its request with HTTP 500. The catalogue is reachable yet failing internally; compare its logs and running config with what was deployed.`;
       suggested = {node: 'catalog-b', kind: 'config'};
@@ -872,6 +907,10 @@ function remedyFor(fresh) {
     else if (kind === 'config' && body.result?.drifted?.length) {
       const setting = body.result.settings.find(s => s.drifted);
       action = `The running config on ${node} differs from its deployed settings: ${setting.key} is ${setting.value} but ${setting.deployed} was deployed. You can try restoring the deployed config, then verify business requests succeed again.`;
+    } else if (kind === 'network' && (body.result?.filters || []).some(f => f.action === 'drop')) {
+      const cut = body.result.filters.find(f => f.action === 'drop'), probe = body.result.upstream_connect || {};
+      const seen = probe.ok === false && probe.address ? ` A TCP connection from ${node} to ${probe.name} at ${probe.address} got no answer (${probe.error}).` : '';
+      action = `Traffic leaving ${node} passes a filter that drops every packet to ${cut.dst}, the address its upstream resolves to, and nothing else.${seen} The catalogue itself is not down; only this path is cut. You can try restoring the route, then verify business requests succeed again.`;
     } else if (kind === 'network' && body.result?.dns?.ok === false && (body.result.dns.changed || body.result.dns.connect_last_good_ms != null)) {
       const dns = body.result.dns;
       const reachable = dns.connect_last_good_ms != null ? ` A TCP connection to its last known address, ${dns.last_good_address}, took ${dns.connect_last_good_ms} ms, so the service itself is reachable; only the name fails.` : '';
@@ -970,7 +1009,7 @@ const routes = {
     const s = active(d.session_id);
     if (s.status === 'resetting') throw new HttpError(409, 'Reset is in progress. Wait for verification or retry reset.');
     const verb = d.verb || 'start';
-    if (!['start', 'calm', 'clear', 'restore', 'undelay', 'undrop', 'requota', 'rollback', 'ratelimit', 'shed', 'breaker', 'uncap', 'resolver', 'transfer'].includes(verb)) invalid();
+    if (!['start', 'calm', 'clear', 'restore', 'undelay', 'undrop', 'requota', 'rollback', 'ratelimit', 'shed', 'breaker', 'uncap', 'resolver', 'transfer', 'route'].includes(verb)) invalid();
     const result = mutate(d.key, d.node || 'catalog-b', verb);
     if (!s.recovery_attempts.some(a => a.key === d.key)) {
       s.recovery_attempts.push({key: d.key, at: now(), ...result});

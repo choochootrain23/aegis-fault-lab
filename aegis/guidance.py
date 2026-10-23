@@ -56,6 +56,10 @@ def explain(latest, level, now=None):
             message = (f"{g} is live, but its call to the catalogue timed out ({result.get('error')}) rather than being refused, while the catalogue answers its own business requests quickly. "
                        "A timeout without a slow service means packets went missing on the way: a lost connection setup or reply. If the same request sometimes works, compare the network path of both ends.")
             suggested = {'node':'catalog-b','kind':'network'}
+            if result.get('error') == 'ConnectTimeout' and other_gateway_healthy(fresh, g):
+                # Only this gateway cannot even open a connection to a catalogue that serves everyone else: look at its own path.
+                message += f" Only {g} is affected, so start with its own network path."
+                suggested = {'node':g,'kind':'network'}
         elif live['body']['ok'] and not business['body']['ok'] and result.get('upstream_status') == 500:
             message = f'{g} is live, but the catalogue answered its request with HTTP 500. The catalogue is reachable yet failing internally; compare its logs and running config with what was deployed.'
             suggested = {'node':'catalog-b','kind':'config'}
@@ -162,6 +166,12 @@ def resolver_broken(dns):
     return bool(dns and dns.get('ok') is False and (dns.get('changed') or dns.get('connect_last_good_ms') is not None))
 
 
+def other_gateway_healthy(fresh, g):
+    other = next(o for o in GATEWAYS if o != g)
+    live, business = fresh.get((other, 'liveness')), fresh.get((other, 'business'))
+    return bool(live and business and healthy(live, business))
+
+
 def catalogue_healthy(fresh):
     record = fresh.get(('catalog-b', 'business'))
     return bool(record and record['body'].get('ok') and not record['body'].get('slow'))
@@ -233,6 +243,13 @@ def remedy(fresh):
         elif kind == 'config' and (body.get('result') or {}).get('drifted'):
             setting = next(s for s in body['result']['settings'] if s['drifted'])
             action = f"The running config on {node} differs from its deployed settings: {setting['key']} is {setting['value']} but {setting['deployed']} was deployed. You can try restoring the deployed config, then verify business requests succeed again."
+        elif kind == 'network' and any(f.get('action') == 'drop' for f in (body.get('result') or {}).get('filters') or []):
+            cut = next(f for f in body['result']['filters'] if f.get('action') == 'drop')
+            probe = body['result'].get('upstream_connect') or {}
+            seen = (f" A TCP connection from {node} to {probe.get('name')} at {probe.get('address')} got no answer ({probe.get('error')})."
+                    if probe.get('ok') is False and probe.get('address') else '')
+            action = (f"Traffic leaving {node} passes a filter that drops every packet to {cut['dst']}, the address its upstream resolves to, and nothing else.{seen} "
+                      "The catalogue itself is not down; only this path is cut. You can try restoring the route, then verify business requests succeed again.")
         elif kind == 'network' and resolver_broken((body.get('result') or {}).get('dns')):
             dns = body['result']['dns']
             reachable = (f" A TCP connection to its last known address, {dns['last_good_address']}, took {dns['connect_last_good_ms']:g} ms, so the service itself is reachable; only the name fails."

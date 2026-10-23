@@ -383,3 +383,19 @@ def test_a_sagging_feed_supports_moving_to_the_redundant_feed_instead_of_startin
     assert result['evidence_ids']==[facility['id']] and 'moving the rack to the redundant feed' in result['message'] and '2 power-supply dropouts' in result['message']
     normal={**facility,'body':{**facility['body'],'feeds':{'A':{'voltage_v':230,'status':'normal'},'B':{'voltage_v':231,'status':'normal'}}}}
     assert 'starting that selected service' in explain({('gateway-c','facility'):normal,('gateway-c','service'):stopped},'action',now=101)['message']
+
+
+def test_a_gateway_that_alone_cannot_connect_is_pointed_at_its_own_network_path():
+    latest={('gateway-a','liveness'):observation('gateway-a','liveness'),
+            ('gateway-a','business'):observation('gateway-a','business',False,result={'error':'ConnectTimeout'}),
+            ('catalog-b','business'):observation('catalog-b','business',duration_ms=3),
+            ('gateway-c','liveness'):observation('gateway-c','liveness'),('gateway-c','business'):observation('gateway-c','business',duration_ms=5)}
+    result=explain(latest,'evidence',now=101)
+    assert result['suggested_check']=={'node':'gateway-a','kind':'network'} and 'Only gateway-a is affected' in result['message']
+
+
+def test_a_drop_filter_supports_restoring_the_route():
+    network=observation('gateway-c','network',median_connect_ms=0.5,result={'qdiscs':[{'kind':'prio','root':True}],'filters':[{'kind':'u32','dst':'172.20.0.3/32','action':'drop'}],
+                        'upstream_connect':{'name':'catalog-b','address':'172.20.0.3','ok':False,'error':'TimeoutError'},'dns':{'name':'catalog-b','ok':True}})
+    result=explain({('gateway-c','network'):network},'action',now=101)
+    assert result['evidence_ids']==[network['id']] and 'restoring the route' in result['message'] and '172.20.0.3/32' in result['message']

@@ -136,10 +136,18 @@ Reports are under ignored `state/validation/`. The app is running at http://loca
 - **Fifteenth fault: brownout.** Feed A to PDU-B sags to 186 V, so gateway-c loses power, reboots and loses it again: a crash loop with flat memory and an unchanged release. Remedy: **Move to redundant feed**. It needs no new broker operation.
 - The simulator now clears its facility state at the start of each investigation, as the controller does.
 
+## Partial partition checkpoint (24 October 2026)
+
+- **A new fixed broker rule.** Two operations, `isolate` and `route`, let the existing NET_ADMIN helper add or remove a `prio` root queue with one `u32` filter dropping a gateway's packets to the catalogue's address, which the broker reads from Docker. The broker now accepts twelve fixed operations; the review is in [architecture](architecture.md).
+- **Sixteenth fault: partial partition.** One gateway times out connecting to a healthy catalogue that the other gateway reaches. Remedy: **Restore route**.
+- **Network path** on a gateway now also shows its packet filters and a TCP connection from the gateway to the catalogue's address.
+- Guidance: a gateway that alone times out connecting to a healthy catalogue is pointed at its own network path; a drop filter supports restoring the route.
+- Not yet measured on real Docker: detection and recovery times, and whether the kernel loads the `gact` drop action for the helper.
+
 ## Next work
 
 1. AI evaluation with other models and question wordings; more samples of the rarer faults.
-2. Compound incidents (for example a heatwave that tips into a retry storm), clock skew and partial partitions from the roadmap.
+2. Compound incidents (for example a heatwave that tips into a retry storm) and clock skew from the roadmap.
 3. Screen-reader review; runs measured in days.
 
 ## Boundaries preserved

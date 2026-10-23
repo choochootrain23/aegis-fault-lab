@@ -1,6 +1,7 @@
 """Private Docker boundary: no shell, arbitrary targets or generic Docker proxy."""
 import asyncio
 import hmac
+import ipaddress
 import json
 import os
 from contextlib import asynccontextmanager
@@ -15,6 +16,11 @@ TARGETS = ('gateway-a', 'catalog-b', 'gateway-c')
 TOKEN = os.getenv('AEGIS_BROKER_TOKEN', '')
 READ_VERBS = ('inspect', 'resources')
 NET_VERBS = ('delay', 'undelay', 'drop', 'undrop')
+# The partition fault: on a gateway only, a prio root queue and one u32 filter that drops every packet to the catalogue's
+# address. The address comes from Docker's own record of the catalogue container, never from the caller.
+PARTITION_VERBS = ('isolate', 'route')
+PARTITION_TARGETS = ('gateway-a', 'gateway-c')
+PARTITION_PEER = 'catalog-b'
 CAP_VERBS = ('cap', 'uncap')
 # The power cap of the thermal fault: exactly these two CPU limits, nothing in between and nothing above the deployed one.
 CPU_CAPPED, CPU_DEPLOYED = 50_000_000, 250_000_000  # 0.05 and 0.25 CPU, in Docker's NanoCpus
@@ -29,7 +35,7 @@ HELPER_LABEL = PROJECT + '.role'
 class Operation(BaseModel):
     model_config = ConfigDict(extra='forbid')
     target: Literal['gateway-a', 'catalog-b', 'gateway-c']
-    verb: Literal['inspect', 'resources', 'start', 'stop', 'delay', 'undelay', 'drop', 'undrop', 'cap', 'uncap']
+    verb: Literal['inspect', 'resources', 'start', 'stop', 'delay', 'undelay', 'drop', 'undrop', 'cap', 'uncap', 'isolate', 'route']
     generation: str | None = Field(default=None, max_length=80)
 
 
@@ -95,7 +101,7 @@ class Docker:
             if not op.generation:
                 raise ValueError('Mutation requires inspected container identity')
             changed = await (self.network(data, op.verb) if op.verb in NET_VERBS else self.cpu_cap(data, op.verb) if op.verb in CAP_VERBS
-                             else self.mutate(data, op.verb))
+                             else self.partition(data, op) if op.verb in PARTITION_VERBS else self.mutate(data, op.verb))
             data = await self.resolve(op.target)
             if data['Id'] != op.generation:
                 raise ValueError('Container replaced during action; result uncertain')
@@ -157,6 +163,65 @@ class Docker:
             raise ValueError('Network change failed: ' + output[:200])
         return True
 
+    async def peer_address(self):
+        """The catalogue's IPv4 address on the fleet network, from Docker's record of the owned, validated container."""
+        peer = await self.resolve(PARTITION_PEER)
+        address = (peer.get('NetworkSettings', {}).get('Networks', {}).get(PROJECT + '_fleet') or {}).get('IPAddress') or ''
+        try:
+            parsed = ipaddress.IPv4Address(address)
+        except ipaddress.AddressValueError as error:
+            raise ValueError('The catalogue has no address on the fleet network; refusing to partition') from error
+        if not parsed.is_private:
+            raise ValueError('Unexpected catalogue address; refusing to partition')
+        return str(parsed)
+
+    async def partition(self, data, op):
+        """Add or remove the partition rule; False when nothing needs changing.
+
+        Adding needs the default noqueue root, so it never replaces a netem fault or anything else. Removing deletes the
+        root only when it is exactly this rule: a prio root whose only filter drops one destination address.
+        """
+        if op.verb == 'isolate' and op.target not in PARTITION_TARGETS:
+            raise ValueError('Only a gateway can be partitioned from the catalogue')
+        if not data['State']['Running']:
+            raise ValueError('Target must be running to change its network')
+        status, shown = await self.helper(data, ['qdisc', 'show', 'dev', 'eth0'])
+        if status:
+            raise ValueError('Could not read the target network queue')
+        root = next((line for line in shown.splitlines() if ' root ' in line), '')
+        ours = root.startswith('qdisc prio 1: ')
+        rule = None
+        if ours:
+            status, filters = await self.helper(data, ['filter', 'show', 'dev', 'eth0', 'parent', '1:'])
+            if status:
+                raise ValueError('Could not read the target filters')
+            rule = partition_rule(filters)
+            if rule is None:
+                raise ValueError('Unexpected filters present; refusing to touch them')
+        if op.verb == 'route':
+            if not ours:
+                return False  # no partition here; another fault's queue is left alone
+            status, output = await self.helper(data, ['qdisc', 'del', 'dev', 'eth0', 'root'])
+            if status:
+                raise ValueError('Network change failed: ' + output[:200])
+            return True
+        address = await self.peer_address()
+        if ours:
+            if rule == address:
+                return False
+            raise ValueError('A partition to another address is present; refusing to change it')
+        if root and not root.startswith('qdisc noqueue'):
+            raise ValueError('Unexpected queue discipline present; refusing to replace it')
+        status, output = await self.helper(data, ['qdisc', 'add', 'dev', 'eth0', 'root', 'handle', '1:', 'prio'])
+        if status:
+            raise ValueError('Network change failed: ' + output[:200])
+        status, output = await self.helper(data, ['filter', 'add', 'dev', 'eth0', 'parent', '1:', 'protocol', 'ip', 'prio', '1',
+                                                  'u32', 'match', 'ip', 'dst', address + '/32', 'action', 'drop'])
+        if status:
+            await self.helper(data, ['qdisc', 'del', 'dev', 'eth0', 'root'])  # leave the default queue, not half a rule
+            raise ValueError('Network change failed: ' + output[:200])
+        return True
+
     async def helper(self, data, argv):
         """Run one fixed tc command inside the target's network namespace, then remove the helper.
 
@@ -215,6 +280,21 @@ def netem_settings(root):
         index = params.index('seed')
         params = params[:index] + params[index + 2:]
     return tuple(params)
+
+
+def partition_rule(shown):
+    """The one address the partition filter drops, from `tc filter show`; None for no filter or any other filter."""
+    matches = [line.split() for line in shown.splitlines() if line.strip().startswith('match ')]
+    actions = [line for line in shown.splitlines() if 'action' in line and 'gact' in line]
+    if len(matches) != 1 or len(actions) != 1 or not actions[0].rstrip().endswith('action drop'):
+        return None
+    words = matches[0]
+    if len(words) != 4 or words[2] != 'at' or words[3] != '16' or not words[1].endswith('/ffffffff'):
+        return None  # offset 16 of an IPv4 header is the destination address
+    try:
+        return str(ipaddress.IPv4Address(int(words[1].split('/')[0], 16)))
+    except ValueError:
+        return None
 
 
 def demultiplex(raw):

@@ -21,9 +21,9 @@ from validate_scenarios import KINDS, NODES, REMEDY, Operator, check, owned_acti
 
 ROOT = Path(__file__).resolve().parents[1]
 QUESTION = ('What is most likely wrong, and is there one recovery action the evidence clearly supports? '
-            "Finish with exactly one line: 'Action: <start|calm|clear|restore|undelay|undrop|requota|rollback|ratelimit|shed|breaker|uncap|resolver|transfer> on <node>' or 'Action: none yet'.")
+            "Finish with exactly one line: 'Action: <start|calm|clear|restore|undelay|undrop|requota|rollback|ratelimit|shed|breaker|uncap|resolver|transfer|route> on <node>' or 'Action: none yet'.")
 INSPECTIONS = ('service', 'resources', 'disk', 'config', 'network', 'traffic', 'releases', 'memory', 'logs', 'facility')
-ACTION = re.compile(r'Action:\s*\**\s*(start|calm|clear|restore|undelay|undrop|requota|rollback|ratelimit|shed|breaker|uncap|resolver|transfer)\b\W+(?:on\s+)?\W*(gateway-a|catalog-b|gateway-c)', re.I)
+ACTION = re.compile(r'Action:\s*\**\s*(start|calm|clear|restore|undelay|undrop|requota|rollback|ratelimit|shed|breaker|uncap|resolver|transfer|route)\b\W+(?:on\s+)?\W*(gateway-a|catalog-b|gateway-c)', re.I)
 
 
 def ask(operator, sid):

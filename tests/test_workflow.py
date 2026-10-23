@@ -22,6 +22,7 @@ class Fleet:
         self.lossy = {'gateway-a': False, 'catalog-b': False, 'gateway-c': False}
         self.squeezed = {'gateway-a': False, 'catalog-b': False, 'gateway-c': False}  # only the catalogue has quotas
         self.unresolved = {'gateway-a': False, 'catalog-b': False, 'gateway-c': False}  # a gateway's resolver repointed
+        self.partitioned = {'gateway-a': False, 'catalog-b': False, 'gateway-c': False}  # a gateway's path to the catalogue cut
         self.loss_tick = 0  # a lossy path repeats three failing cycles, then two working ones
         self.version = {'gateway-a': 'v1.4.2', 'catalog-b': 'v1.4.2', 'gateway-c': 'v1.4.2'}
         self.leaking = {'gateway-a': 0, 'catalog-b': 0, 'gateway-c': 0}  # probes since the leaky build started; 0 when not leaking
@@ -48,6 +49,11 @@ class Fleet:
             if verb in ('cap', 'uncap'):
                 changed = self.capped[node] != (verb == 'cap')
                 self.capped[node] = verb == 'cap'
+            elif verb in ('isolate', 'route'):
+                if verb == 'isolate' and not node.startswith('gateway'):
+                    return httpx.Response(409)
+                changed = self.partitioned[node] != (verb == 'isolate')
+                self.partitioned[node] = verb == 'isolate'
             elif verb in ('delay', 'undelay', 'drop', 'undrop'):
                 state = self.delayed if verb in ('delay', 'undelay') else self.lossy
                 changed = state[node] != (verb in ('delay', 'drop'))
@@ -163,6 +169,10 @@ class Fleet:
                             'deployed_nameserver': '127.0.0.11', 'changed': True, 'pushed_by': 'node-settings-sync', 'last_good_address': '172.18.0.4', 'connect_last_good_ms': 0.4}}
                    if self.unresolved[node] else {'dns': {'name': 'catalog-b', 'ok': True, 'address': '172.18.0.4', 'nameserver': '127.0.0.11', 'deployed_nameserver': '127.0.0.11',
                                                           'changed': False}} if node.startswith('gateway') else {})
+            if self.partitioned[node]:
+                queue = {'kind': 'prio', 'dev': 'eth0', 'root': True, 'delay_ms': None, 'loss_pct': None}
+                dns.update(filters=[{'kind': 'u32', 'dst': '172.18.0.4/32', 'action': 'drop'}],
+                           upstream_connect={'name': 'catalog-b', 'address': '172.18.0.4', 'port': 8000, 'ok': False, 'error': 'TimeoutError', 'waited_ms': 1000.0})
             return httpx.Response(200, json={'available': True, 'qdiscs': [queue], 'tcp': {'available': True, 'retrans_pct': 25.0 if self.lossy[node] else 0.0}, **dns})
         if path == '/diagnostics/traffic':
             quotas = [{'client': g, 'limit_rps': 0 if self.squeezed[node] else 100, 'deployed_rps': 100, 'changed': self.squeezed[node]}
@@ -194,6 +204,8 @@ class Fleet:
             return httpx.Response(200, json={'live': True, 'version': self.version[node]})
         if self.full[node]:
             return httpx.Response(507, json={'ok': False, 'errno': 'ENOSPC'})
+        if self.partitioned[node] and path == '/summary':
+            return httpx.Response(503, json={'ok': False, 'dependency': 'catalog-b', 'error': 'ConnectTimeout'})
         if self.unresolved[node] and path == '/summary':
             return httpx.Response(503, json={'ok': False, 'error': 'NameResolutionError', 'detail': 'catalog-b: connection refused by nameserver 127.0.0.53'})
         if self.drifted[node]:
@@ -595,10 +607,10 @@ def test_challenge_hides_fault_kind_and_target(lab):
             await controller.reset_locked(f'reset-kind-{attempt:03d}')
             for _ in range(3):
                 await controller.cycle()
-            if len(seen) == 15:
+            if len(seen) == 16:
                 break
         assert seen == {'service-unavailable', 'cpu-starvation', 'disk-full', 'config-drift', 'network-delay', 'packet-loss', 'quota-zero',
-                        'bad-release', 'memory-leak', 'traffic-flood', 'retry-storm', 'power-loss', 'thermal-throttle', 'dns-failure', 'brownout'}
+                        'bad-release', 'memory-leak', 'traffic-flood', 'retry-storm', 'power-loss', 'thermal-throttle', 'dns-failure', 'brownout', 'partition'}
     run(scenario())
 
 
@@ -1098,6 +1110,30 @@ def test_brownout_crash_loops_gateway_c_until_the_rack_moves_to_the_redundant_fe
             await controller.cycle()
         assert controller.session['status'] == 'recovered' and fleet.running['gateway-c'] and controller.session['required_streak'] == 10
         assert 'PDU-B' in controller.public_session(controller.session | {'revealed': True})['debrief']
+    run(scenario())
+
+
+def test_partition_cuts_one_gateway_from_the_healthy_catalogue_until_the_route_is_restored(lab):
+    async def scenario():
+        controller, fleet = lab
+        async def connect(host, port):
+            return None, Writer()
+        controller.connect = connect
+        await baseline(controller)
+        with pytest.raises(HTTPException) as refused:
+            await controller.start(Start(mode='practice', kind='partition', target='catalog-b', key='start-cut-catalogue'))
+        assert refused.value.status_code == 422
+        await controller.start(Start(mode='practice', kind='partition', target='gateway-a', key='start-cut'))
+        assert fleet.partitioned['gateway-a'] and all(fleet.running.values())
+        assert await investigate(controller) == {'gateway-a': 'degraded', 'catalog-b': 'healthy', 'gateway-c': 'healthy'}
+        assert controller.latest[('gateway-a', 'business')]['body']['result']['error'] == 'ConnectTimeout'
+        network = (await controller.check('gateway-a', 'network'))['body']['result']
+        assert network['filters'][0]['action'] == 'drop' and network['upstream_connect']['ok'] is False and network['dns']['ok'] is True
+        for node, verb in (('catalog-b', 'start'), ('gateway-a', 'undrop'), ('gateway-a', 'resolver'), ('gateway-c', 'route'), ('catalog-b', 'route')):
+            assert (await controller.mutate(f'wrong-cut-{node}-{verb}', node, verb))['status'] == 'unchanged'
+        await verify(controller, 'route', 'gateway-a', 'route')
+        assert controller.session['status'] == 'recovered' and not fleet.partitioned['gateway-a']
+        assert 'drops every packet addressed to the catalogue' in controller.public_session(controller.session | {'revealed': True})['debrief']
     run(scenario())
 
 

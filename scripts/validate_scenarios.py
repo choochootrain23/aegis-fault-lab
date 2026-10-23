@@ -22,15 +22,15 @@ NODES = ('gateway-a', 'catalog-b', 'gateway-c')
 # A different node to try a wrong remedy on.
 OTHER = {'gateway-a': 'catalog-b', 'catalog-b': 'gateway-c', 'gateway-c': 'gateway-a'}
 KINDS = ('service-unavailable', 'cpu-starvation', 'disk-full', 'config-drift', 'network-delay', 'packet-loss', 'quota-zero', 'bad-release', 'memory-leak',
-         'traffic-flood', 'retry-storm', 'power-loss', 'thermal-throttle', 'dns-failure', 'brownout')
+         'traffic-flood', 'retry-storm', 'power-loss', 'thermal-throttle', 'dns-failure', 'brownout', 'partition')
 REMEDY = {'service-unavailable': 'start', 'cpu-starvation': 'calm', 'disk-full': 'clear', 'config-drift': 'restore', 'network-delay': 'undelay',
           'packet-loss': 'undrop', 'quota-zero': 'requota', 'bad-release': 'rollback', 'memory-leak': 'rollback', 'traffic-flood': 'ratelimit', 'retry-storm': 'shed', 'power-loss': 'breaker', 'thermal-throttle': 'uncap',
-          'dns-failure': 'resolver', 'brownout': 'transfer'}
+          'dns-failure': 'resolver', 'brownout': 'transfer', 'partition': 'route'}
 TARGETS = {'quota-zero': ('catalog-b',), 'traffic-flood': ('catalog-b',), 'retry-storm': ('gateway-a', 'gateway-c'), 'power-loss': ('catalog-b',), 'thermal-throttle': ('catalog-b',),
-           'dns-failure': ('gateway-a', 'gateway-c'), 'brownout': ('gateway-c',)}  # faults that only exist on some services
+           'dns-failure': ('gateway-a', 'gateway-c'), 'brownout': ('gateway-c',), 'partition': ('gateway-a', 'gateway-c')}  # faults that only exist on some services
 # The fix for the fault each one is most easily mistaken for: it must change nothing.
 LOOKALIKE = {'packet-loss': 'undelay', 'network-delay': 'undrop', 'quota-zero': 'restore', 'bad-release': 'restore', 'traffic-flood': 'calm', 'retry-storm': 'ratelimit', 'thermal-throttle': 'calm',
-             'dns-failure': 'restore', 'brownout': 'breaker'}
+             'dns-failure': 'restore', 'brownout': 'breaker', 'partition': 'undrop'}
 INTERMITTENT = ('cpu-starvation', 'packet-loss', 'bad-release', 'memory-leak', 'brownout')
 RELEASE_FAULTS = {'v1.5.0': 'bad-release', 'v1.5.1': 'memory-leak'}  # effects that come and go from one cycle to the next
 
@@ -138,6 +138,8 @@ def anomalies(operator):
             found.append(('config-drift', node, config))
         elif broken_resolver:
             found.append(('dns-failure', node, network))
+        elif any(f.get('action') == 'drop' for f in (network['body'].get('result') or {}).get('filters') or []):
+            found.append(('partition', node, network))
         elif any(q['kind'] == 'netem' and q.get('loss_pct') for q in queues):
             found.append(('packet-loss', node, network))
         elif any(q['kind'] == 'netem' for q in queues):

@@ -493,6 +493,42 @@ def read_qdiscs():
     return {'available': True, 'qdiscs': entries}
 
 
+def read_filters():
+    """Packet filters under a prio root queue, as `tc filter show` reports them (read-only): the destination each u32
+    filter matches and what it does with those packets."""
+    try:
+        shown = subprocess.run(['tc', 'filter', 'show', 'dev', 'eth0', 'parent', '1:'], capture_output=True, text=True, timeout=3)
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    filters, current = [], None
+    for line in shown.stdout.splitlines():
+        match = re.match(r'\s*match ([0-9a-f]{8})/ffffffff at 16', line)
+        if match:
+            current = {'kind': 'u32', 'dst': socket.inet_ntoa(bytes.fromhex(match[1])) + '/32', 'action': None}
+            filters.append(current)
+        action = re.search(r'gact action (\w+)', line)
+        if action and current:
+            current['action'] = action[1]
+    return filters
+
+
+async def upstream_reachability():
+    """A TCP connection from this gateway to the address its upstream name resolves to: whether the path itself works."""
+    target = urlsplit(config['upstream'])
+    try:
+        address = await resolve(target.hostname)
+    except NameResolutionError as error:
+        return {'name': target.hostname, 'ok': False, 'error': 'NameResolutionError', 'detail': str(error)}
+    began = time.monotonic()
+    try:
+        _, writer = await asyncio.wait_for(asyncio.open_connection(address, target.port or 80), 1)
+        writer.close()
+        return {'name': target.hostname, 'address': address, 'port': target.port, 'ok': True, 'connect_ms': round((time.monotonic() - began) * 1000, 1)}
+    except (OSError, TimeoutError) as error:
+        return {'name': target.hostname, 'address': address, 'port': target.port, 'ok': False, 'error': type(error).__name__,
+                'waited_ms': round((time.monotonic() - began) * 1000, 1)}
+
+
 def tcp_counters():
     """This network namespace's TCP segment counters from /proc/net/snmp (read-only)."""
     rows = [line.split() for line in Path('/proc/net/snmp').read_text().splitlines() if line.startswith('Tcp:')]
@@ -544,7 +580,10 @@ async def dns_report():
 
 @app.get('/diagnostics/network')
 async def network():
-    return {**read_qdiscs(), 'tcp': retransmissions(), **({'dns': await dns_report()} if ROLE == 'gateway' else {}), 'generation': BOOT}
+    queues = read_qdiscs()
+    filters = read_filters() if any(q.get('kind') == 'prio' and q.get('root') for q in queues.get('qdiscs', [])) else []
+    gateway = {'dns': await dns_report(), 'upstream_connect': await upstream_reachability()} if ROLE == 'gateway' else {}
+    return {**queues, 'filters': filters, 'tcp': retransmissions(), **gateway, 'generation': BOOT}
 
 
 @app.get('/diagnostics/releases')

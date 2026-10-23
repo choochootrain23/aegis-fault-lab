@@ -24,7 +24,7 @@ New faults modelled on the kinds of incident that public data-centre reports des
 | 8 | **Brownout and restart loops**: feed A to rack R2 sags, so gateway-c drops out and reboots again and again | Memory leak (memory flat here); stopped service | Move to the redundant feed | **Done** (F15), with power feeds in the facility layer |
 | 9 | **Clock skew** on one gateway: signed requests rejected | Bad release, config drift | Resync clock | Planned: needs request signing |
 | 10 | **DNS resolution failure** on one gateway: its resolver points at a nameserver that is not there | Stopped catalogue (it is fine, and reachable at its last known address); config drift | Restore resolver | **Done** (F14), with real DNS queries from the gateways |
-| 11 | **Partial partition**: one gateway cannot reach the catalogue | Stopped catalogue | Restore route | Planned: new fixed helper rule, needs review |
+| 11 | **Partial partition**: one gateway cannot reach the catalogue | Stopped catalogue; packet loss; DNS failure | Restore route | **Done** (F16), with a new fixed helper rule reviewed in [architecture](architecture.md) |
 | 13–16 | Gray failure, heatwave compound incident, read-only disk, path MTU black hole | | | Later |
 
 Inspirations, all public: the Google SRE book chapters on cascading failures and load shedding; Google Cloud incident reports for the 2022 europe-west2 cooling failure, the 2015 St. Ghislain lightning strikes and the 2023 europe-west9 water leak and fire; and the December 2020 authentication outage attributed to the quota system.

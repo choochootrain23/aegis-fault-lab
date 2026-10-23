@@ -133,6 +133,15 @@ export function run(){
     assert.deepEqual([...view.faultTargets('brownout')],['gateway-c']);assert.equal(view.remedyLabel('transfer'),'Move to redundant feed');
     assert.equal(view.scenarioCopy('brownout','gateway-c','practice').number,'15');
   });
+  check('A drop filter reads as a network failure and the partition is gateway-only',()=>{
+    const cut={kind:'network',body:{ok:true,median_connect_ms:0.5,result:{qdiscs:[{kind:'prio',root:true}],filters:[{kind:'u32',dst:'172.20.0.3/32',action:'drop'}],
+      dns:{name:'catalog-b',ok:true},upstream_connect:{name:'catalog-b',address:'172.20.0.3',ok:false,error:'TimeoutError'}}}};
+    const result=view.evidenceResult(cut);
+    assert.equal(result.tone,'red');assert.match(result.text,/filter dropping all traffic to 172.20.0.3\/32/);assert.match(result.text,/catalog-b unreachable/);
+    assert.match(view.checkSummary(cut).text,/drop filter/);
+    assert.deepEqual([...view.faultTargets('partition')],['gateway-a','gateway-c']);assert.equal(view.remedyLabel('route'),'Restore route');
+    assert.equal(view.scenarioCopy('partition','gateway-a','practice').number,'16');
+  });
   return {passed,scope:'Pure UI state and timer decisions; frontend JavaScript parsed. No visual/browser validation.'};
 }
 if(typeof process!=='undefined' && process.argv[1] && import.meta.url===new URL('file://'+process.argv[1]).href) console.log(run());
