@@ -144,10 +144,16 @@ Reports are under ignored `state/validation/`. The app is running at http://loca
 - Guidance: a gateway that alone times out connecting to a healthy catalogue is pointed at its own network path; a drop filter supports restoring the route.
 - Not yet measured on real Docker: detection and recovery times, and whether the kernel loads the `gact` drop action for the helper.
 
+## Seventeenth-fault checkpoint (24 October 2026)
+
+- **Request signing.** Gateways sign their calls to the catalogue: a timestamp and an HMAC-SHA256 keyed by `AEGIS_SIGNING_KEY`, a new credential from `init_env.py` that only the three services receive. The catalogue refuses a missing or forged signature, or a timestamp more than 30 s from its own clock, with HTTP 401; refusals count as rejected in its traffic report and are logged.
+- **Clock skew.** A time daemon on one gateway steps its clock 300 s ahead. The lab offsets the gateway process's own clock, because containers share the host's kernel clock. Everything the service reports or signs uses that clock, while deadlines stay on the kernel clock. **Network path** shows each service's clock against the controller's. Remedy: **Resync clock**.
+- Without the signing key, signing is off and says so, and the clock-skew scenario is refused at start and left out of challenge picks.
+
 ## Next work
 
 1. AI evaluation with other models and question wordings; more samples of the rarer faults.
-2. Compound incidents (for example a heatwave that tips into a retry storm) and clock skew from the roadmap.
+2. Compound incidents from the roadmap, for example a heatwave that tips into a retry storm.
 3. Screen-reader review; runs measured in days.
 
 ## Boundaries preserved

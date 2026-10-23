@@ -679,7 +679,7 @@ kbd{display:inline-block;min-width:24px;padding:4px 6px;border:1px solid var(--l
 .sim-tag{margin-left:6px;padding:1px 6px;border:1px solid var(--line-strong);font:600 9px/1.4 var(--mono);font-style:normal;letter-spacing:.08em;text-transform:uppercase;vertical-align:middle}
 .sim-note{color:var(--warn)}
 
-/* Thirteen checks and fifteen fixes: the fixes sit under the live map in a grid, and each check is one compact row
+/* Thirteen checks and sixteen fixes: the fixes sit under the live map in a grid, and each check is one compact row
    with its result beside the title, so the inspector is no longer twice the height of the map. */
 .fleet-panel .recovery-box{border-top:1px solid var(--line)}
 .fleet-panel .remedies{grid-template-columns:repeat(auto-fill,minmax(190px,1fr))}
@@ -697,3 +697,5 @@ kbd{display:inline-block;min-width:24px;padding:4px 6px;border:1px solid var(--l
 .remedies .remedy-resolver:not(:disabled){background:#2e7d32;border-color:#2e7d32;box-shadow:5px 5px 0 rgba(46,125,50,.22)}
 .remedies .remedy-transfer:not(:disabled){background:#455a64;border-color:#455a64;box-shadow:5px 5px 0 rgba(69,90,100,.22)}
 .remedies .remedy-route:not(:disabled){background:#6a1b9a;border-color:#6a1b9a;box-shadow:5px 5px 0 rgba(106,27,154,.22)}
+.remedies .remedy-resync:not(:disabled){background:#6a1b9a;border-color:#6a1b9a;box-shadow:5px 5px 0 rgba(106,27,154,.22)}
+.waterfall-head.clock-off{color:var(--bad);font-weight:600}

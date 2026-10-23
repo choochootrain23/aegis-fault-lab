@@ -43,7 +43,7 @@ FAULTS = {'service-unavailable': ('stop', 'start'), 'cpu-starvation': ('burn', '
           'quota-zero': ('squeeze', 'requota'), 'bad-release': ('ship', 'rollback'), 'memory-leak': ('leak', 'rollback'),
           'traffic-flood': ('flood', 'ratelimit'), 'retry-storm': ('storm', 'shed'), 'power-loss': ('trip', 'breaker'),
           'thermal-throttle': ('heat', 'uncap'), 'dns-failure': ('repoint', 'resolver'), 'brownout': ('sag', 'transfer'),
-          'partition': ('isolate', 'route')}
+          'partition': ('isolate', 'route'), 'clock-skew': ('skew', 'resync')}
 # The facility layer is simulated: containers have no power supply, so racks, PDUs and breakers are modelled here and
 # every facility record says simulated. The effects on the services are real: a tripped breaker stops the containers
 # it feeds through the broker, and they cannot be started until the breaker is reset.
@@ -70,11 +70,12 @@ ROLLOUT_BACKOFF_CYCLES = 3  # health cycles (6 s) a crashed service stays down b
 # Faults that only exist on some services; every other fault can target any of the three.
 FAULT_TARGETS = {'quota-zero': ('catalog-b',), 'traffic-flood': ('catalog-b',), 'retry-storm': ('gateway-a', 'gateway-c'), 'power-loss': ('catalog-b',), 'thermal-throttle': ('catalog-b',),
                  'dns-failure': ('gateway-a', 'gateway-c'), 'brownout': ('gateway-c',),
-                 'partition': ('gateway-a', 'gateway-c')}
+                 'partition': ('gateway-a', 'gateway-c'),
+                 'clock-skew': ('gateway-a', 'gateway-c')}
 # Steps a reset must take before starting the services, rather than reapplying the remedy afterwards.
 RESET_FIRST = {'power-loss': ('breaker',), 'thermal-throttle': ('uncap',), 'brownout': ('transfer',)}
 REMEDIES = {remedy for _, remedy in FAULTS.values()}
-NODE_VERBS = {'fill', 'clear', 'burn', 'calm', 'drift', 'restore', 'squeeze', 'requota', 'ship', 'leak', 'ratelimit', 'shed', 'unshed', 'repoint', 'resolver'}  # applied through the service's token-protected maintenance endpoint
+NODE_VERBS = {'fill', 'clear', 'burn', 'calm', 'drift', 'restore', 'squeeze', 'requota', 'ship', 'leak', 'ratelimit', 'shed', 'unshed', 'repoint', 'resolver', 'skew', 'resync'}  # applied through the service's token-protected maintenance endpoint
 DETECT_FAILING = 3     # failing cycles among the last DETECT_WINDOW that open an investigation
 DETECT_WINDOW = 5
 VERIFY_STREAK = 3      # consecutive healthy cycles that verify recovery or reset
@@ -96,7 +97,8 @@ UNCHANGED = {'start': 'Already running; nothing changed', 'stop': 'Already stopp
              'heat': 'Cooling already failed; nothing changed', 'daytime': 'Users already running; nothing changed',
              'resolver': 'Resolver already uses the nameserver it was deployed with; nothing changed', 'repoint': 'Resolver already repointed; nothing changed',
              'transfer': 'This service\'s rack already runs on a healthy feed; nothing changed', 'sag': 'Feed already sagging; nothing changed',
-             'route': 'No partition rule on this service; nothing changed', 'isolate': 'Partition rule already present; nothing changed'}
+             'route': 'No partition rule on this service; nothing changed', 'isolate': 'Partition rule already present; nothing changed',
+             'resync': 'Clock already in step with the host; nothing changed', 'skew': 'Clock already stepped; nothing changed'}
 DEBRIEFS = {
     'service-unavailable': 'The scenario requested stopping {target}. When that succeeds, its container state reads stopped and its own probes fail. When the catalogue stops, both gateways stay live but their business requests fail, so the failure spreads; once their cached answer expires they cannot even resolve its name, because Docker\'s resolver drops the name of a stopped container, which looks like a DNS fault until the catalogue is checked; when one gateway stops, the catalogue and the other gateway stay healthy, so it does not. Starting the stopped service restores the request path.',
     'cpu-starvation': 'The scenario requested a runaway background job inside {target}. When that succeeds, the service keeps running and answering, but slowly: the job uses the container\'s whole 0.25-CPU limit, the kernel throttles it, and requests queue behind it, crossing the {slow} ms threshold. Its log records the job starting. A slow catalogue makes both gateways slow, and sometimes time out, too. Stopping the job returns normal latency.',
@@ -110,6 +112,7 @@ DEBRIEFS = {
     'retry-storm': 'The scenario requested app users, 60 a second through {target}, whose app retries a failed request at once up to three times, and then a short index compaction that took the catalogue\'s whole CPU for 8 seconds. The compaction made requests time out; every timeout became up to four attempts; the extra attempts overloaded {target}, so its requests kept failing after the compaction had ended. That is a metastable failure: the overload outlives its cause, and it sits in a different service from the trigger. The other gateway recovers as soon as the compaction ends. Nothing is broken, stopped or misconfigured, and no unknown caller floods anything, so restarting, stopping a job or rate-limiting a client changes nothing. Resource use shows {target} at its CPU limit while the catalogue is idle, and its traffic shows most requests are retries. Enabling load shedding on {target} caps the requests it keeps in flight and turns the rest away at once, so the ones it accepts finish in time, users stop retrying, and the load falls back to normal.',
     'thermal-throttle': 'The scenario requested a simulated failure of cooling unit CRAC-2, which raised the inlet temperature of both racks to 38 °C; the facility responded with a power cap that lowered every container\'s CPU limit from 0.25 to 0.05, and steady daytime users, 32 a second through each gateway, kept the services busy. The facility layer is simulated, but the cap and the users were real. A CPU cap alone barely slows these light requests; under load it does. The gateways, which do the most work per request, ran out first: both turned slow even to liveness checks and failed most business requests, while the catalogue\'s simple answers stayed fast. Resource use showed each gateway throttled against a limit far below its deployed 0.25, which looks like CPU starvation, but there is no job to stop and no caller to limit. The facility check showed the failed cooling unit, the hot inlet and the active cap. Lifting the cap while the room is still hot is refused, as a facilities team would refuse it; once cooling recovered after about 75 seconds, lifting the power cap restored normal latency.',
     'power-loss': 'The scenario requested a simulated breaker trip on PDU-A, the power distribution unit feeding rack R1, where {target} and gateway-a are installed. The facility layer is simulated, but its effect was real: both containers were stopped, as servers are when their power is cut, and neither can be started while the breaker is open. Two services failed at the same moment, which on its own could look like two separate faults; what they share is not software but a power feed. gateway-c, on PDU-B, kept running, but its business requests fail because the catalogue is down. Starting either service reports no power and changes nothing. The facility check shows the open breaker, the rack and every service it feeds. Resetting the breaker restores power and starts the rack\'s services, the catalogue first because the gateways depend on it.',
+    'clock-skew': 'The scenario requested a time daemon on {target} stepping its clock 300 seconds ahead after it selected a bad time source. Containers share the host kernel\'s clock, and moving it would need CAP_SYS_TIME and would move the host, so the lab offsets the gateway process\'s own clock instead; everything it reports or signs with a time used the skewed clock, while deadlines were still measured on the shared kernel clock, as a relative time budget would be. Each call from a gateway to the catalogue carries a timestamp and an HMAC signature, and the catalogue refuses a timestamp more than 30 seconds from its own clock, so a replayed request cannot be used later. Once the clock jumped, every request from {target} was refused with HTTP 401 (RequestExpired), naming a timestamp 300 seconds ahead. The process, its CPU, disk, network, release and running config were all normal, and the catalogue and the other gateway stayed healthy. A 401 is not a 429: no quota was involved, so resetting quotas changed nothing, and rolling back or restoring config changed nothing because neither had changed. The catalogue\'s log and traffic recorded the rejected signatures and the skew it saw, the gateway\'s own log entries carried times in the future, and the network path check showed the gateway\'s clock 300 seconds ahead of the controller\'s and its time source. Resynchronising the clock fixed it at once; in the lab, restarting the gateway also did, because the offset lived in its process.',
     'brownout': 'The scenario requested a simulated brownout on utility feed A to PDU-B, the power distribution unit feeding rack R2, where {target} is installed: the voltage sagged to about 186 V, below the 200 V its power supply tolerates. The facility layer is simulated, but its effect was real: whenever the voltage dipped, the server lost power, so the lab stopped the container, rebooted it a few seconds later, and stopped it again about ten seconds after that. A container has no power supply to lose, so it was stopped cleanly (exit code 0). The service crash-looped like a memory leak, but memory stayed flat, there was no out-of-memory kill and the release had not changed, so rolling back changed nothing; starting it only lasted until the next dip, and the breaker was closed, so resetting it changed nothing. The catalogue and gateway-a, on PDU-A, stayed healthy. The facility check showed feed A sagging, the redundant feed B normal, and a power-supply dropout at every restart. Moving the rack to the redundant feed ended the dropouts, and recovery had to hold for ten healthy cycles because the failures had come and gone.',
     'dns-failure': 'The scenario requested a node-settings sync that pointed {target}\'s resolver at 127.0.0.53, the address of systemd-resolved\'s stub on an ordinary Linux host. That setting is easily copied from a host image, but nothing listens there inside a container, so every DNS query is refused. The gateway resolves the catalogue\'s name with real DNS queries and caches each answer for 5 seconds, so it kept working until the cached answer expired, then failed every business request with a name resolution error. Its process, CPU, disk, release and running config were all normal, and the catalogue and the other gateway stayed healthy. A failing call to the catalogue looks like a stopped catalogue, or like config drift, which also breaks the upstream address; but the catalogue answered its own checks, the config matched what was deployed, and the network path check showed the lookup refused by 127.0.0.53 while a TCP connection to the catalogue\'s last known address still succeeded. Restoring the resolver fixed it at once; restarting the catalogue or restoring config changed nothing.',
     'partition': 'The scenario requested a partial network partition: a filter on {target}\'s own network interface that drops every packet addressed to the catalogue, and nothing else, applied by a short-lived broker helper with only NET_ADMIN, as a bad firewall or routing change would. When that succeeds, {target} stays live, its CPU, disk, config and release are normal, and its resolver still finds the catalogue\'s name, but every connection to the catalogue\'s address goes unanswered, so its business requests time out after 1 second. The catalogue answers its own checks quickly and the other gateway reaches it without trouble, so the catalogue is not down; only one path is cut. That looks like a stopped catalogue from {target}\'s side, like packet loss because requests time out, or like a DNS failure; but there is no netem queue, the name resolves, and the loss is total and to one destination. The network path check on {target} shows the drop filter under a prio queue and a TCP connection to the catalogue\'s address timing out. Restoring the route removes the filter; restarting the catalogue, removing packet loss or restoring the resolver changes nothing.',
@@ -123,7 +126,7 @@ def debrief(s):
 
 
 FaultKind = Literal['service-unavailable', 'cpu-starvation', 'disk-full', 'config-drift', 'network-delay', 'packet-loss', 'quota-zero', 'bad-release', 'memory-leak',
-                    'traffic-flood', 'retry-storm', 'power-loss', 'thermal-throttle', 'dns-failure', 'brownout', 'partition']
+                    'traffic-flood', 'retry-storm', 'power-loss', 'thermal-throttle', 'dns-failure', 'brownout', 'partition', 'clock-skew']
 NodeName = Literal['gateway-a', 'catalog-b', 'gateway-c']
 CheckKind = Literal['liveness', 'readiness', 'business', 'logs', 'service', 'resources', 'disk', 'config', 'trace', 'network', 'traffic', 'releases', 'memory',
                     'facility']
@@ -155,7 +158,7 @@ class Action(SessionInput):
 
 
 class Recover(Action):
-    verb: Literal['start', 'calm', 'clear', 'restore', 'undelay', 'undrop', 'requota', 'rollback', 'ratelimit', 'shed', 'breaker', 'uncap', 'resolver', 'transfer', 'route'] = 'start'
+    verb: Literal['start', 'calm', 'clear', 'restore', 'undelay', 'undrop', 'requota', 'rollback', 'ratelimit', 'shed', 'breaker', 'uncap', 'resolver', 'transfer', 'route', 'resync'] = 'start'
 
 
 class Note(SessionInput):
@@ -292,13 +295,29 @@ class Lab:
                 await writer.wait_closed()
         for attempt in range(2):  # a lossy service's reply can need one more try
             try:
+                sent = time.time()
                 response = await self.client.get(self.nodes[node] + '/diagnostics/network', headers=probe_headers(8), timeout=8)
+                received = time.time()
                 break
             except httpx.TimeoutException:
                 if attempt:
                     raise
-        return {'ok': response.is_success, 'http_status': response.status_code, 'connect_ms': samples, 'connect_timeouts': timeouts,
-                'median_connect_ms': sorted(samples)[1], 'result': response.json()}
+        result = response.json()
+        body = {'ok': response.is_success, 'http_status': response.status_code, 'connect_ms': samples, 'connect_timeouts': timeouts,
+                'median_connect_ms': sorted(samples)[1], 'result': result}
+        # The service's clock against the controller's, estimated as NTP does: its reading against the midpoint of the request.
+        reported = (result.get('clock') or {}).get('now') if isinstance(result, dict) else None
+        if isinstance(reported, (int, float)):
+            body['clock_offset_s'] = round(reported - (sent + received) / 2, 2)
+        return body
+
+    async def signing_enabled(self):
+        """Whether the catalogue requires signed requests, from its own traffic report; the controller never holds the key."""
+        try:
+            response = await self.client.get(self.nodes['catalog-b'] + CHECKS['traffic'], headers=probe_headers(3), timeout=3)
+            return bool(((response.json() or {}).get('signing') or {}).get('enabled'))
+        except (httpx.HTTPError, ValueError, AttributeError):
+            return False
 
     async def memory(self, node):
         """How the container last exited (from Docker, through the broker) and, while it runs, its memory trend."""
@@ -740,7 +759,10 @@ class Lab:
             self.admission()
             if not self.fleet_token and (data.mode == 'challenge' or FAULTS[data.kind][0] in NODE_VERBS | CLIENT_VERBS):
                 raise HTTPException(409, 'This scenario needs AEGIS_FLEET_TOKEN. Run scripts/init_env.py, then docker compose up -d.')
-            kind = secrets.choice(list(FAULTS)) if data.mode == 'challenge' else data.kind
+            signing = await self.signing_enabled()
+            if data.mode == 'practice' and data.kind == 'clock-skew' and not signing:
+                raise HTTPException(409, 'This scenario needs request signing. Run scripts/init_env.py to add AEGIS_SIGNING_KEY, then docker compose up -d.')
+            kind = secrets.choice([k for k in FAULTS if signing or k != 'clock-skew']) if data.mode == 'challenge' else data.kind
             target = secrets.choice(list(FAULT_TARGETS.get(kind, self.nodes))) if data.mode == 'challenge' else data.target
             if target not in FAULT_TARGETS.get(kind, self.nodes):
                 raise HTTPException(422, 'This fault only applies to ' + ' or '.join(FAULT_TARGETS[kind]))

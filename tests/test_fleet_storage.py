@@ -321,7 +321,7 @@ def test_only_a_gateway_has_a_resolver_to_repoint(service):
 
 def test_the_compaction_logs_its_start_and_its_end(service, monkeypatch):
     import time
-    monkeypatch.setattr(fleet, 'HICCUP_S', 1.0)
+    monkeypatch.setattr(fleet, 'HICCUP_S', 1.0)  # long enough to still run when the second request arrives, even on a cold start
     assert service('POST', '/maintenance/hiccup', headers=TOKEN).json() == {'changed': True, 'seconds': 1.0}
     assert service('POST', '/maintenance/hiccup', headers=TOKEN).json()['changed'] is False  # one at a time
     for _ in range(100):

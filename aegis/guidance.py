@@ -37,6 +37,13 @@ def explain(latest, level, now=None):
         elif live['body']['ok'] and not business['body']['ok'] and result.get('upstream_status') == 500 and result.get('upstream_error') == 'TypeError':
             message = f'{g} is live, but the catalogue answered its request with HTTP 500 from an error in its own code (TypeError). The catalogue is reachable but its code is failing; compare its release history with its running config to see what changed.'
             suggested = {'node':'catalog-b','kind':'releases'}
+        elif live['body']['ok'] and not business['body']['ok'] and result.get('upstream_status') == 401:
+            message = (f"{g} is live, but the catalogue refused its request with HTTP 401 ({result.get('upstream_error') or 'unauthorised'}"
+                       + (f": {result['upstream_detail']}" if result.get('upstream_detail') else '') + "). "
+                       + ("A signed request whose timestamp is too far from the catalogue's clock is refused, so a replayed one cannot be used later: one of the two clocks is wrong. "
+                          f"Compare {g}'s clock with the others in its network path check." if result.get('upstream_error') == 'RequestExpired'
+                          else f"The catalogue does not accept {g}'s proof of identity; compare its running config and release with the other gateway's."))
+            suggested = {'node':g,'kind':'network'} if result.get('upstream_error') == 'RequestExpired' else {'node':g,'kind':'config'}
         elif live['body']['ok'] and not business['body']['ok'] and result.get('upstream_status') == 429:
             message = f'{g} is live, but the catalogue refused its request with HTTP 429 (too many requests: {result.get("upstream_error") or "quota exceeded"}). The catalogue is up and answering; it is rejecting this caller. Its own health checks may still pass, because they come from a different caller. Check the catalogue\'s traffic and quotas.'
             suggested = {'node':'catalog-b','kind':'traffic'}
@@ -128,6 +135,7 @@ def started_seconds_before(body, at):
 
 
 DEPLOYED_CPU = 0.25  # every service's deployed CPU limit
+CLOCK_TOLERANCE_S = 5  # a measured clock offset beyond this, between machines that should share a time source, is wrong
 HEAVY_RPS = 20  # a caller without a quota sending more than this a second, now, is flooding a service this small
 
 
@@ -250,6 +258,11 @@ def remedy(fresh):
                     if probe.get('ok') is False and probe.get('address') else '')
             action = (f"Traffic leaving {node} passes a filter that drops every packet to {cut['dst']}, the address its upstream resolves to, and nothing else.{seen} "
                       "The catalogue itself is not down; only this path is cut. You can try restoring the route, then verify business requests succeed again.")
+        elif kind == 'network' and abs(body.get('clock_offset_s') or 0) > CLOCK_TOLERANCE_S:
+            source = ((body.get('result') or {}).get('clock') or {}).get('source')
+            action = (f"The network path check shows {node}'s clock {body['clock_offset_s']:+g} s from the controller's"
+                      + (f", set by {source}" if source else '') + ". Signed requests carry its time, and the catalogue refuses a timestamp more than 30 s from its own. "
+                      "You can try resynchronising its clock, then verify business requests succeed again.")
         elif kind == 'network' and resolver_broken((body.get('result') or {}).get('dns')):
             dns = body['result']['dns']
             reachable = (f" A TCP connection to its last known address, {dns['last_good_address']}, took {dns['connect_last_good_ms']:g} ms, so the service itself is reachable; only the name fails."

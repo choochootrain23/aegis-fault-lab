@@ -23,6 +23,7 @@ class Fleet:
         self.squeezed = {'gateway-a': False, 'catalog-b': False, 'gateway-c': False}  # only the catalogue has quotas
         self.unresolved = {'gateway-a': False, 'catalog-b': False, 'gateway-c': False}  # a gateway's resolver repointed
         self.partitioned = {'gateway-a': False, 'catalog-b': False, 'gateway-c': False}  # a gateway's path to the catalogue cut
+        self.skewed = {'gateway-a': False, 'catalog-b': False, 'gateway-c': False}  # a gateway's clock stepped ahead
         self.loss_tick = 0  # a lossy path repeats three failing cycles, then two working ones
         self.version = {'gateway-a': 'v1.4.2', 'catalog-b': 'v1.4.2', 'gateway-c': 'v1.4.2'}
         self.leaking = {'gateway-a': 0, 'catalog-b': 0, 'gateway-c': 0}  # probes since the leaky build started; 0 when not leaking
@@ -129,9 +130,11 @@ class Fleet:
                     self.mutations.append((node, verb))
                 return httpx.Response(200, json={'changed': changed, 'version': self.version[node]})
             state = {'fill': self.full, 'clear': self.full, 'burn': self.busy, 'calm': self.busy, 'drift': self.drifted, 'restore': self.drifted,
-                     'squeeze': self.squeezed, 'requota': self.squeezed, 'repoint': self.unresolved, 'resolver': self.unresolved}[verb]
-            on = verb in ('fill', 'burn', 'drift', 'squeeze', 'repoint')
-            changed = state[node] != on and (state is not self.squeezed or node == 'catalog-b') and (state is not self.unresolved or node.startswith('gateway'))
+                     'squeeze': self.squeezed, 'requota': self.squeezed, 'repoint': self.unresolved, 'resolver': self.unresolved,
+                     'skew': self.skewed, 'resync': self.skewed}[verb]
+            on = verb in ('fill', 'burn', 'drift', 'squeeze', 'repoint', 'skew')
+            changed = (state[node] != on and (state is not self.squeezed or node == 'catalog-b')
+                       and (all(state is not gateway_only for gateway_only in (self.unresolved, self.skewed)) or node.startswith('gateway')))
             if changed:
                 state[node] = on
             if changed:
@@ -173,7 +176,8 @@ class Fleet:
                 queue = {'kind': 'prio', 'dev': 'eth0', 'root': True, 'delay_ms': None, 'loss_pct': None}
                 dns.update(filters=[{'kind': 'u32', 'dst': '172.18.0.4/32', 'action': 'drop'}],
                            upstream_connect={'name': 'catalog-b', 'address': '172.18.0.4', 'port': 8000, 'ok': False, 'error': 'TimeoutError', 'waited_ms': 1000.0})
-            return httpx.Response(200, json={'available': True, 'qdiscs': [queue], 'tcp': {'available': True, 'retrans_pct': 25.0 if self.lossy[node] else 0.0}, **dns})
+            clock = {'now': time.time() + (300 if self.skewed[node] else 0), 'source': 'time daemon, peer 10.20.0.7 (falseticker)' if self.skewed[node] else 'host kernel clock'}
+            return httpx.Response(200, json={'available': True, 'qdiscs': [queue], 'tcp': {'available': True, 'retrans_pct': 25.0 if self.lossy[node] else 0.0}, **dns, 'clock': clock})
         if path == '/diagnostics/traffic':
             quotas = [{'client': g, 'limit_rps': 0 if self.squeezed[node] else 100, 'deployed_rps': 100, 'changed': self.squeezed[node]}
                       for g in ('gateway-a', 'gateway-c')] if node == 'catalog-b' else []
@@ -185,7 +189,7 @@ class Fleet:
                                    'rejected': 2 if self.rate_limited else 0, 'errors': 0})
                 if self.rate_limited:
                     quotas.append({'client': 'report-exporter', 'limit_rps': 2, 'deployed_rps': None, 'changed': True})
-            return httpx.Response(200, json={'window_s': 60, 'clients': clients if node == 'catalog-b' or self.storming == node else [], 'quotas': quotas,
+            return httpx.Response(200, json={'window_s': 60, 'clients': clients if node == 'catalog-b' or self.storming == node else [], 'quotas': quotas, 'signing': {'enabled': True},
                                              'quota_source': {'pushed_by': 'quota-manager' if self.squeezed[node] else 'deployment'} if node == 'catalog-b' else None})
         if path == '/summary' and node.startswith('gateway') and (self.lossy['catalog-b'] or self.lossy[node]):
             self.loss_tick += 1
@@ -206,6 +210,9 @@ class Fleet:
             return httpx.Response(507, json={'ok': False, 'errno': 'ENOSPC'})
         if self.partitioned[node] and path == '/summary':
             return httpx.Response(503, json={'ok': False, 'dependency': 'catalog-b', 'error': 'ConnectTimeout'})
+        if self.skewed[node] and path == '/summary':
+            return httpx.Response(503, json={'ok': False, 'error': 'HTTPStatusError', 'upstream_status': 401, 'upstream_error': 'RequestExpired',
+                                             'upstream_detail': 'timestamp +300.0 s from the catalogue clock; allowed ±30 s'})
         if self.unresolved[node] and path == '/summary':
             return httpx.Response(503, json={'ok': False, 'error': 'NameResolutionError', 'detail': 'catalog-b: connection refused by nameserver 127.0.0.53'})
         if self.drifted[node]:
@@ -607,10 +614,10 @@ def test_challenge_hides_fault_kind_and_target(lab):
             await controller.reset_locked(f'reset-kind-{attempt:03d}')
             for _ in range(3):
                 await controller.cycle()
-            if len(seen) == 16:
+            if len(seen) == 17:
                 break
         assert seen == {'service-unavailable', 'cpu-starvation', 'disk-full', 'config-drift', 'network-delay', 'packet-loss', 'quota-zero',
-                        'bad-release', 'memory-leak', 'traffic-flood', 'retry-storm', 'power-loss', 'thermal-throttle', 'dns-failure', 'brownout', 'partition'}
+                        'bad-release', 'memory-leak', 'traffic-flood', 'retry-storm', 'power-loss', 'thermal-throttle', 'dns-failure', 'brownout', 'partition', 'clock-skew'}
     run(scenario())
 
 
@@ -894,6 +901,52 @@ def test_dns_failure_is_gateway_only_and_restoring_the_resolver_recovers(lab):
         await verify(controller, 'resolver', 'gateway-c', 'resolver')
         assert controller.session['status'] == 'recovered' and not fleet.unresolved['gateway-c']
         assert '127.0.0.53' in controller.public_session(controller.session | {'revealed': True})['debrief']
+    run(scenario())
+
+
+def test_clock_skew_is_refused_by_the_catalogue_and_only_resync_recovers(lab):
+    async def scenario():
+        controller, fleet = lab
+        async def connect(host, port):
+            return None, Writer()
+        controller.connect = connect
+        await baseline(controller)
+        with pytest.raises(HTTPException) as refused:
+            await controller.start(Start(mode='practice', kind='clock-skew', target='catalog-b', key='start-skew-catalogue'))
+        assert refused.value.status_code == 422
+        await controller.start(Start(mode='practice', kind='clock-skew', target='gateway-a', key='start-skew'))
+        assert fleet.skewed['gateway-a']
+        assert await investigate(controller) == {'gateway-a': 'degraded', 'catalog-b': 'healthy', 'gateway-c': 'healthy'}
+        result = controller.latest[('gateway-a', 'business')]['body']['result']
+        assert result['upstream_status'] == 401 and result['upstream_error'] == 'RequestExpired'
+        network = await controller.check('gateway-a', 'network')
+        assert 299 < network['body']['clock_offset_s'] < 301
+        assert abs((await controller.check('gateway-c', 'network'))['body']['clock_offset_s']) < 1
+        for node, verb in (('gateway-a', 'rollback'), ('gateway-a', 'restore'), ('gateway-a', 'requota'), ('gateway-c', 'resync'), ('catalog-b', 'resync')):
+            assert (await controller.mutate(f'wrong-skew-{node}-{verb}', node, verb))['status'] == 'unchanged', (node, verb)
+        await verify(controller, 'resync', 'gateway-a', 'resync')
+        assert controller.session['status'] == 'recovered' and not fleet.skewed['gateway-a']
+        assert '300 seconds ahead' in controller.public_session(controller.session | {'revealed': True})['debrief']
+    run(scenario())
+
+
+def test_clock_skew_needs_request_signing(lab):
+    async def scenario():
+        controller, fleet = lab
+        original = fleet.handle
+
+        def unsigned(request):
+            response = original(request)
+            if request.url.path == '/diagnostics/traffic':
+                body = response.json()
+                body['signing'] = {'enabled': False}
+                return httpx.Response(200, json=body)
+            return response
+        controller.client._transport = httpx.MockTransport(unsigned)
+        await baseline(controller)
+        with pytest.raises(HTTPException) as refused:
+            await controller.start(Start(mode='practice', kind='clock-skew', target='gateway-a', key='start-skew-unsigned'))
+        assert refused.value.status_code == 409 and 'AEGIS_SIGNING_KEY' in refused.value.detail
     run(scenario())
 
 

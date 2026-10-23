@@ -142,6 +142,14 @@ export function run(){
     assert.deepEqual([...view.faultTargets('partition')],['gateway-a','gateway-c']);assert.equal(view.remedyLabel('route'),'Restore route');
     assert.equal(view.scenarioCopy('partition','gateway-a','practice').number,'16');
   });
+  check('A clock far from the controller reads as a network failure and clock skew is gateway-only',()=>{
+    const skewed={kind:'network',body:{ok:true,median_connect_ms:0.4,clock_offset_s:300.02,result:{qdiscs:[],clock:{source:'time daemon, peer 10.20.0.7 (falseticker)'}}}};
+    const result=view.evidenceResult(skewed);
+    assert.equal(result.tone,'red');assert.match(result.text,/clock \+300.02 s off/);assert.match(view.checkSummary(skewed).text,/clock off/);
+    assert.equal(view.evidenceResult({kind:'network',body:{ok:true,median_connect_ms:0.4,clock_offset_s:0.3,result:{qdiscs:[]}}}).tone,'green');
+    assert.deepEqual([...view.faultTargets('clock-skew')],['gateway-a','gateway-c']);assert.equal(view.remedyLabel('resync'),'Resync clock');
+    assert.equal(view.faultLabel('clock-skew'),'Clock skew');assert.equal(view.scenarioCopy('clock-skew','gateway-a','practice').number,'17');
+  });
   return {passed,scope:'Pure UI state and timer decisions; frontend JavaScript parsed. No visual/browser validation.'};
 }
 if(typeof process!=='undefined' && process.argv[1] && import.meta.url===new URL('file://'+process.argv[1]).href) console.log(run());

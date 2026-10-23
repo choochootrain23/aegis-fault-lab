@@ -6,7 +6,7 @@ import os
 import secrets
 from pathlib import Path
 
-KEYS = ('AEGIS_BROKER_TOKEN', 'AEGIS_FLEET_TOKEN')
+KEYS = ('AEGIS_BROKER_TOKEN', 'AEGIS_FLEET_TOKEN', 'AEGIS_SIGNING_KEY')  # the signing key is shared by the catalogue and the gateways only
 path = Path(__file__).resolve().parents[1] / '.env'
 fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_APPEND, 0o600)
 with os.fdopen(fd, 'r+') as f:

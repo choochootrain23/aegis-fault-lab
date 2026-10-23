@@ -29,7 +29,8 @@ globalThis.AegisView = Object.freeze({
       const dns=body.result?.dns, lookup=dns&&dns.ok===false?` · cannot resolve ${dns.name}${dns.changed?` (resolver ${dns.nameserver})`:''}`:'';
       const cut=(body.result?.filters||[]).find(f=>f.action==='drop'), dropped=cut?` · filter dropping all traffic to ${cut.dst}`:'';
       const probe=body.result?.upstream_connect, unreachable=!lookup&&probe&&probe.ok===false&&probe.address?` · ${probe.name} unreachable (${probe.error})`:'';
-      return {text:`Network · connect ${body.median_connect_ms} ms${shaped}${dropped}${retrans}${lookup}${unreachable}`,tone:netem||cut||lookup||unreachable||body.median_connect_ms>100||resent>=10?'red':body.median_connect_ms>20||resent>=1?'amber':'green'};
+      const offset=body.clock_offset_s, skewed=Math.abs(offset||0)>5, clock=skewed?` · clock ${offset>0?'+':''}${offset} s off`:'';
+      return {text:`Network · connect ${body.median_connect_ms} ms${shaped}${dropped}${retrans}${lookup}${unreachable}${clock}`,tone:netem||cut||lookup||unreachable||skewed||body.median_connect_ms>100||resent>=10?'red':body.median_connect_ms>20||resent>=1?'amber':'green'};
     }
     if(record.kind==='facility'){
       const feed=body.feeds?.[body.active_feed||'A'];
@@ -81,20 +82,20 @@ globalThis.AegisView = Object.freeze({
     return value>=1048576?`${(value/1048576).toFixed(1)} MiB`:value>=1024?`${Math.round(value/1024)} KiB`:`${value} B`;
   },
   remedyLabel(verb) {
-    return ({start:'Start service',calm:'Stop runaway job',clear:'Clear temp files',restore:'Restore config',undelay:'Remove traffic delay',undrop:'Remove packet loss',requota:'Reset client quotas',rollback:'Roll back release',ratelimit:'Rate-limit top client',shed:'Enable load shedding',breaker:'Reset breaker',uncap:'Lift power cap',resolver:'Restore resolver',transfer:'Move to redundant feed',route:'Restore route'})[verb]||verb;
+    return ({start:'Start service',calm:'Stop runaway job',clear:'Clear temp files',restore:'Restore config',undelay:'Remove traffic delay',undrop:'Remove packet loss',requota:'Reset client quotas',rollback:'Roll back release',ratelimit:'Rate-limit top client',shed:'Enable load shedding',breaker:'Reset breaker',uncap:'Lift power cap',resolver:'Restore resolver',transfer:'Move to redundant feed',route:'Restore route',resync:'Resync clock'})[verb]||verb;
   },
   faultLabel(kind) {
-    return ({'service-unavailable':'Stopped service','cpu-starvation':'CPU starvation','disk-full':'Disk full','config-drift':'Config drift','network-delay':'Network delay','packet-loss':'Packet loss','quota-zero':'Quota set to zero','bad-release':'Bad release','memory-leak':'Memory leak','traffic-flood':'Traffic flood','retry-storm':'Retry storm','power-loss':'Rack power loss','thermal-throttle':'Thermal throttling','dns-failure':'DNS failure','brownout':'Brownout','partition':'Partial partition'})[kind]||kind;
+    return ({'service-unavailable':'Stopped service','cpu-starvation':'CPU starvation','disk-full':'Disk full','config-drift':'Config drift','network-delay':'Network delay','packet-loss':'Packet loss','quota-zero':'Quota set to zero','bad-release':'Bad release','memory-leak':'Memory leak','traffic-flood':'Traffic flood','retry-storm':'Retry storm','power-loss':'Rack power loss','thermal-throttle':'Thermal throttling','dns-failure':'DNS failure','brownout':'Brownout','partition':'Partial partition','clock-skew':'Clock skew'})[kind]||kind;
   },
   // The services a fault can target, when it cannot target all three.
   faultTargets(kind) {
-    return ({'quota-zero':['catalog-b'],'traffic-flood':['catalog-b'],'retry-storm':['gateway-a','gateway-c'],'power-loss':['catalog-b'],'thermal-throttle':['catalog-b'],'dns-failure':['gateway-a','gateway-c'],'brownout':['gateway-c'],'partition':['gateway-a','gateway-c']})[kind]||null;
+    return ({'quota-zero':['catalog-b'],'traffic-flood':['catalog-b'],'retry-storm':['gateway-a','gateway-c'],'power-loss':['catalog-b'],'thermal-throttle':['catalog-b'],'dns-failure':['gateway-a','gateway-c'],'brownout':['gateway-c'],'partition':['gateway-a','gateway-c'],'clock-skew':['gateway-a','gateway-c']})[kind]||null;
   },
   // Scenario heading: the selected fault and target, the running practice scenario, or a hidden challenge.
   scenarioCopy(kind, target, mode) {
     if (mode==='challenge') return {number:'??', eyebrow:'Challenge · hidden fault', title:['A ','hidden',' fault'],
-      text:'One of sixteen faults on one of the three services, picked at random and kept secret. Find it from the evidence, fix it, then reveal it to check.'};
-    const kinds=['service-unavailable','cpu-starvation','disk-full','config-drift','network-delay','packet-loss','quota-zero','bad-release','memory-leak','traffic-flood','retry-storm','power-loss','thermal-throttle','dns-failure','brownout','partition'];
+      text:'One of seventeen faults on one of the three services, picked at random and kept secret. Find it from the evidence, fix it, then reveal it to check.'};
+    const kinds=['service-unavailable','cpu-starvation','disk-full','config-drift','network-delay','packet-loss','quota-zero','bad-release','memory-leak','traffic-flood','retry-storm','power-loss','thermal-throttle','dns-failure','brownout','partition','clock-skew'];
     const copy={
       'service-unavailable':{title:['When a service ','stops',''], text:'Its container is stopped, so its own checks fail.'},
       'cpu-starvation':{title:['When a service is ','starved',' of CPU'], text:'A runaway job uses its whole CPU limit. It still answers, just slowly.'},
@@ -105,6 +106,7 @@ globalThis.AegisView = Object.freeze({
       'quota-zero':{title:['When the quota ','hits zero',''], text:'A quota push lets the gateways make zero requests. The catalogue is up, fast and green to its own probes.'},
       'bad-release':{title:['When a release ','ships a bug',''], text:'A new version fails about half its requests. The machine is fine and the config unchanged; only the code moved.'},
       'partition':{title:['When one path ','is cut',''], text:'A filter on the gateway drops every packet to the catalogue, and nothing else. The catalogue is up and the other gateway reaches it; this one cannot.'},
+      'clock-skew':{title:['When the clock ','jumps',''], text:'A time daemon steps the gateway\'s clock five minutes ahead. Its signed requests now look stale to the catalogue, which refuses them; nothing else about the service changed.'},
       'brownout':{title:['When the power ','sags',''], text:'The utility feed to rack R2 sags below what its power supply needs. The server keeps dropping out and rebooting, with nothing wrong in its software. The facility layer is simulated; the restarts are real.'},
       'dns-failure':{title:['When a name ','stops resolving',''], text:'A settings sync points the gateway\'s resolver at a nameserver that is not there. The catalogue is up and reachable, but the gateway can no longer find it by name.'},
       'thermal-throttle':{title:['When the room ','overheats',''], text:'A cooling unit fails and the facility caps every server\'s power. Under daytime traffic, everything slows at once. The facility layer is simulated; the cap and the traffic are real.'},
@@ -169,7 +171,7 @@ globalThis.AegisView = Object.freeze({
     else if(body.ok&&record.kind==='resources')outcome=body.cpu_pct_of_limit==null?'no sample':`CPU ${body.cpu_pct_of_limit}%`;
     else if(body.ok&&record.kind==='disk')outcome=`${body.result?.used_pct}% used`;
     else if(body.ok&&record.kind==='config')outcome=body.result?.drifted?.length?'drifted':'matches';
-    else if(body.ok&&record.kind==='network')outcome=`connect ${body.median_connect_ms} ms${body.result?.tcp?.retrans_pct>=1?` · ${body.result.tcp.retrans_pct}% resent`:''}${body.result?.dns?.ok===false?' · DNS failing':''}${(body.result?.filters||[]).some(f=>f.action==='drop')?' · drop filter':''}`;
+    else if(body.ok&&record.kind==='network')outcome=`connect ${body.median_connect_ms} ms${body.result?.tcp?.retrans_pct>=1?` · ${body.result.tcp.retrans_pct}% resent`:''}${body.result?.dns?.ok===false?' · DNS failing':''}${(body.result?.filters||[]).some(f=>f.action==='drop')?' · drop filter':''}${Math.abs(body.clock_offset_s||0)>5?' · clock off':''}`;
     else if(body.ok&&record.kind==='releases')outcome=body.result?.running||'read';
     else if(body.ok&&record.kind==='facility')outcome=body.breaker==='open'?'no power':body.feeds?.[body.active_feed||'A']?.status==='sagging'?'feed sagging':body.power_cap?.active?'power capped':'powered';
     else if(body.ok&&record.kind==='memory')outcome=body.running===false?(body.oom_killed?'OOM killed':'stopped'):`${body.result?.current_mib} MiB${(body.result?.growth_mib_s??0)>=1?' ↑':''}`;

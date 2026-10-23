@@ -399,3 +399,20 @@ def test_a_drop_filter_supports_restoring_the_route():
                         'upstream_connect':{'name':'catalog-b','address':'172.20.0.3','ok':False,'error':'TimeoutError'},'dns':{'name':'catalog-b','ok':True}})
     result=explain({('gateway-c','network'):network},'action',now=101)
     assert result['evidence_ids']==[network['id']] and 'restoring the route' in result['message'] and '172.20.0.3/32' in result['message']
+
+
+def test_an_expired_signature_points_at_the_gateways_clock_not_its_quota():
+    latest={('gateway-a','liveness'):observation('gateway-a','liveness'),
+            ('gateway-a','business'):observation('gateway-a','business',False,result={'upstream_status':401,'upstream_error':'RequestExpired',
+                                                                                      'upstream_detail':'timestamp +300.0 s from the catalogue clock; allowed ±30 s'})}
+    result=explain(latest,'evidence',now=101)
+    assert result['suggested_check']=={'node':'gateway-a','kind':'network'}
+    assert 'HTTP 401' in result['message'] and '+300.0 s' in result['message'] and 'clock' in result['message']
+
+
+def test_a_measured_clock_offset_supports_resync_and_a_small_one_does_not():
+    skewed=observation('gateway-a','network',clock_offset_s=300.02,result={'qdiscs':[],'clock':{'source':'time daemon, peer 10.20.0.7 (falseticker)'}})
+    result=explain({('gateway-a','network'):skewed},'action',now=101)
+    assert result['evidence_ids']==[skewed['id']] and 'resynchronising its clock' in result['message'] and 'falseticker' in result['message']
+    steady=observation('gateway-a','network',clock_offset_s=0.4,result={'qdiscs':[]})
+    assert 'No fresh inspection' in explain({('gateway-a','network'):steady},'action',now=101)['message']

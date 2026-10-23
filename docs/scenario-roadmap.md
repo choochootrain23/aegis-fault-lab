@@ -22,7 +22,7 @@ New faults modelled on the kinds of incident that public data-centre reports des
 | 6 | **Thermal throttling / power capping**: the gateways fail under a power cap while the catalogue stays fast | CPU starvation | Lift power cap, once cooling recovers | **Done** (F13), with steady user load, since a cap alone barely slows light requests |
 | 7 | **Rack power loss**: two services on one PDU stop together | Two separate stopped services | Reset breaker | **Done** (F12), with a simulated facility layer |
 | 8 | **Brownout and restart loops**: feed A to rack R2 sags, so gateway-c drops out and reboots again and again | Memory leak (memory flat here); stopped service | Move to the redundant feed | **Done** (F15), with power feeds in the facility layer |
-| 9 | **Clock skew** on one gateway: signed requests rejected | Bad release, config drift | Resync clock | Planned: needs request signing |
+| 9 | **Clock skew** on one gateway: its time daemon steps the clock 300 s ahead, and the catalogue refuses its signed requests as stale | Bad release, config drift; zero quota (401, not 429) | Resync clock | **Done** (F17), after adding request signing |
 | 10 | **DNS resolution failure** on one gateway: its resolver points at a nameserver that is not there | Stopped catalogue (it is fine, and reachable at its last known address); config drift | Restore resolver | **Done** (F14), with real DNS queries from the gateways |
 | 11 | **Partial partition**: one gateway cannot reach the catalogue | Stopped catalogue; packet loss; DNS failure | Restore route | **Done** (F16), with a new fixed helper rule reviewed in [architecture](architecture.md) |
 | 13–16 | Gray failure, heatwave compound incident, read-only disk, path MTU black hole | | | Later |

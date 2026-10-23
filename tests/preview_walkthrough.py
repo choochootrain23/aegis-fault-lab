@@ -553,6 +553,34 @@ def main():
             expect(page.locator('#session-status')).to_have_text('ended', timeout=15000)
             page.select_option('#practice-kind', 'service-unavailable')
 
+            # Clock skew on gateway-c: the catalogue refuses its signed requests with HTTP 401, which is not a quota.
+            # Its network path shows the clock five minutes ahead; resetting quotas does nothing and resyncing recovers.
+            page.select_option('#practice-kind', 'clock-skew')
+            assert page.locator('#practice-target option[value="catalog-b"]').evaluate('o => o.disabled')
+            page.select_option('#practice-target', 'gateway-c')
+            expect(page.locator('#scenario-title')).to_have_text('When the clock jumps')
+            expect(page.locator('#start')).to_be_enabled(timeout=20000)
+            page.click('#start')
+            expect(page.locator('#session-status')).to_have_text('investigating', timeout=25000)
+            expect(page.locator('#node-catalog-b .node-state')).to_have_text('healthy')
+            expect(page.locator('#node-gateway-c .node-state')).to_have_text('degraded')
+            page.click('#node-gateway-c')
+            page.click('[data-help="evidence"]')
+            expect(page.locator('#help-result')).to_contain_text('HTTP 401')
+            page.click('#suggested-check')
+            expect(page.locator('#inspector-title')).to_have_text('gateway-c')
+            expect(page.locator('[data-check="network"] .check-result')).to_contain_text('clock off')
+            expect(page.locator('.evidence-row').filter(has_text='s off').first.locator('.clock-off')).to_contain_text('falseticker')
+            page.click('[data-help="action"]')
+            expect(page.locator('#help-result')).to_contain_text('resynchronising its clock')
+            page.click('[data-remedy="requota"]')
+            expect(page.locator('#toast')).to_contain_text('nothing changed')
+            page.click('[data-remedy="resync"]')
+            expect(page.locator('#session-status')).to_have_text('recovered', timeout=25000)
+            page.click('#reset')
+            expect(page.locator('#session-status')).to_have_text('ended', timeout=15000)
+            page.select_option('#practice-kind', 'service-unavailable')
+
             # A stopped gateway-c is local: gateway-a and the catalogue stay healthy, and guidance says so.
             page.select_option('#practice-kind', 'service-unavailable')
             page.select_option('#practice-target', 'gateway-c')
@@ -594,7 +622,7 @@ def main():
             expect(page.locator('#scenario-reveal')).to_contain_text('Known scenario:')
             page.click('#reset')
             expect(page.locator('#session-status')).to_have_text('ended', timeout=15000)
-            expect(page.locator('#history .history-item')).to_have_count(18)
+            expect(page.locator('#history .history-item')).to_have_count(19)
 
             mobile = browser.new_page(viewport={'width': 390, 'height': 844})
             mobile.on('pageerror', lambda error: errors.append(str(error)))

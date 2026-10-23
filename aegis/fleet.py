@@ -27,6 +27,12 @@ NAME = os.getenv('AEGIS_NAME', ROLE)  # how this service identifies itself to th
 UPSTREAM = os.getenv('AEGIS_UPSTREAM', 'http://catalog-b:8000')
 SCRATCH = Path(os.getenv('AEGIS_SCRATCH', '/tmp'))
 FLEET_TOKEN = os.getenv('AEGIS_FLEET_TOKEN', '')
+# Request signing: a gateway proves who it is to the catalogue with an HMAC over the request and a timestamp, and the
+# catalogue refuses a timestamp more than SIGNATURE_WINDOW_S from its own clock, so a replayed or forged request cannot
+# be used later. Without AEGIS_SIGNING_KEY signing is off and says so in every traffic report.
+SIGNING_KEY = os.getenv('AEGIS_SIGNING_KEY', '')
+SIGNED_CALLERS = ('gateway-a', 'gateway-c')  # identities that must prove themselves; probes and batch jobs are unsigned
+SIGNATURE_WINDOW_S = 30
 FILLER = 'aegis-fill.bin'
 RECEIPTS = 40              # ring of small receipt files written by every business request
 FILL_CAP = 16 * 1024**2    # never write more than this, whatever the mount reports
@@ -73,6 +79,17 @@ release = {'version': STABLE, 'history': [{'version': STABLE, 'at': time.time(),
 leak_store = []
 leak_stop = threading.Event()
 MEMORY = deque(maxlen=31)    # (at, bytes) sampled every 2 seconds from this container's cgroup
+# The process's wall clock. Containers share the host kernel's clock, and moving it needs CAP_SYS_TIME and would move
+# the host, so the clock-skew fault offsets this process's own clock source instead, as a time daemon that stepped to a
+# bad source would. Everything the service reports or signs with a time uses wall(); deadlines are measured on the
+# kernel clock, as a relative budget would be in a real system, so a skewed service still drops abandoned work correctly.
+CLOCK_STEP_S = 300
+BAD_TIME_SOURCE = '10.20.0.7 (falseticker)'
+clock = {'offset_s': 0.0, 'source': 'host kernel clock', 'stepped_at': None}
+
+
+def wall():
+    return time.time() + clock['offset_s']
 # Name resolution. A gateway resolves the catalogue's name itself, as a stub resolver does: a real DNS query over UDP
 # to the nameserver in its resolv.conf (Docker's embedded DNS), each answer cached for at most DNS_TTL_S. The DNS
 # fault repoints it at 127.0.0.53, systemd-resolved's stub address, a setting easily copied from a host image;
@@ -210,7 +227,7 @@ def tally(client, status, retry=False):
         TRAFFIC.append([second, {}])
     counts = TRAFFIC[-1][1].setdefault(client, [0, 0, 0, 0, 0])
     counts[0] += 1
-    counts[1] += status == 429
+    counts[1] += status in (401, 429)  # refused: no valid signature, or over quota
     counts[2] += status >= 500
     counts[3] += status < 400
     counts[4] += retry
@@ -236,7 +253,7 @@ def storage_failure(error, started):
     code = errno.errorcode.get(error.errno, 'unknown') if error.errno else 'unknown'
     result = {'ok': False, 'error': 'OSError', 'errno': code, 'detail': os.strerror(error.errno) if error.errno else str(error),
               'path': 'receipt write', 'generation': BOOT, 'duration_ms': round((time.monotonic() - started) * 1000, 1)}
-    LOGS.append({'at': time.time(), **result})
+    LOGS.append({'at': wall(), **result})
     return JSONResponse(result, status_code=507)
 
 
@@ -251,7 +268,7 @@ def release_failure(started):
         return None
     result = {'ok': False, 'error': 'TypeError', 'detail': "unsupported operand type(s) for *: 'NoneType' and 'float'", 'path': 'price conversion',
               'version': release['version'], 'generation': BOOT, 'duration_ms': round((time.monotonic() - started) * 1000, 1)}
-    LOGS.append({'at': time.time(), **result})
+    LOGS.append({'at': wall(), **result})
     return JSONResponse(result, status_code=500)
 
 
@@ -271,13 +288,50 @@ def over_quota(client):
     return bool(TRAFFIC) and TRAFFIC[-1][0] == int(time.time()) and TRAFFIC[-1][1].get(client, [0, 0, 0, 0, 0])[3] >= limit
 
 
+def signature(method, path, caller, timestamp):
+    return hmac.new(SIGNING_KEY.encode(), f'{method}\n{path}\n{caller}\n{timestamp}'.encode(), 'sha256').hexdigest()
+
+
+def signed_headers(method, path):
+    """Headers that prove this service's identity on one request; none while signing is off."""
+    if not SIGNING_KEY:
+        return {}
+    timestamp = f'{wall():.3f}'
+    return {'X-Aegis-Timestamp': timestamp, 'X-Aegis-Signature': signature(method, path, NAME, timestamp)}
+
+
+def signature_failure(client, timestamp, signed, started):
+    """Why a caller claiming a signed identity is refused, or None. The timestamp is checked against this service's clock."""
+    if not SIGNING_KEY or client not in SIGNED_CALLERS:
+        return None
+    try:
+        sent = float(timestamp)
+    except ValueError:
+        sent = None
+    if sent is None or not signed:
+        error, detail, skew = 'SignatureMissing', 'signed identity claimed without a timestamp and signature', None
+    elif not hmac.compare_digest(signed, signature('GET', '/catalog', client, timestamp)):
+        error, detail, skew = 'SignatureInvalid', 'signature does not match the request', None
+    elif abs(skew := round(sent - wall(), 1)) > SIGNATURE_WINDOW_S:
+        error, detail = 'RequestExpired', f'timestamp {skew:+.1f} s from the catalogue clock; allowed ±{SIGNATURE_WINDOW_S} s'
+    else:
+        return None
+    result = {'ok': False, 'error': error, 'client': client[:40], 'detail': detail, **({'skew_s': skew} if skew is not None else {}),
+              'generation': BOOT, 'duration_ms': round((time.monotonic() - started) * 1000, 1)}
+    LOGS.append({'at': wall(), **result})
+    return JSONResponse(result, status_code=401)
+
+
 @app.get('/catalog')
-async def catalog(x_aegis_client: str = Header(default='unidentified')):
+async def catalog(x_aegis_client: str = Header(default='unidentified'), x_aegis_timestamp: str = Header(default=''),
+                  x_aegis_signature: str = Header(default='')):
     started = time.monotonic()
+    if (refused := signature_failure(x_aegis_client, x_aegis_timestamp, x_aegis_signature, started)):
+        return refused
     if over_quota(x_aegis_client):
         result = {'ok': False, 'error': 'QuotaExceeded', 'client': x_aegis_client[:40], 'limit_rps': quota[x_aegis_client],
                   'detail': 'per-client request quota exhausted', 'generation': BOOT, 'duration_ms': round((time.monotonic() - started) * 1000, 1)}
-        LOGS.append({'at': time.time(), **result})
+        LOGS.append({'at': wall(), **result})
         return JSONResponse(result, status_code=429, headers={'Retry-After': str(RETRY_AFTER_S)})
     if (failure := release_failure(started)):
         return failure
@@ -286,7 +340,7 @@ async def catalog(x_aegis_client: str = Header(default='unidentified')):
     except (OSError, ValueError, KeyError) as error:
         result = {'ok': False, 'error': type(error).__name__, 'detail': 'catalogue source unavailable', 'source': config.get('catalogue_source'),
                   'generation': BOOT, 'duration_ms': round((time.monotonic() - started) * 1000, 1)}
-        LOGS.append({'at': time.time(), **result})
+        LOGS.append({'at': wall(), **result})
         return JSONResponse(result, status_code=500)
     try:
         write_receipt('catalog')
@@ -375,7 +429,7 @@ async def upstream_request(path, headers, timeout):
     target = urlsplit(config['upstream'])
     address = await resolve(target.hostname)
     url = f'{target.scheme}://{address}' + (f':{target.port}' if target.port else '') + path
-    return await app.state.client.get(url, headers={**headers, 'Host': target.netloc}, timeout=timeout)
+    return await app.state.client.get(url, headers={**headers, **signed_headers('GET', path), 'Host': target.netloc}, timeout=timeout)
 
 
 # A bulkhead for calls to the catalogue: fewer slots than the HTTP client's pool, so requests wait here, where a
@@ -393,8 +447,9 @@ async def call_catalogue(correlation, upstream_deadline):
     except NameResolutionError as error:
         return {'ok': False, 'dependency': 'catalog-b', 'correlation': correlation, 'error': 'NameResolutionError', 'detail': str(error)}, 503
     except httpx.HTTPStatusError as error:
+        refused = {'upstream_detail': upstream_detail(error.response)} if error.response.status_code == 401 else {}
         return {'ok': False, 'dependency': 'catalog-b', 'correlation': correlation, 'error': 'HTTPStatusError',
-                'upstream_status': error.response.status_code, 'upstream_error': upstream_error(error.response)}, 503
+                'upstream_status': error.response.status_code, 'upstream_error': upstream_error(error.response), **refused}, 503
     except (httpx.HTTPError, ValueError) as error:
         return {'ok': False, 'dependency': 'catalog-b', 'correlation': correlation, 'error': type(error).__name__}, 503
 
@@ -417,13 +472,20 @@ async def dependency(deadline=None):
             UPSTREAM_SLOTS.release()
     result['generation'] = BOOT
     result['duration_ms'] = round((time.monotonic() - started) * 1000, 1)
-    LOGS.append({'at': time.time(), **{k: v for k, v in result.items() if k != 'catalog'}})
+    LOGS.append({'at': wall(), **{k: v for k, v in result.items() if k != 'catalog'}})
     if status == 200:
         try:
             write_receipt('gateway')
         except OSError as error:
             return storage_failure(error, started)
     return JSONResponse(result, status_code=status)
+
+
+def upstream_detail(response):
+    try:
+        return str(response.json().get('detail'))[:120]
+    except (ValueError, AttributeError):
+        return None
 
 
 def upstream_error(response):
@@ -441,10 +503,11 @@ async def ready(x_aegis_deadline: str = Header(default='')):
 
 
 @app.get('/summary')
-async def summary(x_aegis_client: str = Header(default='unidentified'), x_aegis_deadline: str = Header(default='')):
+async def summary(x_aegis_client: str = Header(default='unidentified'), x_aegis_deadline: str = Header(default=''),
+                  x_aegis_timestamp: str = Header(default=''), x_aegis_signature: str = Header(default='')):
     if ROLE == 'gateway':
         return await dependency(request_deadline(x_aegis_deadline))
-    return await catalog(x_aegis_client)
+    return await catalog(x_aegis_client, x_aegis_timestamp, x_aegis_signature)
 
 
 @app.get('/diagnostics/logs')
@@ -583,7 +646,13 @@ async def network():
     queues = read_qdiscs()
     filters = read_filters() if any(q.get('kind') == 'prio' and q.get('root') for q in queues.get('qdiscs', [])) else []
     gateway = {'dns': await dns_report(), 'upstream_connect': await upstream_reachability()} if ROLE == 'gateway' else {}
-    return {**queues, 'filters': filters, 'tcp': retransmissions(), **gateway, 'generation': BOOT}
+    return {**queues, 'filters': filters, 'tcp': retransmissions(), **gateway, 'clock': clock_report(), 'generation': BOOT}
+
+
+def clock_report():
+    """This service's wall clock and where it comes from, for comparison with the caller's clock."""
+    return {'now': round(wall(), 3), 'source': clock['source'], 'last_step_s': clock.get('last_step_s'), 'stepped_at': clock['stepped_at'],
+            'signing': {'enabled': bool(SIGNING_KEY), 'window_s': SIGNATURE_WINDOW_S}}
 
 
 @app.get('/diagnostics/releases')
@@ -637,7 +706,8 @@ async def traffic():
               for client, limit in quota.items()]
     return {'window_s': TRAFFIC_WINDOW_S, 'clients': sorted(callers.values(), key=lambda e: -e['requests']), 'quotas': quotas,
             'shedding': {'enabled': shedding['limit'] is not None, 'max_in_flight': shedding['limit'], 'shed': shedding['shed'], 'in_flight': shedding['in_flight']},
-            'quota_source': quota_source if QUOTA_DEPLOYED else None, 'generation': BOOT}
+            'quota_source': quota_source if QUOTA_DEPLOYED else None,
+            'signing': {'enabled': bool(SIGNING_KEY), 'signed_callers': list(SIGNED_CALLERS) if QUOTA_DEPLOYED else [], 'window_s': SIGNATURE_WINDOW_S}, 'generation': BOOT}
 
 
 @app.get('/diagnostics/trace')
@@ -738,7 +808,7 @@ async def burn(x_aegis_fleet_token: str = Header(default='')):
         worker = threading.Thread(target=busy, args=(deadline,), name=f'reindex-{index}', daemon=True)
         worker.start()
         job_threads.append(worker)
-    LOGS.append({'at': time.time(), 'ok': True, 'event': 'background job started', 'job': 'catalogue reindex', 'threads': JOB_THREADS, 'generation': BOOT})
+    LOGS.append({'at': wall(), 'ok': True, 'event': 'background job started', 'job': 'catalogue reindex', 'threads': JOB_THREADS, 'generation': BOOT})
     return {'changed': True, 'threads': JOB_THREADS}
 
 
@@ -751,7 +821,7 @@ async def calm(x_aegis_fleet_token: str = Header(default='')):
     for worker in running:
         worker.join(timeout=2)
     if running:
-        LOGS.append({'at': time.time(), 'ok': True, 'event': 'background job stopped', 'job': 'catalogue reindex', 'generation': BOOT})
+        LOGS.append({'at': wall(), 'ok': True, 'event': 'background job stopped', 'job': 'catalogue reindex', 'generation': BOOT})
     return {'changed': bool(running), 'stopped_threads': len(running)}
 
 
@@ -763,8 +833,33 @@ async def drift(x_aegis_fleet_token: str = Header(default='')):
     if config[key] == value:
         return {'changed': False}
     config[key] = value
-    LOGS.append({'at': time.time(), 'ok': True, 'event': 'configuration reloaded', 'changed': {key: value}, 'generation': BOOT})
+    LOGS.append({'at': wall(), 'ok': True, 'event': 'configuration reloaded', 'changed': {key: value}, 'generation': BOOT})
     return {'changed': True, 'key': key}
+
+
+@app.post('/maintenance/skew')
+async def skew(x_aegis_fleet_token: str = Header(default='')):
+    """Fault injection: the gateway's time daemon steps its clock CLOCK_STEP_S ahead after selecting a bad source."""
+    authorize(x_aegis_fleet_token)
+    if ROLE != 'gateway' or not SIGNING_KEY:
+        raise HTTPException(409, 'Only a gateway that signs its requests has a clock that matters here')
+    if clock['offset_s']:
+        return {'changed': False}
+    clock.update(offset_s=float(CLOCK_STEP_S), source='time daemon, peer ' + BAD_TIME_SOURCE, stepped_at=time.time() + CLOCK_STEP_S, last_step_s=float(CLOCK_STEP_S))
+    LOGS.append({'at': wall(), 'ok': True, 'event': 'clock stepped', 'step_s': float(CLOCK_STEP_S), 'source': BAD_TIME_SOURCE, 'generation': BOOT})
+    return {'changed': True, 'offset_s': float(CLOCK_STEP_S)}
+
+
+@app.post('/maintenance/resync')
+async def resync(x_aegis_fleet_token: str = Header(default='')):
+    """Recovery: resynchronise the clock with the host's."""
+    authorize(x_aegis_fleet_token)
+    if not clock['offset_s']:
+        return {'changed': False}
+    step = -clock['offset_s']
+    clock.update(offset_s=0.0, source='host kernel clock', stepped_at=time.time(), last_step_s=step)
+    LOGS.append({'at': wall(), 'ok': True, 'event': 'clock resynchronised', 'step_s': step, 'source': 'host kernel clock', 'generation': BOOT})
+    return {'changed': True, 'offset_s': 0.0}
 
 
 @app.post('/maintenance/repoint')
@@ -775,8 +870,8 @@ async def repoint(x_aegis_fleet_token: str = Header(default='')):
         raise HTTPException(409, 'Only a gateway that resolves its upstream by name has a resolver to repoint')
     if resolver['nameserver'] == BROKEN_NAMESERVER:
         return {'changed': False}
-    resolver.update(nameserver=BROKEN_NAMESERVER, pushed_by='node-settings-sync', at=time.time())
-    LOGS.append({'at': time.time(), 'ok': True, 'event': 'resolver settings updated', 'nameserver': BROKEN_NAMESERVER, 'pushed_by': 'node-settings-sync', 'generation': BOOT})
+    resolver.update(nameserver=BROKEN_NAMESERVER, pushed_by='node-settings-sync', at=wall())
+    LOGS.append({'at': wall(), 'ok': True, 'event': 'resolver settings updated', 'nameserver': BROKEN_NAMESERVER, 'pushed_by': 'node-settings-sync', 'generation': BOOT})
     return {'changed': True, 'nameserver': BROKEN_NAMESERVER}
 
 
@@ -786,10 +881,10 @@ async def restore_resolver(x_aegis_fleet_token: str = Header(default='')):
     authorize(x_aegis_fleet_token)
     if resolver['nameserver'] == SYSTEM_NAMESERVER:
         return {'changed': False}
-    resolver.update(nameserver=SYSTEM_NAMESERVER, pushed_by='operator', at=time.time())
+    resolver.update(nameserver=SYSTEM_NAMESERVER, pushed_by='operator', at=wall())
     for name in [name for name, entry in dns_cache.items() if entry.get('error')]:
         dns_cache.pop(name)
-    LOGS.append({'at': time.time(), 'ok': True, 'event': 'resolver settings restored', 'nameserver': SYSTEM_NAMESERVER, 'generation': BOOT})
+    LOGS.append({'at': wall(), 'ok': True, 'event': 'resolver settings restored', 'nameserver': SYSTEM_NAMESERVER, 'generation': BOOT})
     return {'changed': True, 'nameserver': SYSTEM_NAMESERVER}
 
 
@@ -801,8 +896,8 @@ async def squeeze(x_aegis_fleet_token: str = Header(default='')):
     if not QUOTA_DEPLOYED or all(limit == 0 for limit in quota.values()):
         return {'changed': False}
     quota.update({client: 0 for client in QUOTA_DEPLOYED})
-    quota_source = {'pushed_by': 'quota-manager', 'at': time.time()}
-    LOGS.append({'at': time.time(), 'ok': True, 'event': 'quota policy updated', 'pushed_by': 'quota-manager', 'limits_rps': dict(quota), 'generation': BOOT})
+    quota_source = {'pushed_by': 'quota-manager', 'at': wall()}
+    LOGS.append({'at': wall(), 'ok': True, 'event': 'quota policy updated', 'pushed_by': 'quota-manager', 'limits_rps': dict(quota), 'generation': BOOT})
     return {'changed': True}
 
 
@@ -821,7 +916,7 @@ async def ratelimit(x_aegis_fleet_token: str = Header(default='')):
     for client in heavy:
         quota[client] = RATE_LIMIT_RPS
     if heavy:
-        LOGS.append({'at': time.time(), 'ok': True, 'event': 'rate limit applied', 'clients': heavy, 'limit_rps': RATE_LIMIT_RPS, 'generation': BOOT})
+        LOGS.append({'at': wall(), 'ok': True, 'event': 'rate limit applied', 'clients': heavy, 'limit_rps': RATE_LIMIT_RPS, 'generation': BOOT})
     return {'changed': bool(heavy), 'limited': heavy}
 
 
@@ -835,8 +930,8 @@ async def requota(x_aegis_fleet_token: str = Header(default='')):
         return {'changed': False}
     quota.clear()
     quota.update(QUOTA_DEPLOYED)
-    quota_source = {'pushed_by': 'deployment', 'at': time.time()}
-    LOGS.append({'at': time.time(), 'ok': True, 'event': 'quota policy restored', 'clients': changed, 'generation': BOOT})
+    quota_source = {'pushed_by': 'deployment', 'at': wall()}
+    LOGS.append({'at': wall(), 'ok': True, 'event': 'quota policy restored', 'clients': changed, 'generation': BOOT})
     return {'changed': True, 'restored': changed}
 
 
@@ -845,8 +940,8 @@ def deploy(version, actor):
     if previous == version:
         return False
     release['version'] = version
-    release['history'].append({'version': version, 'at': time.time(), 'by': actor, 'note': RELEASE_NOTES[version]})
-    LOGS.append({'at': time.time(), 'ok': True, 'event': 'release deployed', 'version': version, 'previous': previous, 'by': actor, 'generation': BOOT})
+    release['history'].append({'version': version, 'at': wall(), 'by': actor, 'note': RELEASE_NOTES[version]})
+    LOGS.append({'at': wall(), 'ok': True, 'event': 'release deployed', 'version': version, 'previous': previous, 'by': actor, 'generation': BOOT})
     return True
 
 
@@ -949,7 +1044,7 @@ async def flood(x_aegis_fleet_token: str = Header(default='')):
     flood_stop.clear()
     flood_threads[:] = [threading.Thread(target=run_flood, args=(time.monotonic() + JOB_MAX_S,), name='report-exporter', daemon=True)]
     flood_threads[0].start()
-    LOGS.append({'at': time.time(), 'ok': True, 'event': 'export job started', 'connections': FLOOD_CONNECTIONS, 'generation': BOOT})
+    LOGS.append({'at': wall(), 'ok': True, 'event': 'export job started', 'connections': FLOOD_CONNECTIONS, 'generation': BOOT})
     return {'changed': True, 'connections': FLOOD_CONNECTIONS}
 
 
@@ -977,12 +1072,12 @@ async def hiccup(x_aegis_fleet_token: str = Header(default='')):
         worker = threading.Thread(target=busy, args=(deadline,), name=f'compaction-{index}', daemon=True)
         worker.start()
         job_threads.append(worker)
-    LOGS.append({'at': time.time(), 'ok': True, 'event': 'background job started', 'job': 'index compaction', 'expected_s': HICCUP_S, 'generation': BOOT})
+    LOGS.append({'at': wall(), 'ok': True, 'event': 'background job started', 'job': 'index compaction', 'expected_s': HICCUP_S, 'generation': BOOT})
 
     def finished(workers):
         for worker in workers:
             worker.join()
-        LOGS.append({'at': time.time(), 'ok': True, 'event': 'background job finished', 'job': 'index compaction', 'generation': BOOT})
+        LOGS.append({'at': wall(), 'ok': True, 'event': 'background job finished', 'job': 'index compaction', 'generation': BOOT})
     threading.Thread(target=finished, args=(list(job_threads),), name='compaction-end', daemon=True).start()
     return {'changed': True, 'seconds': HICCUP_S}
 
@@ -995,7 +1090,7 @@ async def shed(x_aegis_fleet_token: str = Header(default='')):
     if ROLE != 'gateway' or shedding['limit'] is not None or time.time() - shedding['overloaded_at'] > 30:
         return {'changed': False}
     shedding.update(limit=SHED_LIMIT, shed=0)
-    LOGS.append({'at': time.time(), 'ok': True, 'event': 'load shedding enabled', 'max_in_flight': SHED_LIMIT, 'generation': BOOT})
+    LOGS.append({'at': wall(), 'ok': True, 'event': 'load shedding enabled', 'max_in_flight': SHED_LIMIT, 'generation': BOOT})
     return {'changed': True, 'max_in_flight': SHED_LIMIT}
 
 
@@ -1082,7 +1177,7 @@ async def storm(x_aegis_fleet_token: str = Header(default=''), x_aegis_target: s
     users_threads[:] = [threading.Thread(target=run_users, args=(time.monotonic() + JOB_MAX_S, (x_aegis_target,), USER_RPS, USER_RETRIES), name='app-users', daemon=True)]
     users_threads[0].start()
     asyncio.get_running_loop().call_later(HICCUP_AFTER_S, lambda: asyncio.ensure_future(trigger_hiccup()))
-    LOGS.append({'at': time.time(), 'ok': True, 'event': 'app users started', 'gateway': x_aegis_target, 'rps': USER_RPS, 'retries': USER_RETRIES, 'generation': BOOT})
+    LOGS.append({'at': wall(), 'ok': True, 'event': 'app users started', 'gateway': x_aegis_target, 'rps': USER_RPS, 'retries': USER_RETRIES, 'generation': BOOT})
     return {'changed': True}
 
 
@@ -1102,7 +1197,7 @@ async def daytime(x_aegis_fleet_token: str = Header(default='')):
     users_stop.clear()
     users_threads[:] = [threading.Thread(target=run_users, args=(time.monotonic() + JOB_MAX_S, STORM_TARGETS, DAYTIME_RPS, 0), name='daytime-users', daemon=True)]
     users_threads[0].start()
-    LOGS.append({'at': time.time(), 'ok': True, 'event': 'daytime users started', 'rps_per_gateway': DAYTIME_RPS, 'generation': BOOT})
+    LOGS.append({'at': wall(), 'ok': True, 'event': 'daytime users started', 'rps_per_gateway': DAYTIME_RPS, 'generation': BOOT})
     return {'changed': True}
 
 
@@ -1124,5 +1219,5 @@ async def restore(x_aegis_fleet_token: str = Header(default='')):
     drifted = sorted(key for key, value in DEPLOYED.items() if config[key] != value)
     config.update(DEPLOYED)
     if drifted:
-        LOGS.append({'at': time.time(), 'ok': True, 'event': 'configuration restored', 'keys': drifted, 'generation': BOOT})
+        LOGS.append({'at': wall(), 'ok': True, 'event': 'configuration restored', 'keys': drifted, 'generation': BOOT})
     return {'changed': bool(drifted), 'restored': drifted}
