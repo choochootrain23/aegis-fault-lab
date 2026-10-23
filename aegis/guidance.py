@@ -150,6 +150,12 @@ def retry_share(caller):
     return (caller.get('retries') or 0) / caller['requests'] if caller.get('requests') else 0
 
 
+def sagging(body):
+    """A facility record whose active feed is below what its power supplies tolerate."""
+    feeds = (body or {}).get('feeds') or {}
+    return (feeds.get((body or {}).get('active_feed', 'A')) or {}).get('status') == 'sagging'
+
+
 def resolver_broken(dns):
     """A lookup that failed at a changed resolver, or while the service behind the name still answers: a broken resolver
     rather than a name that is gone, as a stopped container's is."""
@@ -181,7 +187,15 @@ def remedy(fresh):
             continue
         if kind == 'service' and body.get('running') is False and (fresh.get((node, 'facility')) or {}).get('body', {}).get('breaker') == 'open':
             continue  # the facility check explains it: no power, so starting cannot work
-        if kind == 'facility' and body.get('breaker') == 'open':
+        if kind == 'service' and body.get('running') is False and sagging((fresh.get((node, 'facility')) or {}).get('body')):
+            continue  # the facility check explains it: starting only lasts until the next dip
+        if kind == 'facility' and sagging(body):
+            feed = body['feeds'][body.get('active_feed', 'A')]
+            drops = [e for e in body.get('events', []) if e.get('event') == 'power supply dropout']
+            action = (f"The facility check (simulated) shows feed {body.get('active_feed', 'A')} to {body.get('pdu')} sagging to {feed['voltage_v']} V, below the {body.get('psu_min_v')} V its power supplies need, "
+                      f"with {len(drops)} power-supply dropout{'s' if len(drops) != 1 else ''} on {' and '.join(body.get('fed_services', []))}; the redundant feed is normal. "
+                      "Each dropout cuts the server's power, so starting the service only lasts until the next dip. You can try moving the rack to the redundant feed, then verify it stays up for ten cycles.")
+        elif kind == 'facility' and body.get('breaker') == 'open':
             action = (f"The facility check (simulated) shows the {body.get('pdu')} breaker open: rack {body.get('rack')} has no power, so "
                       f"{' and '.join(body.get('fed_services', []))} lost power together. Starting them cannot work without power. "
                       "You can try resetting the breaker, then verify every service it feeds comes back.")

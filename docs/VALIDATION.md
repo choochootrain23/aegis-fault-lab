@@ -177,6 +177,11 @@ It used the existing evidence volume: the broker deliberately accepts only conta
 - **Second run.** 28 of 30 right with full evidence: the memory leak 3 of 3, thermal throttling 2 of 3, and the DNS failure 3 of 3. The two misses were a thermal round answered *ratelimit on catalog-b*, and the only retry storm, answered *calm on catalog-b* (the compaction had no end event yet in that run). After its own fix was verified, the model answered "no action" in all 26 rounds where that was asked.
 - **Variation.** Runs vary. The same prompt scored 30 of 30 and then 22 of 30 on different random draws of faults, so per-fault results from a handful of rounds are anecdotes, not rates.
 
+**Brownout and a full re-run (23 October 2026).** The facility record and the health cycle changed for every fault, so the whole matrix was run again on real Docker. It passed: all 33 practice rounds, then 44 challenge rounds until all fifteen faults and every service had appeared, then a reset without recovery. Detection took 5–38 s (the slowest again a bad release on a gateway) and verified recovery 5–22 s.
+
+- **Brownout.** Detected in about 5 s, because the sag cuts power at once. Verified recovered in about 22 s after moving to the redundant feed: the failures had come and gone, so ten healthy cycles were required. Resetting the closed breaker and moving the healthy rack R1 both reported *unchanged*.
+- **Tests.** Backend tests: 190 pass, 1 skipped. UI logic tests: 38 pass. The simulator walkthrough passes with a brownout round in Chromium, Firefox and WebKit.
+
 ## Reproduce browser reviews
 
 Use a development Python environment with `requirements.lock`, Playwright 1.64.0 and its Chromium headless shell:

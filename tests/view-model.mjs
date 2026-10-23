@@ -127,6 +127,12 @@ export function run(){
     assert.deepEqual([...view.faultTargets('dns-failure')],['gateway-a','gateway-c']);assert.equal(view.remedyLabel('resolver'),'Restore resolver');
     assert.equal(view.scenarioCopy('dns-failure','gateway-a','practice').number,'14');
   });
+  check('A sagging feed reads as a facility failure and the brownout is gateway-c only',()=>{
+    const sag=view.evidenceResult({kind:'facility',body:{ok:true,simulated:true,pdu:'PDU-B',breaker:'closed',active_feed:'A',psu_min_v:200,feeds:{A:{voltage_v:186,status:'sagging'},B:{voltage_v:231,status:'normal'}}}});
+    assert.equal(sag.tone,'red');assert.match(sag.text,/feed A sagging to 186 V/);
+    assert.deepEqual([...view.faultTargets('brownout')],['gateway-c']);assert.equal(view.remedyLabel('transfer'),'Move to redundant feed');
+    assert.equal(view.scenarioCopy('brownout','gateway-c','practice').number,'15');
+  });
   return {passed,scope:'Pure UI state and timer decisions; frontend JavaScript parsed. No visual/browser validation.'};
 }
 if(typeof process!=='undefined' && process.argv[1] && import.meta.url===new URL('file://'+process.argv[1]).href) console.log(run());

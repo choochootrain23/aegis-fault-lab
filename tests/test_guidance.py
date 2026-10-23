@@ -372,3 +372,14 @@ def test_a_failed_lookup_supports_restoring_the_resolver_but_a_working_one_does_
     assert 'No fresh inspection' in explain({('gateway-a','network'):gone},'action',now=101)['message']  # a stopped catalogue, not the resolver
     working=observation('gateway-a','network',result={'qdiscs':[],'dns':{**dns,'ok':True,'error':None,'changed':False}})
     assert 'No fresh inspection' in explain({('gateway-a','network'):working},'action',now=101)['message']
+
+
+def test_a_sagging_feed_supports_moving_to_the_redundant_feed_instead_of_starting():
+    facility=observation('gateway-c','facility',simulated=True,pdu='PDU-B',rack='R2',breaker='closed',fed_services=['gateway-c'],active_feed='A',psu_min_v=200,
+                         feeds={'A':{'voltage_v':186,'status':'sagging'},'B':{'voltage_v':231,'status':'normal'}},
+                         events=[{'at':90,'event':'utility feed A sagging to 186 V'},{'at':91,'event':'power supply dropout'},{'at':99,'event':'power supply dropout'}])
+    stopped=observation('gateway-c','service',at=99,running=False)
+    result=explain({('gateway-c','facility'):facility,('gateway-c','service'):stopped},'action',now=101)
+    assert result['evidence_ids']==[facility['id']] and 'moving the rack to the redundant feed' in result['message'] and '2 power-supply dropouts' in result['message']
+    normal={**facility,'body':{**facility['body'],'feeds':{'A':{'voltage_v':230,'status':'normal'},'B':{'voltage_v':231,'status':'normal'}}}}
+    assert 'starting that selected service' in explain({('gateway-c','facility'):normal,('gateway-c','service'):stopped},'action',now=101)['message']

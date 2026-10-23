@@ -137,6 +137,10 @@ function usersTraffic(node, t) {
 const RACKS = {'PDU-A': {rack: 'R1', nodes: ['catalog-b', 'gateway-a']}, 'PDU-B': {rack: 'R2', nodes: ['gateway-c']}};
 const PDU_OF = Object.fromEntries(Object.entries(RACKS).flatMap(([pdu, r]) => r.nodes.map(n => [n, pdu])));
 const facility = {};
+// A brownout: feed A to a PDU sags below what a power supply tolerates, so the server drops out, reboots and drops out
+// again, as aegis/controller.py drives it: stopped after 5 health cycles up, started again after 3 down.
+const BROWNOUT_UP = 5, BROWNOUT_DOWN = 3, NOMINAL_V = 230, SAG_V = 186, PSU_MIN_V = 200;
+const sagging = body => body?.feeds?.[body.active_feed || 'A']?.status === 'sagging';
 // The thermal fault: a failed cooling unit, a power cap of 0.05 CPU on every container and steady daytime users.
 // Measured on the real lab (23 October 2026, 32 users a second per gateway): the gateways ran out first, their liveness
 // slowed to a median of about 160 ms (p90 200-500 ms) and about 85% of business requests failed, while the catalogue's
@@ -158,10 +162,17 @@ function facilityReport(node) {
     if (!hot) events.push({at: room.failedAt + COOLING_RECOVERY, event: 'cooling unit CRAC-2 restored'});
   }
   if (room.liftedAt != null) events.push({at: room.liftedAt, event: 'power cap lifted'});
+  const sag = state.sag || {};
+  if (sag.at != null) {
+    events.push({at: sag.at, event: `utility feed A sagging to ${SAG_V} V`, pdu});
+    for (const at of (sag.drops || []).slice(-6)) events.push({at, event: 'power supply dropout', service: sag.node, input_v: SAG_V - 7, min_v: PSU_MIN_V});
+  }
+  if (sag.transferredAt != null) events.push({at: sag.transferredAt, event: 'rack moved to redundant feed B', pdu});
+  const feeds = {A: {voltage_v: sag.active ? SAG_V : NOMINAL_V, status: sag.active ? 'sagging' : 'normal'}, B: {voltage_v: NOMINAL_V + 1, status: 'normal'}};
   return {ok: true, simulated: true, rack: RACKS[pdu].rack, pdu, breaker: powered ? 'closed' : 'open', fed_services: [...RACKS[pdu].nodes],
     load_kw: Math.round((0.11 * drawn + (powered ? 0.04 : 0)) * 100) / 100, inlet_c: hot ? HOT_INLET : pdu === 'PDU-A' ? 24.8 : 25.3,
     cooling: {crac_2: hot ? 'failed' : 'running'}, power_cap: {active: room.capped, cpu_limit: room.capped ? 0.05 : null},
-    ups: {on_battery: false, charge_pct: 100}, events: events.sort((a, b) => a.at - b.at), duration_ms: between(1, 3)};
+    ups: {on_battery: false, charge_pct: 100}, feeds, active_feed: state.feed || 'A', psu_min_v: PSU_MIN_V, events: events.sort((a, b) => a.at - b.at), duration_ms: between(1, 3)};
 }
 const busyMs = () => Math.round(Math.min(1600, 110 + Math.random() ** 1.6 * 1100) * 10) / 10;
 const diskFull = node => ({ok: false, error: 'OSError', errno: 'ENOSPC', detail: 'No space left on device', path: 'receipt write', generation: fleet[node].process});
@@ -431,6 +442,7 @@ function cycle() {
     else { s.flaps = (s.flaps || 0) + 1; s.required_streak = FLAPPING_STREAK; }
   }
   if (s.rollout && ['observing', 'investigating', 'verifying'].includes(s.status)) reconcileRollout(s, results);
+  if (['observing', 'investigating', 'verifying'].includes(s.status)) reconcileBrownout(results);
   const needed = s.status === 'resetting' ? VERIFY_STREAK : s.required_streak || VERIFY_STREAK;
   if (['verifying', 'resetting'].includes(s.status) && lab.successes >= needed) {
     if (s.status === 'resetting') {
@@ -461,6 +473,22 @@ function reconcileRollout(s, results) {
   if (n.running) return;
   r.down_cycles = (r.down_cycles || 0) + 1;
   if (r.down_cycles >= 3) { apply(r.node, 'start'); r.restarts = (r.restarts || 0) + 1; delete r.down_cycles; }
+}
+function powerDrop(node, sag) {
+  if (fleet[node].running) { apply(node, 'stop'); sag.drops.push(now()); }
+  sag.up = sag.down = 0;
+}
+// While a feed sags, the server it feeds keeps losing power: up a few cycles, down, rebooted, down again.
+function reconcileBrownout(results) {
+  for (const state of Object.values(facility)) {
+    const sag = state.sag;
+    if (!sag?.active) continue;
+    const live = results.find(e => e.node === sag.node && e.kind === 'liveness');
+    if (live?.body.ok) { sag.up += 1; if (sag.up >= BROWNOUT_UP) powerDrop(sag.node, sag); continue; }
+    if (fleet[sag.node].running) continue;  // booting
+    sag.down += 1;
+    if (sag.down >= BROWNOUT_DOWN) { apply(sag.node, 'start'); sag.up = sag.down = 0; }
+  }
 }
 function publicSession(s = lab.session) {
   if (!s) return null;
@@ -498,8 +526,8 @@ function state() {
 // changes nothing and says so, as the real broker and services do; a stopped service cannot confirm maintenance.
 const FAULTS = {'service-unavailable': ['stop', 'start'], 'cpu-starvation': ['burn', 'calm'], 'disk-full': ['fill', 'clear'], 'config-drift': ['drift', 'restore'],
   'network-delay': ['delay', 'undelay'], 'packet-loss': ['drop', 'undrop'], 'quota-zero': ['squeeze', 'requota'], 'bad-release': ['ship', 'rollback'], 'memory-leak': ['leak', 'rollback'],
-  'traffic-flood': ['flood', 'ratelimit'], 'retry-storm': ['storm', 'shed'], 'power-loss': ['trip', 'breaker'], 'thermal-throttle': ['heat', 'uncap'], 'dns-failure': ['repoint', 'resolver']};
-const FAULT_TARGETS = {'quota-zero': ['catalog-b'], 'traffic-flood': ['catalog-b'], 'retry-storm': ['gateway-a', 'gateway-c'], 'power-loss': ['catalog-b'], 'thermal-throttle': ['catalog-b'], 'dns-failure': ['gateway-a', 'gateway-c']};  // faults that only exist on some services
+  'traffic-flood': ['flood', 'ratelimit'], 'retry-storm': ['storm', 'shed'], 'power-loss': ['trip', 'breaker'], 'thermal-throttle': ['heat', 'uncap'], 'dns-failure': ['repoint', 'resolver'], 'brownout': ['sag', 'transfer']};
+const FAULT_TARGETS = {'quota-zero': ['catalog-b'], 'traffic-flood': ['catalog-b'], 'retry-storm': ['gateway-a', 'gateway-c'], 'power-loss': ['catalog-b'], 'thermal-throttle': ['catalog-b'], 'dns-failure': ['gateway-a', 'gateway-c'], 'brownout': ['gateway-c']};  // faults that only exist on some services
 // Reset normally reapplies the remedy; a flood is undone by stopping its source and removing any limit.
 const RESET_CLEANUP = {'traffic-flood': ['unflood', 'requota'], 'retry-storm': ['unstorm', 'unshed'], 'thermal-throttle': ['unstorm']};
 const UNCHANGED = {start: 'Already running; nothing changed', stop: 'Already stopped; nothing changed', calm: 'No background job running; nothing changed',
@@ -514,7 +542,8 @@ const UNCHANGED = {start: 'Already running; nothing changed', stop: 'Already sto
   storm: 'App users already running; nothing changed', unstorm: 'No app users running; nothing changed',
   breaker: 'The breaker feeding this service is already closed; nothing changed', trip: 'Breaker already open; nothing changed',
   uncap: 'No power cap is active; nothing changed', heat: 'Cooling already failed; nothing changed',
-  resolver: 'Resolver already uses the nameserver it was deployed with; nothing changed', repoint: 'Resolver already repointed; nothing changed'};
+  resolver: 'Resolver already uses the nameserver it was deployed with; nothing changed', repoint: 'Resolver already repointed; nothing changed',
+  transfer: "This service's rack already runs on a healthy feed; nothing changed", sag: 'Feed already sagging; nothing changed'};
 const DEBRIEFS = {
   "service-unavailable": "The scenario requested stopping {target}. When that succeeds, its container state reads stopped and its own probes fail. When the catalogue stops, both gateways stay live but their business requests fail, so the failure spreads; once their cached answer expires they cannot even resolve its name, because Docker's resolver drops the name of a stopped container, which looks like a DNS fault until the catalogue is checked; when one gateway stops, the catalogue and the other gateway stay healthy, so it does not. Starting the stopped service restores the request path.",
   "cpu-starvation": "The scenario requested a runaway background job inside {target}. When that succeeds, the service keeps running and answering, but slowly: the job uses the container's whole 0.25-CPU limit, the kernel throttles it, and requests queue behind it, crossing the 300 ms threshold. Its log records the job starting. A slow catalogue makes both gateways slow, and sometimes time out, too. Stopping the job returns normal latency.",
@@ -528,6 +557,7 @@ const DEBRIEFS = {
   "retry-storm": "The scenario requested app users, 60 a second through {target}, whose app retries a failed request at once up to three times, and then a short index compaction that took the catalogue's whole CPU for 8 seconds. The compaction made requests time out; every timeout became up to four attempts; the extra attempts overloaded {target}, so its requests kept failing after the compaction had ended. That is a metastable failure: the overload outlives its cause, and it sits in a different service from the trigger. The other gateway recovers as soon as the compaction ends. Nothing is broken, stopped or misconfigured, and no unknown caller floods anything, so restarting, stopping a job or rate-limiting a client changes nothing. Resource use shows {target} at its CPU limit while the catalogue is idle, and its traffic shows most requests are retries. Enabling load shedding on {target} caps the requests it keeps in flight and turns the rest away at once, so the ones it accepts finish in time, users stop retrying, and the load falls back to normal.",
   "thermal-throttle": "The scenario requested a simulated failure of cooling unit CRAC-2, which raised the inlet temperature of both racks to 38 \u00b0C; the facility responded with a power cap that lowered every container's CPU limit from 0.25 to 0.05, and steady daytime users, 32 a second through each gateway, kept the services busy. The facility layer is simulated, but the cap and the users were real. A CPU cap alone barely slows these light requests; under load it does. The gateways, which do the most work per request, ran out first: both turned slow even to liveness checks and failed most business requests, while the catalogue's simple answers stayed fast. Resource use showed each gateway throttled against a limit far below its deployed 0.25, which looks like CPU starvation, but there is no job to stop and no caller to limit. The facility check showed the failed cooling unit, the hot inlet and the active cap. Lifting the cap while the room is still hot is refused, as a facilities team would refuse it; once cooling recovered after about 75 seconds, lifting the power cap restored normal latency.",
   "power-loss": "The scenario requested a simulated breaker trip on PDU-A, the power distribution unit feeding rack R1, where {target} and gateway-a are installed. The facility layer is simulated, but its effect was real: both containers were stopped, as servers are when their power is cut, and neither can be started while the breaker is open. Two services failed at the same moment, which on its own could look like two separate faults; what they share is not software but a power feed. gateway-c, on PDU-B, kept running, but its business requests fail because the catalogue is down. Starting either service reports no power and changes nothing. The facility check shows the open breaker, the rack and every service it feeds. Resetting the breaker restores power and starts the rack's services, the catalogue first because the gateways depend on it.",
+  "brownout": "The scenario requested a simulated brownout on utility feed A to PDU-B, the power distribution unit feeding rack R2, where {target} is installed: the voltage sagged to about 186 V, below the 200 V its power supply tolerates. The facility layer is simulated, but its effect was real: whenever the voltage dipped, the server lost power, so the lab stopped the container, rebooted it a few seconds later, and stopped it again about ten seconds after that. A container has no power supply to lose, so it was stopped cleanly (exit code 0). The service crash-looped like a memory leak, but memory stayed flat, there was no out-of-memory kill and the release had not changed, so rolling back changed nothing; starting it only lasted until the next dip, and the breaker was closed, so resetting it changed nothing. The catalogue and gateway-a, on PDU-A, stayed healthy. The facility check showed feed A sagging, the redundant feed B normal, and a power-supply dropout at every restart. Moving the rack to the redundant feed ended the dropouts, and recovery had to hold for ten healthy cycles because the failures had come and gone.",
   "dns-failure": "The scenario requested a node-settings sync that pointed {target}'s resolver at 127.0.0.53, the address of systemd-resolved's stub on an ordinary Linux host. That setting is easily copied from a host image, but nothing listens there inside a container, so every DNS query is refused. The gateway resolves the catalogue's name with real DNS queries and caches each answer for 5 seconds, so it kept working until the cached answer expired, then failed every business request with a name resolution error. Its process, CPU, disk, release and running config were all normal, and the catalogue and the other gateway stayed healthy. A failing call to the catalogue looks like a stopped catalogue, or like config drift, which also breaks the upstream address; but the catalogue answered its own checks, the config matched what was deployed, and the network path check showed the lookup refused by 127.0.0.53 while a TCP connection to the catalogue's last known address still succeeded. Restoring the resolver fixed it at once; restarting the catalogue or restoring config changed nothing.",
   "network-delay": "The scenario requested a 600 ms delay on all traffic leaving {target}, applied with a Linux netem queue inside its own network namespace. When that succeeds, the process stays live and its CPU and disk stay normal, but everything it sends waits in the queue: its own checks take about 600 ms longer. A delayed catalogue slows both gateways' requests by the same amount; a delayed gateway pays the delay twice, on its call to the catalogue and on its reply, while the catalogue and the other gateway stay fast. Requests still succeed, because each wait stays under the gateways' 1-second upstream timeout. The network path check shows TCP connections taking about 600 ms and the netem queue itself, and a request trace shows a fast handler with the time spent outside it. Removing the delay, or restarting the container, restores normal latency."
 };
@@ -557,6 +587,21 @@ function apply(node, verb) {
     return true;
   }
   if (verb === 'unstorm' && room.failedAt != null && room.daytimeStoppedAt == null) { room.daytimeStoppedAt = now(); if (storm.start == null || storm.stoppedAt != null) return true; }
+  if (verb === 'sag' || verb === 'transfer') {
+    const state = facility[PDU_OF[node]] ||= {}, sag = state.sag ||= {};
+    if (verb === 'sag') {
+      if (sag.active) return false;
+      Object.assign(sag, {active: true, at: now(), node, drops: [], transferredAt: null, up: 0, down: 0});
+      state.feed = 'A';
+      powerDrop(node, sag);
+      return true;
+    }
+    if (!sag.active) return false;
+    Object.assign(sag, {active: false, transferredAt: now()});
+    state.feed = 'B';
+    if (!fleet[sag.node].running) apply(sag.node, 'start');
+    return true;
+  }
   if (verb === 'trip' || verb === 'breaker') {
     const pdu = PDU_OF[node], state = facility[pdu] ||= {};
     if ((state.breaker === 'open') === (verb === 'trip')) return false;
@@ -632,7 +677,7 @@ function mutate(key, node, verb) {
   return body;
 }
 
-const RESET_FIRST = {'power-loss': ['breaker'], 'thermal-throttle': ['uncap']};  // steps a reset takes before starting the services
+const RESET_FIRST = {'power-loss': ['breaker'], 'thermal-throttle': ['uncap'], 'brownout': ['transfer']};  // steps a reset takes before starting the services
 const resetPlan = s => [...(RESET_FIRST[s.fault_kind] || []).map(v => [s.fault_target, v]), ...NODES.map(n => [n, 'start']), ...(RESET_FIRST[s.fault_kind] ? (RESET_CLEANUP[s.fault_kind] || []).map(v => [s.fault_target, v]) : RESET_CLEANUP[s.fault_kind] ? RESET_CLEANUP[s.fault_kind].map(v => [s.fault_target, v])
   : FAULTS[s.fault_kind][1] !== 'start' ? [[s.fault_target, FAULTS[s.fault_kind][1]]] : [])];
 
@@ -654,6 +699,7 @@ function start(data) {
     lab.baseline = 0;
     throw new HttpError(409, 'Fleet state changed since baseline; inspect and restore it before injection');
   }
+  for (const pdu of Object.keys(facility)) delete facility[pdu];  // the facility state belongs to one investigation, as on the real lab
   lab.session = {id: hex(32), mode: data.mode, status: 'observing', started_at: now(), deadline: now() + 900,
     fault_target: target, fault_kind: kind, revealed: false, help: [], notes: [], recovery_attempts: [],
     start_key: data.key, verification: 'Collecting measured effects', outcome: null};
@@ -804,7 +850,11 @@ function remedyFor(fresh) {
     let action;
     let then = null;
     if (kind === 'service' && body.running === false && fresh.get(node + '|facility')?.body.breaker === 'open') continue;  // no power: starting cannot work
-    if (kind === 'facility' && body.power_cap?.active && body.cooling?.crac_2 === 'failed') { action = `The facility check (simulated) for ${node}'s rack shows cooling unit CRAC-2 failed, the inlet at ${body.inlet_c} °C and a power cap active on every rack. Lifting the cap while the room is this hot would overheat it, so there is no safe fix yet: check the facility again until cooling is restored.`; then = 'facility'; }
+    if (kind === 'service' && body.running === false && sagging(fresh.get(node + '|facility')?.body)) continue;  // starting only lasts until the next dip
+    if (kind === 'facility' && sagging(body)) {
+      const feed = body.feeds[body.active_feed || 'A'], drops = (body.events || []).filter(e => e.event === 'power supply dropout').length;
+      action = `The facility check (simulated) shows feed ${body.active_feed || 'A'} to ${body.pdu} sagging to ${feed.voltage_v} V, below the ${body.psu_min_v} V its power supplies need, with ${drops} power-supply dropout${drops !== 1 ? 's' : ''} on ${body.fed_services.join(' and ')}; the redundant feed is normal. Each dropout cuts the server's power, so starting the service only lasts until the next dip. You can try moving the rack to the redundant feed, then verify it stays up for ten cycles.`;
+    } else if (kind === 'facility' && body.power_cap?.active && body.cooling?.crac_2 === 'failed') { action = `The facility check (simulated) for ${node}'s rack shows cooling unit CRAC-2 failed, the inlet at ${body.inlet_c} °C and a power cap active on every rack. Lifting the cap while the room is this hot would overheat it, so there is no safe fix yet: check the facility again until cooling is restored.`; then = 'facility'; }
     else if (kind === 'facility' && body.power_cap?.active) action = `The facility check (simulated) for ${node}'s rack shows cooling restored and the inlet back to ${body.inlet_c} °C, but the power cap is still active. You can try lifting the power cap, then verify latency returns to normal everywhere.`;
     else if (kind === 'resources' && body.cpu_limit && body.cpu_limit < 0.25) { action = `The resource check shows ${node}'s CPU limit at ${body.cpu_limit}, below the 0.25 it was deployed with: something has capped it, which a power or thermal cap does. Check the facility before changing anything on the service.`; then = 'facility'; }
     else if (kind === 'facility' && body.breaker === 'open') action = `The facility check (simulated) shows the ${body.pdu} breaker open: rack ${body.rack} has no power, so ${body.fed_services.join(' and ')} lost power together. Starting them cannot work without power. You can try resetting the breaker, then verify every service it feeds comes back.`;
@@ -920,7 +970,7 @@ const routes = {
     const s = active(d.session_id);
     if (s.status === 'resetting') throw new HttpError(409, 'Reset is in progress. Wait for verification or retry reset.');
     const verb = d.verb || 'start';
-    if (!['start', 'calm', 'clear', 'restore', 'undelay', 'undrop', 'requota', 'rollback', 'ratelimit', 'shed', 'breaker', 'uncap', 'resolver'].includes(verb)) invalid();
+    if (!['start', 'calm', 'clear', 'restore', 'undelay', 'undrop', 'requota', 'rollback', 'ratelimit', 'shed', 'breaker', 'uncap', 'resolver', 'transfer'].includes(verb)) invalid();
     const result = mutate(d.key, d.node || 'catalog-b', verb);
     if (!s.recovery_attempts.some(a => a.key === d.key)) {
       s.recovery_attempts.push({key: d.key, at: now(), ...result});

@@ -130,10 +130,16 @@ Reports are under ignored `state/validation/`. The app is running at http://loca
 - **Found on the way:** a stopped catalogue's name stops resolving too. Docker answers SERVFAIL for a stopped container, which the generic `ConnectError` used to hide. Guidance now checks whether the catalogue is running before blaming the resolver, and restoring the resolver is suggested only when it changed or the catalogue is still reachable.
 - AI investigator: log events carry their age, and an open incident is not cleared by a fleet that looks healthy between crashes. With full evidence it got 28 of 30 challenge rounds right across all fourteen faults.
 
+## Sixteenth checkpoint (23 October 2026)
+
+- **Power feeds.** Each simulated PDU has an active feed A and a redundant feed B; the **Facility** check shows both, the power supplies' minimum voltage and every dropout.
+- **Fifteenth fault: brownout.** Feed A to PDU-B sags to 186 V, so gateway-c loses power, reboots and loses it again: a crash loop with flat memory and an unchanged release. Remedy: **Move to redundant feed**. It needs no new broker operation.
+- The simulator now clears its facility state at the start of each investigation, as the controller does.
+
 ## Next work
 
 1. AI evaluation with other models and question wordings; more samples of the rarer faults.
-2. Compound incidents (for example a heatwave that tips into a retry storm), brownouts, clock skew and partial partitions from the roadmap.
+2. Compound incidents (for example a heatwave that tips into a retry storm), clock skew and partial partitions from the roadmap.
 3. Screen-reader review; runs measured in days.
 
 ## Boundaries preserved

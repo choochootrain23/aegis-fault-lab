@@ -504,6 +504,29 @@ def main():
             expect(page.locator('#session-status')).to_have_text('ended', timeout=15000)
             page.select_option('#practice-kind', 'service-unavailable')
 
+            # A brownout on rack R2: gateway-c keeps dropping out and rebooting. Starting it only lasts until the next
+            # dip; the facility check shows the sagging feed, and moving to the redundant feed holds for ten cycles.
+            page.select_option('#practice-kind', 'brownout')
+            expect(page.locator('#practice-target')).to_have_value('gateway-c')
+            expect(page.locator('#scenario-title')).to_have_text('When the power sags')
+            expect(page.locator('#start')).to_be_enabled(timeout=20000)
+            page.click('#start')
+            expect(page.locator('#session-status')).to_have_text('investigating', timeout=30000)
+            expect(page.locator('#node-catalog-b .node-state')).to_have_text('healthy')
+            page.click('#node-gateway-c')
+            page.click('[data-check="facility"]')
+            expect(page.locator('[data-check="facility"] .check-result')).to_contain_text('feed sagging')
+            expect(page.locator('.evidence-row').filter(has_text='sagging to 186 V').first).to_be_visible()
+            page.click('[data-help="action"]')
+            expect(page.locator('#help-result')).to_contain_text('moving the rack to the redundant feed')
+            page.click('[data-remedy="breaker"]')
+            expect(page.locator('#toast')).to_contain_text('already closed')
+            page.click('[data-remedy="transfer"]')
+            expect(page.locator('#session-status')).to_have_text('recovered', timeout=40000)
+            page.click('#reset')
+            expect(page.locator('#session-status')).to_have_text('ended', timeout=15000)
+            page.select_option('#practice-kind', 'service-unavailable')
+
             # A stopped gateway-c is local: gateway-a and the catalogue stay healthy, and guidance says so.
             page.select_option('#practice-kind', 'service-unavailable')
             page.select_option('#practice-target', 'gateway-c')
@@ -545,7 +568,7 @@ def main():
             expect(page.locator('#scenario-reveal')).to_contain_text('Known scenario:')
             page.click('#reset')
             expect(page.locator('#session-status')).to_have_text('ended', timeout=15000)
-            expect(page.locator('#history .history-item')).to_have_count(16)
+            expect(page.locator('#history .history-item')).to_have_count(17)
 
             mobile = browser.new_page(viewport={'width': 390, 'height': 844})
             mobile.on('pageerror', lambda error: errors.append(str(error)))

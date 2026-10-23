@@ -595,10 +595,10 @@ def test_challenge_hides_fault_kind_and_target(lab):
             await controller.reset_locked(f'reset-kind-{attempt:03d}')
             for _ in range(3):
                 await controller.cycle()
-            if len(seen) == 14:
+            if len(seen) == 15:
                 break
         assert seen == {'service-unavailable', 'cpu-starvation', 'disk-full', 'config-drift', 'network-delay', 'packet-loss', 'quota-zero',
-                        'bad-release', 'memory-leak', 'traffic-flood', 'retry-storm', 'power-loss', 'thermal-throttle', 'dns-failure'}
+                        'bad-release', 'memory-leak', 'traffic-flood', 'retry-storm', 'power-loss', 'thermal-throttle', 'dns-failure', 'brownout'}
     run(scenario())
 
 
@@ -1066,6 +1066,38 @@ def test_reset_after_a_power_loss_closes_the_breaker_before_starting(lab):
         await controller.reset_locked('reset-power')
         verbs = [(r['node'], r['verb'], r['status']) for r in controller.session['reset']['results']]
         assert verbs[0] == ('catalog-b', 'breaker', 'succeeded') and all(fleet.running.values())
+    run(scenario())
+
+
+def test_brownout_crash_loops_gateway_c_until_the_rack_moves_to_the_redundant_feed(lab):
+    async def scenario():
+        controller, fleet = lab
+        await baseline(controller)
+        with pytest.raises(HTTPException) as refused:
+            await controller.start(Start(mode='practice', kind='brownout', target='gateway-a', key='start-sag-a'))
+        assert refused.value.status_code == 422
+        await controller.start(Start(mode='practice', kind='brownout', target='gateway-c', key='start-sag'))
+        assert not fleet.running['gateway-c'] and fleet.running['gateway-a'] and fleet.running['catalog-b']
+        await investigate(controller)
+        states = []
+        for _ in range(12):  # down, rebooted, up, down again
+            await controller.cycle()
+            states.append(fleet.running['gateway-c'])
+        assert True in states and states.count(False) >= 3 and states[states.index(True):].count(False) >= 1
+        body = (await controller.check('gateway-c', 'facility'))['body']
+        assert body['simulated'] and body['feeds']['A']['status'] == 'sagging' and body['feeds']['B']['status'] == 'normal' and body['breaker'] == 'closed'
+        assert sum(e['event'] == 'power supply dropout' for e in body['events']) >= 2
+        assert (await controller.check('gateway-a', 'facility'))['body']['feeds']['A']['status'] == 'normal'
+        assert not (await controller.check('gateway-c', 'memory'))['body'].get('oom_killed')
+        for node, verb in (('gateway-c', 'breaker'), ('gateway-a', 'transfer')):
+            assert (await controller.mutate(f'wrong-sag-{node}-{verb}', node, verb))['status'] == 'unchanged'
+        await verify(controller, 'transfer', 'gateway-c', 'transfer')
+        for _ in range(10):
+            if controller.session['status'] == 'recovered':
+                break
+            await controller.cycle()
+        assert controller.session['status'] == 'recovered' and fleet.running['gateway-c'] and controller.session['required_streak'] == 10
+        assert 'PDU-B' in controller.public_session(controller.session | {'revealed': True})['debrief']
     run(scenario())
 
 

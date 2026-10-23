@@ -21,7 +21,7 @@ New faults modelled on the kinds of incident that public data-centre reports des
 | 2 | **Retry storm**: a brief catalogue slowdown is kept alive by app users retrying without backoff, overloading one gateway | A traffic flood; a broken gateway | Enable load shedding | **Done** (F11), after adding request deadlines and a bulkhead (see [validation](VALIDATION.md)) |
 | 6 | **Thermal throttling / power capping**: the gateways fail under a power cap while the catalogue stays fast | CPU starvation | Lift power cap, once cooling recovers | **Done** (F13), with steady user load, since a cap alone barely slows light requests |
 | 7 | **Rack power loss**: two services on one PDU stop together | Two separate stopped services | Reset breaker | **Done** (F12), with a simulated facility layer |
-| 8 | **Brownout and restart loops** | Memory leak (memory flat here) | Move to the redundant feed | Planned |
+| 8 | **Brownout and restart loops**: feed A to rack R2 sags, so gateway-c drops out and reboots again and again | Memory leak (memory flat here); stopped service | Move to the redundant feed | **Done** (F15), with power feeds in the facility layer |
 | 9 | **Clock skew** on one gateway: signed requests rejected | Bad release, config drift | Resync clock | Planned: needs request signing |
 | 10 | **DNS resolution failure** on one gateway: its resolver points at a nameserver that is not there | Stopped catalogue (it is fine, and reachable at its last known address); config drift | Restore resolver | **Done** (F14), with real DNS queries from the gateways |
 | 11 | **Partial partition**: one gateway cannot reach the catalogue | Stopped catalogue | Restore route | Planned: new fixed helper rule, needs review |

@@ -22,16 +22,16 @@ NODES = ('gateway-a', 'catalog-b', 'gateway-c')
 # A different node to try a wrong remedy on.
 OTHER = {'gateway-a': 'catalog-b', 'catalog-b': 'gateway-c', 'gateway-c': 'gateway-a'}
 KINDS = ('service-unavailable', 'cpu-starvation', 'disk-full', 'config-drift', 'network-delay', 'packet-loss', 'quota-zero', 'bad-release', 'memory-leak',
-         'traffic-flood', 'retry-storm', 'power-loss', 'thermal-throttle', 'dns-failure')
+         'traffic-flood', 'retry-storm', 'power-loss', 'thermal-throttle', 'dns-failure', 'brownout')
 REMEDY = {'service-unavailable': 'start', 'cpu-starvation': 'calm', 'disk-full': 'clear', 'config-drift': 'restore', 'network-delay': 'undelay',
           'packet-loss': 'undrop', 'quota-zero': 'requota', 'bad-release': 'rollback', 'memory-leak': 'rollback', 'traffic-flood': 'ratelimit', 'retry-storm': 'shed', 'power-loss': 'breaker', 'thermal-throttle': 'uncap',
-          'dns-failure': 'resolver'}
+          'dns-failure': 'resolver', 'brownout': 'transfer'}
 TARGETS = {'quota-zero': ('catalog-b',), 'traffic-flood': ('catalog-b',), 'retry-storm': ('gateway-a', 'gateway-c'), 'power-loss': ('catalog-b',), 'thermal-throttle': ('catalog-b',),
-           'dns-failure': ('gateway-a', 'gateway-c')}  # faults that only exist on some services
+           'dns-failure': ('gateway-a', 'gateway-c'), 'brownout': ('gateway-c',)}  # faults that only exist on some services
 # The fix for the fault each one is most easily mistaken for: it must change nothing.
 LOOKALIKE = {'packet-loss': 'undelay', 'network-delay': 'undrop', 'quota-zero': 'restore', 'bad-release': 'restore', 'traffic-flood': 'calm', 'retry-storm': 'ratelimit', 'thermal-throttle': 'calm',
-             'dns-failure': 'restore'}
-INTERMITTENT = ('cpu-starvation', 'packet-loss', 'bad-release', 'memory-leak')
+             'dns-failure': 'restore', 'brownout': 'breaker'}
+INTERMITTENT = ('cpu-starvation', 'packet-loss', 'bad-release', 'memory-leak', 'brownout')
 RELEASE_FAULTS = {'v1.5.0': 'bad-release', 'v1.5.1': 'memory-leak'}  # effects that come and go from one cycle to the next
 
 
@@ -40,6 +40,8 @@ def expected(kind, target):
     slowness); a gateway fault stays on that gateway."""
     if kind == 'thermal-throttle':  # every service capped; the gateways, doing the most work per request, fail first
         return {'gateway-a': 'degraded', 'catalog-b': 'healthy', 'gateway-c': 'degraded'}
+    if kind == 'brownout':  # gateway-c drops out and reboots; nothing else is on its feed or depends on it
+        return {n: 'unavailable' if n == target else 'healthy' for n in NODES}
     if kind == 'power-loss':  # rack R1 (the catalogue and gateway-a) loses power; gateway-c runs but cannot reach the catalogue
         return {'gateway-a': 'unavailable', 'catalog-b': 'unavailable', 'gateway-c': 'degraded'}
     if kind == 'quota-zero':  # the catalogue refuses its callers but answers its own probes
@@ -96,6 +98,10 @@ def anomalies(operator):
         if (facility['body'].get('power_cap') or {}).get('active'):
             if node == 'catalog-b':  # one cap on the whole room is one fault, named by the catalogue
                 found.append(('thermal-throttle', node, facility))
+            continue
+        feeds = facility['body'].get('feeds') or {}
+        if (feeds.get(facility['body'].get('active_feed', 'A')) or {}).get('status') == 'sagging':
+            found.append(('brownout', node, facility))
             continue
         if facility['body'].get('breaker') == 'open':
             # One power feed down is one fault, however many services it feeds; it is named by the catalogue's rack.
@@ -160,7 +166,7 @@ def diagnose(operator, sid, state, mode):
     kind, target, inspection = found[0]
     # Health is a per-cycle sample and CPU starvation is statistical, so judge the usual reading over several cycles.
     samples = []
-    for _ in range(10 if kind in ('packet-loss', 'bad-release', 'memory-leak') else 5):  # about half their cycles fail, so take more samples
+    for _ in range(10 if kind in ('packet-loss', 'bad-release', 'memory-leak', 'brownout') else 5):  # about half their cycles fail, so take more samples
         samples.append({n['id']: n['health'] for n in operator.request('/api/state')['nodes']})
         time.sleep(2)
     # A healthy node must read healthy most of the time; an affected node must show its effect in at least two of
@@ -188,7 +194,7 @@ def diagnose(operator, sid, state, mode):
     recent = [e for node in callers for e in operator.request(f'/api/investigations/{sid}/evidence?node={node}&kind=business&limit=20')['items']]
     affected = sum(1 for e in recent if e['body']['ok'] is False or e['body'].get('slow'))
     # Packet loss leaves most requests working, which is the point; the others mostly fail or are slow.
-    floor = len(recent) // 10 if kind in ('packet-loss', 'bad-release', 'memory-leak') else len(recent) // 2
+    floor = len(recent) // 10 if kind in ('packet-loss', 'bad-release', 'memory-leak', 'brownout') else len(recent) // 2
     ensure(affected >= floor, f'gateway business requests should be affected; {affected}/{len(recent)} were')
     # Guidance only trusts inspections from the last 30 seconds, and a full sweep plus sampling takes longer than that,
     # so repeat the telling inspection first, as a learner would. A crash loop's evidence depends on the moment, so
@@ -206,7 +212,7 @@ def diagnose(operator, sid, state, mode):
 def recover(operator, sid, kind, target):
     # A wrong node, and (while the target still runs) a wrong kind of remedy, must both change nothing.
     # Starting a crash-looping service really does start it, so for a leak the test is that it is not credited.
-    wrong = ([(OTHER[target], REMEDY[kind])] + ([(target, 'start')] if kind not in ('service-unavailable', 'memory-leak') else [])
+    wrong = ([(OTHER[target], REMEDY[kind])] + ([(target, 'start')] if kind not in ('service-unavailable', 'memory-leak', 'brownout') else [])
              + ([(target, LOOKALIKE[kind])] if kind in LOOKALIKE else []))
     for node, verb in wrong:
         wrong = operator.action('recover', sid, node=node, verb=verb)

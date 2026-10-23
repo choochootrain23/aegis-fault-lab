@@ -42,13 +42,18 @@ FAULTS = {'service-unavailable': ('stop', 'start'), 'cpu-starvation': ('burn', '
           'config-drift': ('drift', 'restore'), 'network-delay': ('delay', 'undelay'), 'packet-loss': ('drop', 'undrop'),
           'quota-zero': ('squeeze', 'requota'), 'bad-release': ('ship', 'rollback'), 'memory-leak': ('leak', 'rollback'),
           'traffic-flood': ('flood', 'ratelimit'), 'retry-storm': ('storm', 'shed'), 'power-loss': ('trip', 'breaker'),
-          'thermal-throttle': ('heat', 'uncap'), 'dns-failure': ('repoint', 'resolver')}
+          'thermal-throttle': ('heat', 'uncap'), 'dns-failure': ('repoint', 'resolver'), 'brownout': ('sag', 'transfer')}
 # The facility layer is simulated: containers have no power supply, so racks, PDUs and breakers are modelled here and
 # every facility record says simulated. The effects on the services are real: a tripped breaker stops the containers
 # it feeds through the broker, and they cannot be started until the breaker is reset.
 RACKS = {'PDU-A': {'rack': 'R1', 'nodes': ('catalog-b', 'gateway-a')}, 'PDU-B': {'rack': 'R2', 'nodes': ('gateway-c',)}}
 PDU_OF = {node: pdu for pdu, rack in RACKS.items() for node in rack['nodes']}
-FACILITY_VERBS = {'trip', 'breaker', 'heat', 'uncap'}
+FACILITY_VERBS = {'trip', 'breaker', 'heat', 'uncap', 'sag', 'transfer'}
+# A brownout: the utility feed to a PDU sags below what a power supply tolerates, so the server it feeds drops out
+# whenever the voltage dips, reboots and drops out again. The lab stops the container after BROWNOUT_UP_CYCLES health
+# cycles up and starts it again after BROWNOUT_DOWN_CYCLES down, through the broker's ordinary operations.
+BROWNOUT_UP_CYCLES, BROWNOUT_DOWN_CYCLES = 5, 3
+NOMINAL_V, SAG_V, PSU_MIN_V = 230, 186, 200
 COOLING_RECOVERY_S = 75  # how long the simulated cooling unit takes to come back after it fails
 HOT_INLET_C, NORMAL_INLET_C = 38.4, 24.8
 # The report exporter that floods the catalogue runs in its own small service, outside the three inspected ones.
@@ -63,9 +68,9 @@ ROLLBACK_ATTEMPTS = 6  # one-second tries to roll back a target that is booting 
 ROLLOUT_BACKOFF_CYCLES = 3  # health cycles (6 s) a crashed service stays down before the deploy controller restarts it
 # Faults that only exist on some services; every other fault can target any of the three.
 FAULT_TARGETS = {'quota-zero': ('catalog-b',), 'traffic-flood': ('catalog-b',), 'retry-storm': ('gateway-a', 'gateway-c'), 'power-loss': ('catalog-b',), 'thermal-throttle': ('catalog-b',),
-                 'dns-failure': ('gateway-a', 'gateway-c')}
+                 'dns-failure': ('gateway-a', 'gateway-c'), 'brownout': ('gateway-c',)}
 # Steps a reset must take before starting the services, rather than reapplying the remedy afterwards.
-RESET_FIRST = {'power-loss': ('breaker',), 'thermal-throttle': ('uncap',)}
+RESET_FIRST = {'power-loss': ('breaker',), 'thermal-throttle': ('uncap',), 'brownout': ('transfer',)}
 REMEDIES = {remedy for _, remedy in FAULTS.values()}
 NODE_VERBS = {'fill', 'clear', 'burn', 'calm', 'drift', 'restore', 'squeeze', 'requota', 'ship', 'leak', 'ratelimit', 'shed', 'unshed', 'repoint', 'resolver'}  # applied through the service's token-protected maintenance endpoint
 DETECT_FAILING = 3     # failing cycles among the last DETECT_WINDOW that open an investigation
@@ -87,7 +92,8 @@ UNCHANGED = {'start': 'Already running; nothing changed', 'stop': 'Already stopp
              'unstorm': 'No app users running; nothing changed', 'breaker': 'The breaker feeding this service is already closed; nothing changed',
              'trip': 'Breaker already open; nothing changed', 'uncap': 'No power cap is active; nothing changed',
              'heat': 'Cooling already failed; nothing changed', 'daytime': 'Users already running; nothing changed',
-             'resolver': 'Resolver already uses the nameserver it was deployed with; nothing changed', 'repoint': 'Resolver already repointed; nothing changed'}
+             'resolver': 'Resolver already uses the nameserver it was deployed with; nothing changed', 'repoint': 'Resolver already repointed; nothing changed',
+             'transfer': 'This service\'s rack already runs on a healthy feed; nothing changed', 'sag': 'Feed already sagging; nothing changed'}
 DEBRIEFS = {
     'service-unavailable': 'The scenario requested stopping {target}. When that succeeds, its container state reads stopped and its own probes fail. When the catalogue stops, both gateways stay live but their business requests fail, so the failure spreads; once their cached answer expires they cannot even resolve its name, because Docker\'s resolver drops the name of a stopped container, which looks like a DNS fault until the catalogue is checked; when one gateway stops, the catalogue and the other gateway stay healthy, so it does not. Starting the stopped service restores the request path.',
     'cpu-starvation': 'The scenario requested a runaway background job inside {target}. When that succeeds, the service keeps running and answering, but slowly: the job uses the container\'s whole 0.25-CPU limit, the kernel throttles it, and requests queue behind it, crossing the {slow} ms threshold. Its log records the job starting. A slow catalogue makes both gateways slow, and sometimes time out, too. Stopping the job returns normal latency.',
@@ -101,6 +107,7 @@ DEBRIEFS = {
     'retry-storm': 'The scenario requested app users, 60 a second through {target}, whose app retries a failed request at once up to three times, and then a short index compaction that took the catalogue\'s whole CPU for 8 seconds. The compaction made requests time out; every timeout became up to four attempts; the extra attempts overloaded {target}, so its requests kept failing after the compaction had ended. That is a metastable failure: the overload outlives its cause, and it sits in a different service from the trigger. The other gateway recovers as soon as the compaction ends. Nothing is broken, stopped or misconfigured, and no unknown caller floods anything, so restarting, stopping a job or rate-limiting a client changes nothing. Resource use shows {target} at its CPU limit while the catalogue is idle, and its traffic shows most requests are retries. Enabling load shedding on {target} caps the requests it keeps in flight and turns the rest away at once, so the ones it accepts finish in time, users stop retrying, and the load falls back to normal.',
     'thermal-throttle': 'The scenario requested a simulated failure of cooling unit CRAC-2, which raised the inlet temperature of both racks to 38 °C; the facility responded with a power cap that lowered every container\'s CPU limit from 0.25 to 0.05, and steady daytime users, 32 a second through each gateway, kept the services busy. The facility layer is simulated, but the cap and the users were real. A CPU cap alone barely slows these light requests; under load it does. The gateways, which do the most work per request, ran out first: both turned slow even to liveness checks and failed most business requests, while the catalogue\'s simple answers stayed fast. Resource use showed each gateway throttled against a limit far below its deployed 0.25, which looks like CPU starvation, but there is no job to stop and no caller to limit. The facility check showed the failed cooling unit, the hot inlet and the active cap. Lifting the cap while the room is still hot is refused, as a facilities team would refuse it; once cooling recovered after about 75 seconds, lifting the power cap restored normal latency.',
     'power-loss': 'The scenario requested a simulated breaker trip on PDU-A, the power distribution unit feeding rack R1, where {target} and gateway-a are installed. The facility layer is simulated, but its effect was real: both containers were stopped, as servers are when their power is cut, and neither can be started while the breaker is open. Two services failed at the same moment, which on its own could look like two separate faults; what they share is not software but a power feed. gateway-c, on PDU-B, kept running, but its business requests fail because the catalogue is down. Starting either service reports no power and changes nothing. The facility check shows the open breaker, the rack and every service it feeds. Resetting the breaker restores power and starts the rack\'s services, the catalogue first because the gateways depend on it.',
+    'brownout': 'The scenario requested a simulated brownout on utility feed A to PDU-B, the power distribution unit feeding rack R2, where {target} is installed: the voltage sagged to about 186 V, below the 200 V its power supply tolerates. The facility layer is simulated, but its effect was real: whenever the voltage dipped, the server lost power, so the lab stopped the container, rebooted it a few seconds later, and stopped it again about ten seconds after that. A container has no power supply to lose, so it was stopped cleanly (exit code 0). The service crash-looped like a memory leak, but memory stayed flat, there was no out-of-memory kill and the release had not changed, so rolling back changed nothing; starting it only lasted until the next dip, and the breaker was closed, so resetting it changed nothing. The catalogue and gateway-a, on PDU-A, stayed healthy. The facility check showed feed A sagging, the redundant feed B normal, and a power-supply dropout at every restart. Moving the rack to the redundant feed ended the dropouts, and recovery had to hold for ten healthy cycles because the failures had come and gone.',
     'dns-failure': 'The scenario requested a node-settings sync that pointed {target}\'s resolver at 127.0.0.53, the address of systemd-resolved\'s stub on an ordinary Linux host. That setting is easily copied from a host image, but nothing listens there inside a container, so every DNS query is refused. The gateway resolves the catalogue\'s name with real DNS queries and caches each answer for 5 seconds, so it kept working until the cached answer expired, then failed every business request with a name resolution error. Its process, CPU, disk, release and running config were all normal, and the catalogue and the other gateway stayed healthy. A failing call to the catalogue looks like a stopped catalogue, or like config drift, which also breaks the upstream address; but the catalogue answered its own checks, the config matched what was deployed, and the network path check showed the lookup refused by 127.0.0.53 while a TCP connection to the catalogue\'s last known address still succeeded. Restoring the resolver fixed it at once; restarting the catalogue or restoring config changed nothing.',
     'network-delay': 'The scenario requested a {delay} ms delay on all traffic leaving {target}, applied with a Linux netem queue inside its own network namespace. When that succeeds, the process stays live and its CPU and disk stay normal, but everything it sends waits in the queue: its own checks take about {delay} ms longer. A delayed catalogue slows both gateways\' requests by the same amount; a delayed gateway pays the delay twice, on its call to the catalogue and on its reply, while the catalogue and the other gateway stay fast. Requests still succeed, because each wait stays under the gateways\' 1-second upstream timeout. The network path check shows TCP connections taking about {delay} ms and the netem queue itself, and a request trace shows a fast handler with the time spent outside it. Removing the delay, or restarting the container, restores normal latency.',
 }
@@ -112,7 +119,7 @@ def debrief(s):
 
 
 FaultKind = Literal['service-unavailable', 'cpu-starvation', 'disk-full', 'config-drift', 'network-delay', 'packet-loss', 'quota-zero', 'bad-release', 'memory-leak',
-                    'traffic-flood', 'retry-storm', 'power-loss', 'thermal-throttle', 'dns-failure']
+                    'traffic-flood', 'retry-storm', 'power-loss', 'thermal-throttle', 'dns-failure', 'brownout']
 NodeName = Literal['gateway-a', 'catalog-b', 'gateway-c']
 CheckKind = Literal['liveness', 'readiness', 'business', 'logs', 'service', 'resources', 'disk', 'config', 'trace', 'network', 'traffic', 'releases', 'memory',
                     'facility']
@@ -144,7 +151,7 @@ class Action(SessionInput):
 
 
 class Recover(Action):
-    verb: Literal['start', 'calm', 'clear', 'restore', 'undelay', 'undrop', 'requota', 'rollback', 'ratelimit', 'shed', 'breaker', 'uncap', 'resolver'] = 'start'
+    verb: Literal['start', 'calm', 'clear', 'restore', 'undelay', 'undrop', 'requota', 'rollback', 'ratelimit', 'shed', 'breaker', 'uncap', 'resolver', 'transfer'] = 'start'
 
 
 class Note(SessionInput):
@@ -340,6 +347,8 @@ class Lab:
                     s['required_streak'] = FLAPPING_STREAK
             if s.get('rollout') and s['status'] in ('observing', 'investigating', 'verifying'):
                 await self.reconcile_rollout(s, results)
+            if s['status'] in ('observing', 'investigating', 'verifying'):
+                await self.reconcile_brownout(results)
             needed = VERIFY_STREAK if s['status'] == 'resetting' else s.get('required_streak', VERIFY_STREAK)
             if s['status'] in ('verifying', 'resetting') and self.successes >= needed:
                 if s['status'] == 'resetting':
@@ -556,11 +565,21 @@ class Lab:
                 events.append({'at': room['failed_at'] + COOLING_RECOVERY_S, 'event': 'cooling unit CRAC-2 restored'})
         if room.get('lifted_at'):
             events.append({'at': room['lifted_at'], 'event': 'power cap lifted'})
+        sag = state.get('sag') or {}
+        if sag.get('at'):
+            events.append({'at': sag['at'], 'event': f'utility feed A sagging to {SAG_V} V', 'pdu': pdu})
+            events += [{'at': at, 'event': 'power supply dropout', 'service': sag['node'], 'input_v': SAG_V - 7, 'min_v': PSU_MIN_V} for at in sag.get('drops', [])[-6:]]
+        if sag.get('transferred_at'):
+            events.append({'at': sag['transferred_at'], 'event': 'rack moved to redundant feed B', 'pdu': pdu})
+        sagging = bool(sag.get('active'))
+        feeds = {'A': {'voltage_v': SAG_V if sagging else NOMINAL_V, 'status': 'sagging' if sagging else 'normal'},
+                 'B': {'voltage_v': NOMINAL_V + 1, 'status': 'normal'}}
         return {'ok': True, 'simulated': True, 'rack': RACKS[pdu]['rack'], 'pdu': pdu, 'breaker': 'open' if not powered else 'closed',
                 'fed_services': list(RACKS[pdu]['nodes']), 'load_kw': round(0.11 * drawn + (0.04 if powered else 0), 2),
                 'inlet_c': HOT_INLET_C if hot else (NORMAL_INLET_C if pdu == 'PDU-A' else NORMAL_INLET_C + 0.5),
                 'cooling': {'crac_2': 'failed' if hot else 'running'}, 'power_cap': {'active': bool(room.get('capped')), 'cpu_limit': 0.05 if room.get('capped') else None},
-                'ups': {'on_battery': False, 'charge_pct': 100}, 'events': sorted(events, key=lambda e: e['at'])}
+                'ups': {'on_battery': False, 'charge_pct': 100}, 'feeds': feeds, 'active_feed': state.get('feed', 'A'), 'psu_min_v': PSU_MIN_V,
+                'events': sorted(events, key=lambda e: e['at'])}
 
     def room_hot(self):
         room = self.facility().get('room', {})
@@ -571,6 +590,8 @@ class Lab:
         the cooling (capping every container's CPU and bringing daytime users) or lift that cap once the room has cooled."""
         if verb in ('heat', 'uncap'):
             return await self.thermal(verb)
+        if verb in ('sag', 'transfer'):
+            return await self.brownout(node, verb)
         pdu = PDU_OF[node]
         state = self.facility().setdefault(pdu, {})
         if (state.get('breaker') == 'open') == (verb == 'trip'):
@@ -582,6 +603,57 @@ class Lab:
                 await self.broker(member, 'stop' if verb == 'trip' else 'start', inspected['generation'])
         state.update(breaker='open', at=time.time()) if verb == 'trip' else state.update(breaker='closed', closed_at=time.time())
         return {'changed': True, 'pdu': pdu, 'services': fed}
+
+    async def brownout(self, node, verb):
+        """Sag the feed to a node's PDU, cutting its power at once, or move the rack to the redundant feed and start it."""
+        state = self.facility().setdefault(PDU_OF[node], {})
+        sag = state.setdefault('sag', {})
+        if verb == 'sag':
+            if sag.get('active'):
+                return {'changed': False}
+            sag.update(active=True, at=time.time(), node=node, drops=[], transferred_at=None, up_cycles=0, down_cycles=0)
+            state['feed'] = 'A'
+            await self.power_drop(node, sag)
+            return {'changed': True, 'feed': 'A', 'voltage_v': SAG_V}
+        if not sag.get('active'):
+            return {'changed': False}
+        sag.update(active=False, transferred_at=time.time())
+        state['feed'] = 'B'
+        inspected = await self.broker(sag['node'], 'inspect')
+        if not inspected['running']:
+            await self.broker(sag['node'], 'start', inspected['generation'])
+        return {'changed': True, 'feed': 'B'}
+
+    async def power_drop(self, node, sag):
+        inspected = await self.broker(node, 'inspect')
+        if inspected['running']:
+            await self.broker(node, 'stop', inspected['generation'])
+            sag['drops'].append(time.time())
+        sag['up_cycles'] = sag['down_cycles'] = 0
+
+    async def reconcile_brownout(self, results):
+        """While a feed sags, the server it feeds keeps losing power: up a few cycles, down, rebooted, down again."""
+        for pdu, state in self.facility().items():
+            sag = state.get('sag') if isinstance(state, dict) else None
+            if not sag or not sag.get('active'):
+                continue
+            node = sag['node']
+            live = next((e for e in results if e['node'] == node and e['kind'] == 'liveness'), None)
+            try:
+                if live and live['body'].get('ok'):
+                    sag['up_cycles'] = sag.get('up_cycles', 0) + 1
+                    if sag['up_cycles'] >= BROWNOUT_UP_CYCLES:
+                        await self.power_drop(node, sag)
+                    continue
+                inspected = await self.broker(node, 'inspect')
+                if inspected['running']:
+                    continue  # booting
+                sag['down_cycles'] = sag.get('down_cycles', 0) + 1
+                if sag['down_cycles'] >= BROWNOUT_DOWN_CYCLES:
+                    await self.broker(node, 'start', inspected['generation'])  # the server reboots once power returns
+                    sag['up_cycles'] = sag['down_cycles'] = 0
+            except HTTPException:
+                pass  # the next cycle tries again; the facility never blocks health collection
 
     async def thermal(self, verb):
         room = self.facility().setdefault('room', {})
