@@ -200,6 +200,8 @@ It used the existing evidence volume: the broker deliberately accepts only conta
 - **Clock skew.** Before the fault was tried, signed gateway calls under the heaviest user traffic were checked first: retry storm, thermal throttling with daytime users, the traffic flood and the zero quota all passed again. The skewed gateway read +300.0 s against the controller and the healthy one 0.0 s. Its business requests failed with an upstream 401 `RequestExpired` naming the +300 s timestamp. Detected in 5–6 s and verified recovered in about 5 s after resynchronising.
 - **Full matrix.** All 39 practice rounds passed, every fault on every service it can target. Then 35 challenge rounds passed, until all eighteen faults and every service had appeared, followed by a reset without recovery. Detection took 5–33 s and verified recovery 5–26 s. The longest recoveries were the compound incident's two steps (about 26 s).
 
+**AI investigator across eighteen faults (24 October 2026, 30 rounds, `gemini-3.5-flash-lite`).** With full evidence the model chose the right fix in 29 of 30 rounds. It was right in every round of the brownout (3), clock skew (2) and the compound incident (2). For the compound incident it also gave the right next step both times it was asked after a partial fix. The one miss was a CPU starvation round. The partition did not come up in the random draw, so the model has not yet been evaluated on it. After its own fix was verified, it answered "no action" in 23 rounds and suggested another fix in 2. As before, a handful of rounds per fault are anecdotes, not rates.
+
 ## Reproduce browser reviews
 
 Use a development Python environment with `requirements.lock`, Playwright 1.64.0 and its Chromium headless shell:

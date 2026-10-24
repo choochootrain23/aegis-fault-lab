@@ -158,7 +158,7 @@ Reports are under ignored `state/validation/`. The app is running at http://loca
 
 ## Next work
 
-1. AI evaluation of faults 16–18, with other models and question wordings; more samples of the rarer faults.
+1. AI evaluation of the partition, which a 30-round run did not draw; other models and question wordings; more samples of the rarer faults.
 2. More compound incidents from the roadmap.
 3. Screen-reader review; runs measured in days.
 
