@@ -181,7 +181,7 @@ function renderJourney(){
 }
 function renderCheckResults(){
  if(!state)return;
- document.querySelectorAll('[data-check]').forEach(b=>{const out=b.querySelector('.check-result');const record=state.evidence.find(e=>e.node===selected&&e.kind===b.dataset.check);const summary=AegisView.checkSummary(record);out.textContent=summary.text;out.className='check-result '+summary.tone;});
+ document.querySelectorAll('[data-check]').forEach(b=>{const out=b.querySelector('.check-result');const record=state.evidence.find(e=>e.node===selected&&e.kind===b.dataset.check);const summary=AegisView.checkSummary(record);out.innerHTML=summary.text.split(' · ').map(part=>`<span class="seg">${esc(part)}</span>`).join(' · ');out.className='check-result '+summary.tone;});
 }
 function renderTimer(){
  const timer=AegisView.timer(state?.session,Date.now()/1000+serverOffset),dialog=$('expiry-dialog');
@@ -300,12 +300,12 @@ async function openArchive(id){
  try{const detail=await request('investigations/'+encodeURIComponent(id));const s=detail.session;$('archive-title').textContent=label(s.mode)+' investigation';$('archive-summary').textContent=`${new Date(s.started_at*1000).toLocaleString()} · ${label(s.outcome||s.status)} · ${detail.evidence_summary.count} retained observations`;
  $('archive-export').href='/api/export?session_id='+encodeURIComponent(id);
  const warning=detail.missing_citations.length?`${detail.missing_citations.length} cited observations have expired. They cannot be verified from this archive.`:detail.evidence_summary.count===0?'Detailed observations have expired or none were recorded. The summary remains available.':'';$('archive-warning').textContent=warning;$('archive-warning').hidden=!warning;
- $('archive-notes').innerHTML=(s.notes||[]).map(n=>`<div class="saved-note"><strong>Investigator note</strong><p>${esc(n.explanation)}</p><small>Uncertainty: ${esc(n.uncertainty||'Not recorded')}</small><div>Citations: ${archiveCitations(n.evidence_ids)}</div></div>`).join('')+
- (s.help||[]).map(h=>`<div class="saved-note"><strong>${esc(AegisView.helpLabel(h.level))}</strong><small>${new Date(h.at*1000).toLocaleString()}</small><p>${esc(h.message)}</p><div>Supporting observations: ${archiveCitations(h.evidence_ids)}</div></div>`).join('')+
- (s.recovery_attempts||[]).map(a=>`<div class="saved-note"><strong>${esc(AegisView.remedyLabel(a.verb||'start'))} · ${esc(a.node)} · ${esc(label(a.status))}</strong><small>${new Date(a.at*1000).toLocaleString()}</small><p>${esc(a.detail||'Control result recorded. See investigation verification for measured recovery.')}</p></div>`).join('')+
- (s.recovery_evidence_ids?.length?`<div class="saved-note"><strong>Verified recovery observations</strong><p>Three consecutive healthy cycles, covering both nodes and the business request path.</p>${archiveCitations(s.recovery_evidence_ids)}</div>`:'')+
- (s.reset_evidence_ids?.length?`<div class="saved-note"><strong>Reset baseline observations</strong><p>Healthy checks after reset are recorded separately from targeted recovery.</p>${archiveCitations(s.reset_evidence_ids)}</div>`:'')+
- (s.debrief?`<p class="panel-description">${esc(s.debrief)}</p>`:'');
+ $('archive-notes').innerHTML=(s.notes||[]).map(n=>`<div class="saved-note kind-note"><strong>Investigator note</strong><p>${esc(n.explanation)}</p><small>Uncertainty: ${esc(n.uncertainty||'Not recorded')}</small><div>Citations: ${archiveCitations(n.evidence_ids)}</div></div>`).join('')+
+ (s.help||[]).map(h=>`<div class="saved-note kind-help"><strong>${esc(AegisView.helpLabel(h.level))}</strong><small>${new Date(h.at*1000).toLocaleString()}</small><p>${esc(h.message)}</p><div>Supporting observations: ${archiveCitations(h.evidence_ids)}</div></div>`).join('')+
+ (s.recovery_attempts||[]).map(a=>`<div class="saved-note kind-fix"><strong>${esc(AegisView.remedyLabel(a.verb||'start'))} · ${esc(a.node)} · ${esc(label(a.status))}</strong><small>${new Date(a.at*1000).toLocaleString()}</small><p>${esc(a.detail||'Control result recorded. See investigation verification for measured recovery.')}</p></div>`).join('')+
+ (s.recovery_evidence_ids?.length?`<div class="saved-note kind-verified"><strong>Verified recovery observations</strong><p>Consecutive healthy cycles of every service and the business request path.</p>${archiveCitations(s.recovery_evidence_ids)}</div>`:'')+
+ (s.reset_evidence_ids?.length?`<div class="saved-note kind-verified"><strong>Reset baseline observations</strong><p>Healthy checks after reset are recorded separately from targeted recovery.</p>${archiveCitations(s.reset_evidence_ids)}</div>`:'')+
+ (s.debrief?`<div class="saved-note kind-debrief"><strong>Scenario debrief</strong><p>${esc(s.debrief)}</p></div>`:'');
  $('archive-notes').querySelectorAll('[data-citation]').forEach(button=>button.addEventListener('click',()=>openCitation(button.dataset.citation,button)));
  const timeline=await request('investigations/'+encodeURIComponent(id)+'/timeline');
  if(archiveId===id)AegisReport.render($('archive-report'),detail,timeline);
