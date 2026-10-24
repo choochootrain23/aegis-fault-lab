@@ -5,3 +5,6 @@ __pycache__/
 state/
 *.sqlite*
 site/
+
+# Local agent worktrees
+.claude/worktrees/
