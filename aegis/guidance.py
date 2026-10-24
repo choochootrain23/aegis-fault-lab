@@ -196,8 +196,28 @@ def newer_success(fresh, record):
     return max(newer, key=lambda e: e['at']) if newer else None
 
 
+def compound(fresh):
+    """A power cap and a retry storm at once: two causes, fixed in order. Lifting the cap (once cooling allows) is
+    necessary, but the retries now sustain the gateway's overload, so shedding load is needed too."""
+    cap = next((r for (n, k), r in sorted(fresh.items(), key=lambda i: -i[1]['at']) if k == 'facility' and r['body'].get('ok') and (r['body'].get('power_cap') or {}).get('active')), None)
+    storm = next((r for (n, k), r in sorted(fresh.items(), key=lambda i: -i[1]['at']) if k == 'traffic' and n in GATEWAYS and r['body'].get('ok') and retry_storm(r)), None)
+    if not cap or not storm:
+        return None
+    g, share, body = storm['node'], round(100 * retry_share(retry_storm(storm))), cap['body']
+    both = (f"Two causes are active at once. The facility check (simulated) shows a power cap on every rack, and {g}'s traffic shows {share}% of its recent requests are retries: "
+            f"a retry storm the cap set off. Fix them in order, and expect the first fix not to be enough: once the cap is lifted, the retries alone keep {g} overloaded. ")
+    if (body.get('cooling') or {}).get('crac_2') == 'failed':
+        action = both + (f"Cooling unit CRAC-2 has failed and the inlet is at {body.get('inlet_c')} °C, so the cap cannot safely be lifted yet: check the facility again until cooling is restored, "
+                         f"then lift the power cap, then enable load shedding on {g} if it still fails.")
+    else:
+        action = both + f"Cooling is restored: you can try lifting the power cap first, then, if {g} still fails with mostly retries, enable load shedding on {g}."
+    return [cap['id'], storm['id']], action, {'node': cap['node'], 'kind': 'facility'}
+
+
 def remedy(fresh):
     """Most recent inspection that supports one recovery action, unless newer healthy checks contradict it."""
+    if (both := compound(fresh)):
+        return both
     candidates, contradicted, suggest = [], [], None
     for (node, kind), record in fresh.items():
         body = record['body']

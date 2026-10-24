@@ -123,14 +123,15 @@ function exporterTraffic(t) {
 // about 220 attempts a second, 70% of them retries, until load shedding brought it back within about 10 seconds.
 const storm = {target: null, start: null, shedAt: null, stoppedAt: null, shedding: new Set()};
 const HICCUP_AFTER = 6, HICCUP_S = 8, USER_RPS = 60, STORM_RPS = 220;
-const hiccup = () => storm.start != null && storm.stoppedAt == null && now() >= storm.start + HICCUP_AFTER && now() < storm.start + HICCUP_AFTER + HICCUP_S && !storm.hiccupStopped;
-const storming = node => storm.target === node && storm.stoppedAt == null && storm.shedAt == null && now() >= storm.start + HICCUP_AFTER;
+// In the compound incident the power cap is the trigger, not a compaction: the storm starts with the users.
+const stormFrom = () => storm.start + (storm.capTriggered ? 0 : HICCUP_AFTER);
+const hiccup = () => storm.start != null && !storm.capTriggered && storm.stoppedAt == null && now() >= storm.start + HICCUP_AFTER && now() < storm.start + HICCUP_AFTER + HICCUP_S && !storm.hiccupStopped;
+const storming = node => storm.target === node && storm.stoppedAt == null && storm.shedAt == null && now() >= stormFrom();
 const settling = node => storm.target === node && storm.shedAt != null && now() < storm.shedAt + 4;  // shedding takes a few seconds to bite
 function usersTraffic(node, t) {
   if (storm.target !== node || storm.start == null) return null;
   const from = t - 60, end = storm.stoppedAt ?? t, overlap = (a, b) => Math.max(0, Math.min(b, end) - Math.max(a, from));
-  const stormFrom = storm.start + HICCUP_AFTER, stormTo = storm.shedAt ?? end;
-  const heavy = overlap(stormFrom, stormTo), calm = overlap(storm.start, end) - heavy;
+  const heavy = overlap(stormFrom(), storm.shedAt ?? end), calm = overlap(storm.start, end) - heavy;
   const requests = Math.round(heavy * STORM_RPS + calm * USER_RPS), retries = Math.round(heavy * STORM_RPS * 0.7);
   const recent = storm.stoppedAt != null ? 0 : storming(node) ? STORM_RPS : USER_RPS;
   return requests ? {client: 'mobile-app', requests, rejected: 0, errors: Math.round(heavy * STORM_RPS * 0.95), retries, rps: Math.round(requests / 60 * 100) / 100,
@@ -450,6 +451,18 @@ function check(node, kind, origin = 'operator') {
   return item;
 }
 
+// When the latest fix restored some of the failing services but not all, say so from the measurements: a compound
+// incident's first fix is real progress, not a wrong fix.
+function partialRecovery(s, results) {
+  const attempt = s.recovery_attempts[s.recovery_attempts.length - 1] || {}, before = attempt.unhealthy_before || [];
+  if (attempt.status !== 'succeeded' || !before.length) return '';
+  const well = Object.fromEntries(NODES.map(n => [n, results.filter(e => e.node === n).every(e => e.body.ok && !e.body.slow)]));
+  const restored = before.filter(n => well[n]), failing = NODES.filter(n => !well[n]);
+  if (!restored.length || !failing.length) return '';
+  attempt.measured ??= `partly restored: ${restored.join(', ')} healthy again; ${failing.join(', ')} still failing`;
+  return `: ${restored.join(', ')} healthy again, ${failing.join(', ')} still failing. One cause may be fixed and another remain.`;
+}
+
 function cycle() {
   const results = NODES.flatMap(n => ['liveness', 'business'].map(k => check(n, k, 'collector')));
   const good = results.every(e => e.body.ok && !e.body.slow);
@@ -459,6 +472,7 @@ function cycle() {
   if (lab.successes <= 1) lab.healthy = [];
   if (good) lab.healthy = [...lab.healthy, results.map(e => e.id)].slice(-3);
   lab.recent = [...lab.recent, good].slice(-DETECT_WINDOW);
+  lab.failing = [...(lab.failing || []), results.filter(e => !e.body.ok || e.body.slow).map(e => e.node)].slice(-DETECT_WINDOW);
   lab.lastCycle = now();
   const s = lab.session;
   if (!s || s.status === 'ended') return;
@@ -488,7 +502,7 @@ function cycle() {
     }
     s.verified_at = now();
   } else if (s.status === 'verifying' && !good) {
-    s.verification = 'Recovery has not restored all affected checks';
+    s.verification = 'Recovery has not restored all affected checks' + partialRecovery(s, results);
   }
   if (!['ended', 'recovered', 'resetting'].includes(s.status) && now() >= s.deadline + 60) resetLocked('expiry-' + s.id, true);
 }
@@ -559,10 +573,11 @@ function state() {
 // changes nothing and says so, as the real broker and services do; a stopped service cannot confirm maintenance.
 const FAULTS = {'service-unavailable': ['stop', 'start'], 'cpu-starvation': ['burn', 'calm'], 'disk-full': ['fill', 'clear'], 'config-drift': ['drift', 'restore'],
   'network-delay': ['delay', 'undelay'], 'packet-loss': ['drop', 'undrop'], 'quota-zero': ['squeeze', 'requota'], 'bad-release': ['ship', 'rollback'], 'memory-leak': ['leak', 'rollback'],
-  'traffic-flood': ['flood', 'ratelimit'], 'retry-storm': ['storm', 'shed'], 'power-loss': ['trip', 'breaker'], 'thermal-throttle': ['heat', 'uncap'], 'dns-failure': ['repoint', 'resolver'], 'brownout': ['sag', 'transfer'], 'partition': ['isolate', 'route'], 'clock-skew': ['skew', 'resync']};
-const FAULT_TARGETS = {'quota-zero': ['catalog-b'], 'traffic-flood': ['catalog-b'], 'retry-storm': ['gateway-a', 'gateway-c'], 'power-loss': ['catalog-b'], 'thermal-throttle': ['catalog-b'], 'dns-failure': ['gateway-a', 'gateway-c'], 'brownout': ['gateway-c'], 'partition': ['gateway-a', 'gateway-c'], 'clock-skew': ['gateway-a', 'gateway-c']};  // faults that only exist on some services
+  'traffic-flood': ['flood', 'ratelimit'], 'retry-storm': ['storm', 'shed'], 'power-loss': ['trip', 'breaker'], 'thermal-throttle': ['heat', 'uncap'], 'dns-failure': ['repoint', 'resolver'], 'brownout': ['sag', 'transfer'], 'partition': ['isolate', 'route'], 'clock-skew': ['skew', 'resync'],
+  'heatwave-storm': ['heatwave', 'uncap']};
+const FAULT_TARGETS = {'quota-zero': ['catalog-b'], 'traffic-flood': ['catalog-b'], 'retry-storm': ['gateway-a', 'gateway-c'], 'power-loss': ['catalog-b'], 'thermal-throttle': ['catalog-b'], 'dns-failure': ['gateway-a', 'gateway-c'], 'brownout': ['gateway-c'], 'partition': ['gateway-a', 'gateway-c'], 'clock-skew': ['gateway-a', 'gateway-c'], 'heatwave-storm': ['gateway-a', 'gateway-c']};  // faults that only exist on some services
 // Reset normally reapplies the remedy; a flood is undone by stopping its source and removing any limit.
-const RESET_CLEANUP = {'traffic-flood': ['unflood', 'requota'], 'retry-storm': ['unstorm', 'unshed'], 'thermal-throttle': ['unstorm']};
+const RESET_CLEANUP = {'traffic-flood': ['unflood', 'requota'], 'retry-storm': ['unstorm', 'unshed'], 'thermal-throttle': ['unstorm'], 'heatwave-storm': ['unstorm', 'unshed']};
 const UNCHANGED = {start: 'Already running; nothing changed', stop: 'Already stopped; nothing changed', calm: 'No background job running; nothing changed',
   burn: 'A background job was already running; nothing changed', clear: 'No filler file present; nothing changed', fill: 'Nothing changed',
   restore: 'Running config already matches the deployed settings; nothing changed', drift: 'Setting already overridden; nothing changed',
@@ -578,7 +593,8 @@ const UNCHANGED = {start: 'Already running; nothing changed', stop: 'Already sto
   resolver: 'Resolver already uses the nameserver it was deployed with; nothing changed', repoint: 'Resolver already repointed; nothing changed',
   transfer: "This service's rack already runs on a healthy feed; nothing changed", sag: 'Feed already sagging; nothing changed',
   route: 'No partition rule on this service; nothing changed', isolate: 'Partition rule already present; nothing changed',
-  resync: 'Clock already in step with the host; nothing changed', skew: 'Clock already stepped; nothing changed'};
+  resync: 'Clock already in step with the host; nothing changed', skew: 'Clock already stepped; nothing changed',
+  heatwave: 'Cooling already failed; nothing changed'};
 const DEBRIEFS = {
   "service-unavailable": "The scenario requested stopping {target}. When that succeeds, its container state reads stopped and its own probes fail. When the catalogue stops, both gateways stay live but their business requests fail, so the failure spreads; once their cached answer expires they cannot even resolve its name, because Docker's resolver drops the name of a stopped container, which looks like a DNS fault until the catalogue is checked; when one gateway stops, the catalogue and the other gateway stay healthy, so it does not. Starting the stopped service restores the request path.",
   "cpu-starvation": "The scenario requested a runaway background job inside {target}. When that succeeds, the service keeps running and answering, but slowly: the job uses the container's whole 0.25-CPU limit, the kernel throttles it, and requests queue behind it, crossing the 300 ms threshold. Its log records the job starting. A slow catalogue makes both gateways slow, and sometimes time out, too. Stopping the job returns normal latency.",
@@ -593,6 +609,7 @@ const DEBRIEFS = {
   "thermal-throttle": "The scenario requested a simulated failure of cooling unit CRAC-2, which raised the inlet temperature of both racks to 38 \u00b0C; the facility responded with a power cap that lowered every container's CPU limit from 0.25 to 0.05, and steady daytime users, 32 a second through each gateway, kept the services busy. The facility layer is simulated, but the cap and the users were real. A CPU cap alone barely slows these light requests; under load it does. The gateways, which do the most work per request, ran out first: both turned slow even to liveness checks and failed most business requests, while the catalogue's simple answers stayed fast. Resource use showed each gateway throttled against a limit far below its deployed 0.25, which looks like CPU starvation, but there is no job to stop and no caller to limit. The facility check showed the failed cooling unit, the hot inlet and the active cap. Lifting the cap while the room is still hot is refused, as a facilities team would refuse it; once cooling recovered after about 75 seconds, lifting the power cap restored normal latency.",
   "power-loss": "The scenario requested a simulated breaker trip on PDU-A, the power distribution unit feeding rack R1, where {target} and gateway-a are installed. The facility layer is simulated, but its effect was real: both containers were stopped, as servers are when their power is cut, and neither can be started while the breaker is open. Two services failed at the same moment, which on its own could look like two separate faults; what they share is not software but a power feed. gateway-c, on PDU-B, kept running, but its business requests fail because the catalogue is down. Starting either service reports no power and changes nothing. The facility check shows the open breaker, the rack and every service it feeds. Resetting the breaker restores power and starts the rack's services, the catalogue first because the gateways depend on it.",
   "clock-skew": "The scenario requested a time daemon on {target} stepping its clock 300 seconds ahead after it selected a bad time source. Containers share the host kernel's clock, and moving it would need CAP_SYS_TIME and would move the host, so the lab offsets the gateway process's own clock instead; everything it reports or signs with a time used the skewed clock, while deadlines were still measured on the shared kernel clock, as a relative time budget would be. Each call from a gateway to the catalogue carries a timestamp and an HMAC signature, and the catalogue refuses a timestamp more than 30 seconds from its own clock, so a replayed request cannot be used later. Once the clock jumped, every request from {target} was refused with HTTP 401 (RequestExpired), naming a timestamp 300 seconds ahead. The process, its CPU, disk, network, release and running config were all normal, and the catalogue and the other gateway stayed healthy. A 401 is not a 429: no quota was involved, so resetting quotas changed nothing, and rolling back or restoring config changed nothing because neither had changed. The catalogue's log and traffic recorded the rejected signatures and the skew it saw, the gateway's own log entries carried times in the future, and the network path check showed the gateway's clock 300 seconds ahead of the controller's and its time source. Resynchronising the clock fixed it at once; in the lab, restarting the gateway also did, because the offset lived in its process.",
+  "heatwave-storm": "The scenario requested two things at once, as a heatwave can bring them: a simulated failure of cooling unit CRAC-2, with the facility's power cap lowering every container's CPU limit from 0.25 to 0.05 and steady daytime users, 32 a second through each gateway; and app users, 60 a second through {target}, whose app retries a failed request at once up to three times. The cap made both gateways fail most requests. On {target} every failure became up to four attempts, and the retries turned a capped gateway into an overloaded one: a retry storm whose trigger was the cap, not the catalogue. The facility layer is simulated; the cap and the users were real. It needed two fixes in order. Lifting the cap was refused while the room was hot, and once cooling recovered after about 75 seconds it restored the other gateway at once, which is why it was right; but {target} stayed overloaded, because the retries no longer needed the cap to sustain them. A correct first step that leaves the incident failing is still progress, not a wrong fix. Enabling load shedding on {target} then let the requests it accepted finish in time, the users stopped retrying, and only then was recovery verified. Restarting, stopping a job or rate-limiting a client changed nothing.",
   "brownout": "The scenario requested a simulated brownout on utility feed A to PDU-B, the power distribution unit feeding rack R2, where {target} is installed: the voltage sagged to about 186 V, below the 200 V its power supply tolerates. The facility layer is simulated, but its effect was real: whenever the voltage dipped, the server lost power, so the lab stopped the container, rebooted it a few seconds later, and stopped it again about ten seconds after that. A container has no power supply to lose, so it was stopped cleanly (exit code 0). The service crash-looped like a memory leak, but memory stayed flat, there was no out-of-memory kill and the release had not changed, so rolling back changed nothing; starting it only lasted until the next dip, and the breaker was closed, so resetting it changed nothing. The catalogue and gateway-a, on PDU-A, stayed healthy. The facility check showed feed A sagging, the redundant feed B normal, and a power-supply dropout at every restart. Moving the rack to the redundant feed ended the dropouts, and recovery had to hold for ten healthy cycles because the failures had come and gone.",
   "dns-failure": "The scenario requested a node-settings sync that pointed {target}'s resolver at 127.0.0.53, the address of systemd-resolved's stub on an ordinary Linux host. That setting is easily copied from a host image, but nothing listens there inside a container, so every DNS query is refused. The gateway resolves the catalogue's name with real DNS queries and caches each answer for 5 seconds, so it kept working until the cached answer expired, then failed every business request with a name resolution error. Its process, CPU, disk, release and running config were all normal, and the catalogue and the other gateway stayed healthy. A failing call to the catalogue looks like a stopped catalogue, or like config drift, which also breaks the upstream address; but the catalogue answered its own checks, the config matched what was deployed, and the network path check showed the lookup refused by 127.0.0.53 while a TCP connection to the catalogue's last known address still succeeded. Restoring the resolver fixed it at once; restarting the catalogue or restoring config changed nothing.",
   "partition": "The scenario requested a partial network partition: a filter on {target}'s own network interface that drops every packet addressed to the catalogue, and nothing else, applied by a short-lived broker helper with only NET_ADMIN, as a bad firewall or routing change would. When that succeeds, {target} stays live, its CPU, disk, config and release are normal, and its resolver still finds the catalogue's name, but every connection to the catalogue's address goes unanswered, so its business requests time out after 1 second. The catalogue answers its own checks quickly and the other gateway reaches it without trouble, so the catalogue is not down; only one path is cut. That looks like a stopped catalogue from {target}'s side, like packet loss because requests time out, or like a DNS failure; but there is no netem queue, the name resolves, and the loss is total and to one destination. The network path check on {target} shows the drop filter under a prio queue and a TCP connection to the catalogue's address timing out. Restoring the route removes the filter; restarting the catalogue, removing packet loss or restoring the resolver changes nothing.",
@@ -618,6 +635,13 @@ function apply(node, verb) {
     return changed;
   }
   if (verb === 'heat') { if (room.capped) return false; Object.assign(room, {failedAt: now(), capped: true, liftedAt: null, daytimeStoppedAt: null}); return true; }
+  // The compound incident: the same cooling failure and cap, plus app users who retry at once on one gateway.
+  if (verb === 'heatwave') {
+    if (room.capped) return false;
+    Object.assign(room, {failedAt: now(), capped: true, liftedAt: null, daytimeStoppedAt: null});
+    Object.assign(storm, {target: node, start: now(), shedAt: null, stoppedAt: null, hiccupStopped: false, capTriggered: true});
+    return true;
+  }
   if (verb === 'uncap') {
     if (!room.capped || (roomHot() && lab.session?.status !== 'resetting')) return false;
     Object.assign(room, {capped: false, liftedAt: now()});
@@ -650,7 +674,7 @@ function apply(node, verb) {
   // The app users run in the reports service too; the compaction that triggers the storm stops by itself.
   if (verb === 'storm') {
     if (storm.start != null && storm.stoppedAt == null) return false;
-    Object.assign(storm, {target: node, start: now(), shedAt: null, stoppedAt: null, hiccupStopped: false});
+    Object.assign(storm, {target: node, start: now(), shedAt: null, stoppedAt: null, hiccupStopped: false, capTriggered: false});
     setTimeout(() => { if (storm.target === node && storm.stoppedAt == null) log('catalog-b', {ok: true, event: 'background job started', job: 'index compaction', expected_s: HICCUP_S}); }, HICCUP_AFTER * 1000);
     setTimeout(() => { if (storm.target === node && storm.stoppedAt == null) log('catalog-b', {ok: true, event: 'background job finished', job: 'index compaction'}); }, (HICCUP_AFTER + HICCUP_S) * 1000);
     return true;
@@ -729,7 +753,7 @@ function mutate(key, node, verb) {
   return body;
 }
 
-const RESET_FIRST = {'power-loss': ['breaker'], 'thermal-throttle': ['uncap'], 'brownout': ['transfer']};  // steps a reset takes before starting the services
+const RESET_FIRST = {'power-loss': ['breaker'], 'thermal-throttle': ['uncap'], 'brownout': ['transfer'], 'heatwave-storm': ['uncap']};  // steps a reset takes before starting the services
 const resetPlan = s => [...(RESET_FIRST[s.fault_kind] || []).map(v => [s.fault_target, v]), ...NODES.map(n => [n, 'start']), ...(RESET_FIRST[s.fault_kind] ? (RESET_CLEANUP[s.fault_kind] || []).map(v => [s.fault_target, v]) : RESET_CLEANUP[s.fault_kind] ? RESET_CLEANUP[s.fault_kind].map(v => [s.fault_target, v])
   : FAULTS[s.fault_kind][1] !== 'start' ? [[s.fault_target, FAULTS[s.fault_kind][1]]] : [])];
 
@@ -760,6 +784,7 @@ function start(data) {
   if (ROLLOUTS[kind] && lab.session.fault_action.status === 'succeeded') lab.session.rollout = {node: target, verb: ROLLOUTS[kind][0], version: ROLLOUTS[kind][1]};
   lab.baseline = lab.successes = 0;
   lab.recent = [];
+  lab.failing = [];
   return publicSession();
 }
 
@@ -904,7 +929,22 @@ function retryStorm(record) {
   return stormy.length ? stormy.reduce((a, b) => (b.requests > a.requests ? b : a)) : null;
 }
 
+// A power cap and a retry storm at once: two causes, fixed in order, as aegis/guidance.py explains them.
+function compoundFor(fresh) {
+  const newest = kind => [...fresh.entries()].filter(([key, r]) => key.endsWith('|' + kind) && r.body.ok).map(([, r]) => r).sort((a, b) => b.at - a.at);
+  const cap = newest('facility').find(r => r.body.power_cap?.active), storm = newest('traffic').find(r => isGateway(r.node) && retryStorm(r));
+  if (!cap || !storm) return null;
+  const g = storm.node, share = Math.round(100 * retryShare(retryStorm(storm)));
+  const both = `Two causes are active at once. The facility check (simulated) shows a power cap on every rack, and ${g}'s traffic shows ${share}% of its recent requests are retries: a retry storm the cap set off. Fix them in order, and expect the first fix not to be enough: once the cap is lifted, the retries alone keep ${g} overloaded. `;
+  const action = cap.body.cooling?.crac_2 === 'failed'
+    ? both + `Cooling unit CRAC-2 has failed and the inlet is at ${cap.body.inlet_c} °C, so the cap cannot safely be lifted yet: check the facility again until cooling is restored, then lift the power cap, then enable load shedding on ${g} if it still fails.`
+    : both + `Cooling is restored: you can try lifting the power cap first, then, if ${g} still fails with mostly retries, enable load shedding on ${g}.`;
+  return [[cap.id, storm.id], action, {node: cap.node, kind: 'facility'}];
+}
+
 function remedyFor(fresh) {
+  const both = compoundFor(fresh);
+  if (both) return both;
   const candidates = [], contradicted = [];
   for (const [key, record] of fresh) {
     const [node, kind] = key.split('|'), body = record.body;
@@ -1016,7 +1056,7 @@ function timeline(id) {
   const events = [{at: s.started_at, label: 'Investigation started'}];
   if (s.detected_at) events.push({at: s.detected_at, label: 'Failures detected'});
   for (const h of s.help) events.push({at: h.at, label: 'Help: ' + h.level});
-  for (const a of s.recovery_attempts) events.push({at: a.at, label: `${a.verb || 'start'} ${a.node}: ${a.status}`});
+  for (const a of s.recovery_attempts) events.push({at: a.at, label: `${a.verb || 'start'} ${a.node}: ${a.status}` + (a.measured ? ` (${a.measured})` : '')});
   if (s.recovery_verified_at) events.push({at: s.recovery_verified_at, label: 'Recovery verified'});
   if (s.reset) events.push({at: s.reset.at, label: s.reset.automatic ? 'Automatic reset' : 'Reset requested'});
   if (s.ended_at) events.push({at: s.ended_at, label: 'Baseline verified, ended'});
@@ -1040,9 +1080,12 @@ const routes = {
     if (s.status === 'resetting') throw new HttpError(409, 'Reset is in progress. Wait for verification or retry reset.');
     const verb = d.verb || 'start';
     if (!['start', 'calm', 'clear', 'restore', 'undelay', 'undrop', 'requota', 'rollback', 'ratelimit', 'shed', 'breaker', 'uncap', 'resolver', 'transfer', 'route', 'resync'].includes(verb)) invalid();
+    // Every service that failed in the last few cycles: a struggling service can pass one cycle by luck.
+    const failing = new Set([...(lab.failing || []).flat(), ...state().nodes.filter(n => n.health !== 'healthy').map(n => n.id)]);
+    const unhealthy = NODES.filter(n => failing.has(n));
     const result = mutate(d.key, d.node || 'catalog-b', verb);
     if (!s.recovery_attempts.some(a => a.key === d.key)) {
-      s.recovery_attempts.push({key: d.key, at: now(), ...result});
+      s.recovery_attempts.push({key: d.key, at: now(), unhealthy_before: unhealthy, ...result});
       s.status = 'verifying';
       s.settled_since_fix = false;
       s.verification = 'Waiting for fresh measured recovery; an accepted action is not proof';

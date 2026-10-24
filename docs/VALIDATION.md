@@ -182,6 +182,14 @@ It used the existing evidence volume: the broker deliberately accepts only conta
 - **Brownout.** Detected in about 5 s, because the sag cuts power at once. Verified recovered in about 22 s after moving to the redundant feed: the failures had come and gone, so ten healthy cycles were required. Resetting the closed breaker and moving the healthy rack R1 both reported *unchanged*.
 - **Tests.** Backend tests: 190 pass, 1 skipped. UI logic tests: 38 pass. The simulator walkthrough passes with a brownout round in Chromium, Firefox and WebKit.
 
+**Heatwave and retry storm, the first compound incident (24 October 2026, not yet run on real Docker).** What ran:
+
+- **Backend tests: 211 pass, 1 skipped.** They include the two-step recovery against the test double. The cap is refused while hot. Lifting it once cooled leaves the session verifying, with "gateway-c healthy again, gateway-a still failing" and no flap. Shedding then verifies recovery within three cycles. Reset lifts the cap, stops all users and turns shedding off, even while the room is hot.
+- **UI logic tests: 41 pass.**
+- **Chromium simulator walkthrough** with a compound round, which waits for the simulated cooling: it passed in four full runs. The first version of the round found a real defect. Each attempt recorded only the services failing at that instant, and a capped gateway sometimes passes one cycle by luck, so the partial-recovery line was lost. Attempts now record every service that failed in the last five cycles.
+- **One unexplained failure.** A fifth full run failed in the DNS round, which this change does not touch. The gateway's business requests reported the name-resolution failure, but its network check a second later showed a working lookup. Twelve repeated runs of that round and every other full run passed, so it is not reproduced and not fixed.
+- **Still to measure on real Docker.** First, whether the stormed gateway stays overloaded after the cap is lifted, which is the lesson, or recovers by itself. Second, whether its traffic check counts enough retries under a 0.05 CPU cap for the evidence to show the storm. Also detection and recovery times, and whether the catalogue stays healthy.
+
 ## Reproduce browser reviews
 
 Use a development Python environment with `requirements.lock`, Playwright 1.64.0 and its Chromium headless shell:

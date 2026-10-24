@@ -1201,6 +1201,27 @@ async def daytime(x_aegis_fleet_token: str = Header(default='')):
     return {'changed': True}
 
 
+@app.post('/maintenance/heatwave')
+async def heatwave(x_aegis_fleet_token: str = Header(default=''), x_aegis_target: str = Header(default='')):
+    """Fault injection for the compound incident: daytime users through both gateways and, on the target gateway, app
+    users who retry at once. No compaction: under the power cap the gateway times out by itself. Reports service only."""
+    authorize(x_aegis_fleet_token)
+    if x_aegis_target not in STORM_TARGETS:
+        raise HTTPException(422, 'The app users only call a gateway')
+    if ROLE != 'reports' or (any(t.is_alive() for t in users_threads) and not users_stop.is_set()):
+        return {'changed': False}
+    for worker in users_threads:
+        worker.join(timeout=5)
+    users_stop.clear()
+    users_threads[:] = [threading.Thread(target=run_users, args=(time.monotonic() + JOB_MAX_S, STORM_TARGETS, DAYTIME_RPS, 0), name='daytime-users', daemon=True),
+                        threading.Thread(target=run_users, args=(time.monotonic() + JOB_MAX_S, (x_aegis_target,), USER_RPS, USER_RETRIES), name='app-users', daemon=True)]
+    for worker in users_threads:
+        worker.start()
+    LOGS.append({'at': time.time(), 'ok': True, 'event': 'daytime users started', 'rps_per_gateway': DAYTIME_RPS, 'generation': BOOT})
+    LOGS.append({'at': time.time(), 'ok': True, 'event': 'app users started', 'gateway': x_aegis_target, 'rps': USER_RPS, 'retries': USER_RETRIES, 'generation': BOOT})
+    return {'changed': True}
+
+
 @app.post('/maintenance/unstorm')
 async def unstorm(x_aegis_fleet_token: str = Header(default='')):
     """Clean-up for reset: stop the app users."""

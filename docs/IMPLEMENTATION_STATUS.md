@@ -150,10 +150,15 @@ Reports are under ignored `state/validation/`. The app is running at http://loca
 - **Clock skew.** A time daemon on one gateway steps its clock 300 s ahead. The lab offsets the gateway process's own clock, because containers share the host's kernel clock. Everything the service reports or signs uses that clock, while deadlines stay on the kernel clock. **Network path** shows each service's clock against the controller's. Remedy: **Resync clock**.
 - Without the signing key, signing is off and says so, and the clock-skew scenario is refused at start and left out of challenge picks.
 
+## Compound incident checkpoint (24 October 2026)
+
+- **Multi-step recovery.** A fault can list several remedies in order. Every recovery attempt records which services failed in the last few cycles before it; while verification fails, the session and timeline say from the measurements which of them the latest fix restored and which still fail. A correct partial fix is a real success, never a flap, and recovery is only credited once every service is healthy.
+- **Eighteenth fault: heatwave and retry storm.** The thermal cap and daytime users plus app users who retry at once on one gateway, started together with no compaction. Lift power cap (once cooling recovers), then Enable load shedding on that gateway. Guidance names both causes and their order; the AI evaluation grades the next necessary step, and asks once more after a fix that only partly worked.
+
 ## Next work
 
 1. AI evaluation with other models and question wordings; more samples of the rarer faults.
-2. Compound incidents from the roadmap, for example a heatwave that tips into a retry storm.
+2. More compound incidents from the roadmap.
 3. Screen-reader review; runs measured in days.
 
 ## Boundaries preserved

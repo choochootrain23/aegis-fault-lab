@@ -150,6 +150,11 @@ export function run(){
     assert.deepEqual([...view.faultTargets('clock-skew')],['gateway-a','gateway-c']);assert.equal(view.remedyLabel('resync'),'Resync clock');
     assert.equal(view.faultLabel('clock-skew'),'Clock skew');assert.equal(view.scenarioCopy('clock-skew','gateway-a','practice').number,'17');
   });
+  check('The compound incident targets a gateway and has its own scenario copy',()=>{
+    assert.deepEqual([...view.faultTargets('heatwave-storm')],['gateway-a','gateway-c']);assert.equal(view.faultLabel('heatwave-storm'),'Heatwave and retry storm');
+    const copy=view.scenarioCopy('heatwave-storm','gateway-a','practice');
+    assert.equal(copy.number,'18');assert.match(copy.text,/Two causes/);assert.match(copy.text,/gateway-a worst/);
+  });
   return {passed,scope:'Pure UI state and timer decisions; frontend JavaScript parsed. No visual/browser validation.'};
 }
 if(typeof process!=='undefined' && process.argv[1] && import.meta.url===new URL('file://'+process.argv[1]).href) console.log(run());

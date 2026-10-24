@@ -581,6 +581,42 @@ def main():
             expect(page.locator('#session-status')).to_have_text('ended', timeout=15000)
             page.select_option('#practice-kind', 'service-unavailable')
 
+            # A heatwave sets off a retry storm on gateway-a: two causes, fixed in order. Lifting the cap waits for
+            # cooling and restores gateway-c, which is progress but not recovery; shedding on gateway-a finishes it.
+            page.select_option('#practice-kind', 'heatwave-storm')
+            assert page.locator('#practice-target option[value="catalog-b"]').evaluate('o => o.disabled')
+            page.select_option('#practice-target', 'gateway-a')
+            expect(page.locator('#scenario-title')).to_have_text('When the heat sets off a storm')
+            expect(page.locator('#start')).to_be_enabled(timeout=20000)
+            page.click('#start')
+            expect(page.locator('#session-status')).to_have_text('investigating', timeout=25000)
+            expect(page.locator('#node-catalog-b .node-state')).to_have_text('healthy')
+            page.click('#node-gateway-a')
+            page.click('[data-check="facility"]')
+            page.click('[data-check="traffic"]')
+            page.click('[data-help="action"]')
+            expect(page.locator('#help-result')).to_contain_text('Two causes')
+            expect(page.locator('#help-result')).to_contain_text('cannot safely be lifted yet')
+            page.click('[data-remedy="uncap"]')
+            expect(page.locator('#toast')).to_contain_text('Inlet still')
+            page.wait_for_timeout(76000)  # the simulated cooling unit recovers after 75 seconds
+            page.click('[data-check="facility"]')
+            page.click('[data-check="traffic"]')
+            page.click('[data-help="action"]')
+            expect(page.locator('#help-result')).to_contain_text('lifting the power cap first')
+            page.click('[data-remedy="uncap"]')
+            expect(page.locator('#verification')).to_contain_text('gateway-a still failing', timeout=20000)
+            expect(page.locator('#session-status')).to_have_text('verifying')
+            page.click('[data-check="facility"]')  # guidance goes by evidence: the older record still shows the cap
+            page.click('[data-check="traffic"]')
+            page.click('[data-help="action"]')
+            expect(page.locator('#help-result')).to_contain_text('enabling load shedding on gateway-a')
+            page.click('[data-remedy="shed"]')
+            expect(page.locator('#session-status')).to_have_text('recovered', timeout=40000)
+            page.click('#reset')
+            expect(page.locator('#session-status')).to_have_text('ended', timeout=15000)
+            page.select_option('#practice-kind', 'service-unavailable')
+
             # A stopped gateway-c is local: gateway-a and the catalogue stay healthy, and guidance says so.
             page.select_option('#practice-kind', 'service-unavailable')
             page.select_option('#practice-target', 'gateway-c')
@@ -622,7 +658,7 @@ def main():
             expect(page.locator('#scenario-reveal')).to_contain_text('Known scenario:')
             page.click('#reset')
             expect(page.locator('#session-status')).to_have_text('ended', timeout=15000)
-            expect(page.locator('#history .history-item')).to_have_count(19)
+            expect(page.locator('#history .history-item')).to_have_count(20)
 
             mobile = browser.new_page(viewport={'width': 390, 'height': 844})
             mobile.on('pageerror', lambda error: errors.append(str(error)))

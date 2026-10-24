@@ -416,3 +416,17 @@ def test_a_measured_clock_offset_supports_resync_and_a_small_one_does_not():
     assert result['evidence_ids']==[skewed['id']] and 'resynchronising its clock' in result['message'] and 'falseticker' in result['message']
     steady=observation('gateway-a','network',clock_offset_s=0.4,result={'qdiscs':[]})
     assert 'No fresh inspection' in explain({('gateway-a','network'):steady},'action',now=101)['message']
+
+
+def test_a_power_cap_and_a_retry_storm_name_both_causes_and_their_order():
+    storm=observation('gateway-a','traffic',at=99,result={'clients':[{'client':'mobile-app','requests':9000,'retries':6600,'recent_rps':160,'recent_retries':1100}],'quotas':[]})
+    hot=observation('gateway-a','facility',simulated=True,pdu='PDU-A',breaker='closed',power_cap={'active':True,'cpu_limit':0.05},cooling={'crac_2':'failed'},inlet_c=38.4)
+    result=explain({('gateway-a','traffic'):storm,('gateway-a','facility'):hot},'action',now=101)
+    assert set(result['evidence_ids'])=={storm['id'],hot['id']} and 'Two causes' in result['message']
+    assert 'cannot safely be lifted yet' in result['message'] and 'then enable load shedding on gateway-a' in result['message']
+    cooled={**hot,'body':{**hot['body'],'cooling':{'crac_2':'running'},'inlet_c':25.1}}
+    message=explain({('gateway-a','traffic'):storm,('gateway-a','facility'):cooled},'action',now=101)['message']
+    assert 'lifting the power cap first' in message and 'enable load shedding on gateway-a' in message
+    # Once the cap is gone the storm alone remains, and the ordinary retry-storm rule recommends shedding.
+    lifted={**hot,'body':{**hot['body'],'power_cap':{'active':False},'cooling':{'crac_2':'running'}}}
+    assert 'enabling load shedding on gateway-a' in explain({('gateway-a','traffic'):storm,('gateway-a','facility'):lifted},'action',now=101)['message']

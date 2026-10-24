@@ -43,13 +43,17 @@ FAULTS = {'service-unavailable': ('stop', 'start'), 'cpu-starvation': ('burn', '
           'quota-zero': ('squeeze', 'requota'), 'bad-release': ('ship', 'rollback'), 'memory-leak': ('leak', 'rollback'),
           'traffic-flood': ('flood', 'ratelimit'), 'retry-storm': ('storm', 'shed'), 'power-loss': ('trip', 'breaker'),
           'thermal-throttle': ('heat', 'uncap'), 'dns-failure': ('repoint', 'resolver'), 'brownout': ('sag', 'transfer'),
-          'partition': ('isolate', 'route'), 'clock-skew': ('skew', 'resync')}
+          'partition': ('isolate', 'route'), 'clock-skew': ('skew', 'resync'),
+          'heatwave-storm': ('heatwave', 'uncap')}
+# A compound incident needs more than one fix. Each step is a real remedy; recovery is only credited once the
+# measurements say the whole incident is over, so a correct first step is a real success that leaves it failing.
+REMEDY_STEPS = {'heatwave-storm': ('uncap', 'shed')}
 # The facility layer is simulated: containers have no power supply, so racks, PDUs and breakers are modelled here and
 # every facility record says simulated. The effects on the services are real: a tripped breaker stops the containers
 # it feeds through the broker, and they cannot be started until the breaker is reset.
 RACKS = {'PDU-A': {'rack': 'R1', 'nodes': ('catalog-b', 'gateway-a')}, 'PDU-B': {'rack': 'R2', 'nodes': ('gateway-c',)}}
 PDU_OF = {node: pdu for pdu, rack in RACKS.items() for node in rack['nodes']}
-FACILITY_VERBS = {'trip', 'breaker', 'heat', 'uncap', 'sag', 'transfer'}
+FACILITY_VERBS = {'trip', 'breaker', 'heat', 'uncap', 'sag', 'transfer', 'heatwave'}
 # A brownout: the utility feed to a PDU sags below what a power supply tolerates, so the server it feeds drops out
 # whenever the voltage dips, reboots and drops out again. The lab stops the container after BROWNOUT_UP_CYCLES health
 # cycles up and starts it again after BROWNOUT_DOWN_CYCLES down, through the broker's ordinary operations.
@@ -59,9 +63,10 @@ COOLING_RECOVERY_S = 75  # how long the simulated cooling unit takes to come bac
 HOT_INLET_C, NORMAL_INLET_C = 38.4, 24.8
 # The report exporter that floods the catalogue runs in its own small service, outside the three inspected ones.
 REPORTS_URL = 'http://reports:8000'
-CLIENT_VERBS = {'flood', 'unflood', 'storm', 'unstorm', 'daytime'}
+CLIENT_VERBS = {'flood', 'unflood', 'storm', 'unstorm', 'daytime', 'heatwave'}
 # Reset normally reapplies the fault's remedy; a flood is undone instead by stopping its source and removing any limit.
-RESET_CLEANUP = {'traffic-flood': (('unflood',), ('requota',)), 'retry-storm': (('unstorm',), ('unshed',)), 'thermal-throttle': (('unstorm',),)}
+RESET_CLEANUP = {'traffic-flood': (('unflood',), ('requota',)), 'retry-storm': (('unstorm',), ('unshed',)), 'thermal-throttle': (('unstorm',),),
+                 'heatwave-storm': (('unstorm',), ('unshed',))}
 # Release faults start a rollout: a deploy controller keeps the new version running, restarting the service and
 # re-applying the release after a crash, until someone rolls back. This is how an orchestrator behaves.
 ROLLOUTS = {'bad-release': ('ship', 'v1.5.0'), 'memory-leak': ('leak', 'v1.5.1')}
@@ -71,10 +76,10 @@ ROLLOUT_BACKOFF_CYCLES = 3  # health cycles (6 s) a crashed service stays down b
 FAULT_TARGETS = {'quota-zero': ('catalog-b',), 'traffic-flood': ('catalog-b',), 'retry-storm': ('gateway-a', 'gateway-c'), 'power-loss': ('catalog-b',), 'thermal-throttle': ('catalog-b',),
                  'dns-failure': ('gateway-a', 'gateway-c'), 'brownout': ('gateway-c',),
                  'partition': ('gateway-a', 'gateway-c'),
-                 'clock-skew': ('gateway-a', 'gateway-c')}
+                 'clock-skew': ('gateway-a', 'gateway-c'), 'heatwave-storm': ('gateway-a', 'gateway-c')}
 # Steps a reset must take before starting the services, rather than reapplying the remedy afterwards.
-RESET_FIRST = {'power-loss': ('breaker',), 'thermal-throttle': ('uncap',), 'brownout': ('transfer',)}
-REMEDIES = {remedy for _, remedy in FAULTS.values()}
+RESET_FIRST = {'power-loss': ('breaker',), 'thermal-throttle': ('uncap',), 'brownout': ('transfer',), 'heatwave-storm': ('uncap',)}
+REMEDIES = {remedy for _, remedy in FAULTS.values()} | {step for steps in REMEDY_STEPS.values() for step in steps}
 NODE_VERBS = {'fill', 'clear', 'burn', 'calm', 'drift', 'restore', 'squeeze', 'requota', 'ship', 'leak', 'ratelimit', 'shed', 'unshed', 'repoint', 'resolver', 'skew', 'resync'}  # applied through the service's token-protected maintenance endpoint
 DETECT_FAILING = 3     # failing cycles among the last DETECT_WINDOW that open an investigation
 DETECT_WINDOW = 5
@@ -98,7 +103,8 @@ UNCHANGED = {'start': 'Already running; nothing changed', 'stop': 'Already stopp
              'resolver': 'Resolver already uses the nameserver it was deployed with; nothing changed', 'repoint': 'Resolver already repointed; nothing changed',
              'transfer': 'This service\'s rack already runs on a healthy feed; nothing changed', 'sag': 'Feed already sagging; nothing changed',
              'route': 'No partition rule on this service; nothing changed', 'isolate': 'Partition rule already present; nothing changed',
-             'resync': 'Clock already in step with the host; nothing changed', 'skew': 'Clock already stepped; nothing changed'}
+             'resync': 'Clock already in step with the host; nothing changed', 'skew': 'Clock already stepped; nothing changed',
+             'heatwave': 'Cooling already failed; nothing changed'}
 DEBRIEFS = {
     'service-unavailable': 'The scenario requested stopping {target}. When that succeeds, its container state reads stopped and its own probes fail. When the catalogue stops, both gateways stay live but their business requests fail, so the failure spreads; once their cached answer expires they cannot even resolve its name, because Docker\'s resolver drops the name of a stopped container, which looks like a DNS fault until the catalogue is checked; when one gateway stops, the catalogue and the other gateway stay healthy, so it does not. Starting the stopped service restores the request path.',
     'cpu-starvation': 'The scenario requested a runaway background job inside {target}. When that succeeds, the service keeps running and answering, but slowly: the job uses the container\'s whole 0.25-CPU limit, the kernel throttles it, and requests queue behind it, crossing the {slow} ms threshold. Its log records the job starting. A slow catalogue makes both gateways slow, and sometimes time out, too. Stopping the job returns normal latency.',
@@ -113,6 +119,7 @@ DEBRIEFS = {
     'thermal-throttle': 'The scenario requested a simulated failure of cooling unit CRAC-2, which raised the inlet temperature of both racks to 38 °C; the facility responded with a power cap that lowered every container\'s CPU limit from 0.25 to 0.05, and steady daytime users, 32 a second through each gateway, kept the services busy. The facility layer is simulated, but the cap and the users were real. A CPU cap alone barely slows these light requests; under load it does. The gateways, which do the most work per request, ran out first: both turned slow even to liveness checks and failed most business requests, while the catalogue\'s simple answers stayed fast. Resource use showed each gateway throttled against a limit far below its deployed 0.25, which looks like CPU starvation, but there is no job to stop and no caller to limit. The facility check showed the failed cooling unit, the hot inlet and the active cap. Lifting the cap while the room is still hot is refused, as a facilities team would refuse it; once cooling recovered after about 75 seconds, lifting the power cap restored normal latency.',
     'power-loss': 'The scenario requested a simulated breaker trip on PDU-A, the power distribution unit feeding rack R1, where {target} and gateway-a are installed. The facility layer is simulated, but its effect was real: both containers were stopped, as servers are when their power is cut, and neither can be started while the breaker is open. Two services failed at the same moment, which on its own could look like two separate faults; what they share is not software but a power feed. gateway-c, on PDU-B, kept running, but its business requests fail because the catalogue is down. Starting either service reports no power and changes nothing. The facility check shows the open breaker, the rack and every service it feeds. Resetting the breaker restores power and starts the rack\'s services, the catalogue first because the gateways depend on it.',
     'clock-skew': 'The scenario requested a time daemon on {target} stepping its clock 300 seconds ahead after it selected a bad time source. Containers share the host kernel\'s clock, and moving it would need CAP_SYS_TIME and would move the host, so the lab offsets the gateway process\'s own clock instead; everything it reports or signs with a time used the skewed clock, while deadlines were still measured on the shared kernel clock, as a relative time budget would be. Each call from a gateway to the catalogue carries a timestamp and an HMAC signature, and the catalogue refuses a timestamp more than 30 seconds from its own clock, so a replayed request cannot be used later. Once the clock jumped, every request from {target} was refused with HTTP 401 (RequestExpired), naming a timestamp 300 seconds ahead. The process, its CPU, disk, network, release and running config were all normal, and the catalogue and the other gateway stayed healthy. A 401 is not a 429: no quota was involved, so resetting quotas changed nothing, and rolling back or restoring config changed nothing because neither had changed. The catalogue\'s log and traffic recorded the rejected signatures and the skew it saw, the gateway\'s own log entries carried times in the future, and the network path check showed the gateway\'s clock 300 seconds ahead of the controller\'s and its time source. Resynchronising the clock fixed it at once; in the lab, restarting the gateway also did, because the offset lived in its process.',
+    'heatwave-storm': 'The scenario requested two things at once, as a heatwave can bring them: a simulated failure of cooling unit CRAC-2, with the facility\'s power cap lowering every container\'s CPU limit from 0.25 to 0.05 and steady daytime users, 32 a second through each gateway; and app users, 60 a second through {target}, whose app retries a failed request at once up to three times. The cap made both gateways fail most requests. On {target} every failure became up to four attempts, and the retries turned a capped gateway into an overloaded one: a retry storm whose trigger was the cap, not the catalogue. The facility layer is simulated; the cap and the users were real. It needed two fixes in order. Lifting the cap was refused while the room was hot, and once cooling recovered after about 75 seconds it restored the other gateway at once, which is why it was right; but {target} stayed overloaded, because the retries no longer needed the cap to sustain them. A correct first step that leaves the incident failing is still progress, not a wrong fix. Enabling load shedding on {target} then let the requests it accepted finish in time, the users stopped retrying, and only then was recovery verified. Restarting, stopping a job or rate-limiting a client changed nothing.',
     'brownout': 'The scenario requested a simulated brownout on utility feed A to PDU-B, the power distribution unit feeding rack R2, where {target} is installed: the voltage sagged to about 186 V, below the 200 V its power supply tolerates. The facility layer is simulated, but its effect was real: whenever the voltage dipped, the server lost power, so the lab stopped the container, rebooted it a few seconds later, and stopped it again about ten seconds after that. A container has no power supply to lose, so it was stopped cleanly (exit code 0). The service crash-looped like a memory leak, but memory stayed flat, there was no out-of-memory kill and the release had not changed, so rolling back changed nothing; starting it only lasted until the next dip, and the breaker was closed, so resetting it changed nothing. The catalogue and gateway-a, on PDU-A, stayed healthy. The facility check showed feed A sagging, the redundant feed B normal, and a power-supply dropout at every restart. Moving the rack to the redundant feed ended the dropouts, and recovery had to hold for ten healthy cycles because the failures had come and gone.',
     'dns-failure': 'The scenario requested a node-settings sync that pointed {target}\'s resolver at 127.0.0.53, the address of systemd-resolved\'s stub on an ordinary Linux host. That setting is easily copied from a host image, but nothing listens there inside a container, so every DNS query is refused. The gateway resolves the catalogue\'s name with real DNS queries and caches each answer for 5 seconds, so it kept working until the cached answer expired, then failed every business request with a name resolution error. Its process, CPU, disk, release and running config were all normal, and the catalogue and the other gateway stayed healthy. A failing call to the catalogue looks like a stopped catalogue, or like config drift, which also breaks the upstream address; but the catalogue answered its own checks, the config matched what was deployed, and the network path check showed the lookup refused by 127.0.0.53 while a TCP connection to the catalogue\'s last known address still succeeded. Restoring the resolver fixed it at once; restarting the catalogue or restoring config changed nothing.',
     'partition': 'The scenario requested a partial network partition: a filter on {target}\'s own network interface that drops every packet addressed to the catalogue, and nothing else, applied by a short-lived broker helper with only NET_ADMIN, as a bad firewall or routing change would. When that succeeds, {target} stays live, its CPU, disk, config and release are normal, and its resolver still finds the catalogue\'s name, but every connection to the catalogue\'s address goes unanswered, so its business requests time out after 1 second. The catalogue answers its own checks quickly and the other gateway reaches it without trouble, so the catalogue is not down; only one path is cut. That looks like a stopped catalogue from {target}\'s side, like packet loss because requests time out, or like a DNS failure; but there is no netem queue, the name resolves, and the loss is total and to one destination. The network path check on {target} shows the drop filter under a prio queue and a TCP connection to the catalogue\'s address timing out. Restoring the route removes the filter; restarting the catalogue, removing packet loss or restoring the resolver changes nothing.',
@@ -126,7 +133,7 @@ def debrief(s):
 
 
 FaultKind = Literal['service-unavailable', 'cpu-starvation', 'disk-full', 'config-drift', 'network-delay', 'packet-loss', 'quota-zero', 'bad-release', 'memory-leak',
-                    'traffic-flood', 'retry-storm', 'power-loss', 'thermal-throttle', 'dns-failure', 'brownout', 'partition', 'clock-skew']
+                    'traffic-flood', 'retry-storm', 'power-loss', 'thermal-throttle', 'dns-failure', 'brownout', 'partition', 'clock-skew', 'heatwave-storm']
 NodeName = Literal['gateway-a', 'catalog-b', 'gateway-c']
 CheckKind = Literal['liveness', 'readiness', 'business', 'logs', 'service', 'resources', 'disk', 'config', 'trace', 'network', 'traffic', 'releases', 'memory',
                     'facility']
@@ -191,6 +198,7 @@ class Lab:
         self.successes = 0
         self.healthy_observations = []
         self.recent_cycles = deque(maxlen=DETECT_WINDOW)  # True for a healthy cycle, newest last
+        self.recent_failing = deque(maxlen=DETECT_WINDOW)  # the services that failed in each recent cycle, newest last
         self.collector_error = None
         self.last_cycle = None
         self.session = store.active_session()
@@ -350,6 +358,7 @@ class Lab:
             if good:
                 self.healthy_observations = (self.healthy_observations + [[e['id'] for e in results]])[-3:]
             self.recent_cycles.append(good)
+            self.recent_failing.append({e['node'] for e in results if not e['body']['ok'] or e['body'].get('slow')})
             self.last_cycle = time.time()
             self.collector_error = None
             s = self.session
@@ -389,10 +398,24 @@ class Lab:
                     s['recovery_evidence_ids'] = [eid for cycle in self.healthy_observations for eid in cycle]
                 s['verified_at'] = time.time()
             elif s['status'] == 'verifying' and not good:
-                s['verification'] = 'Recovery has not restored all affected checks'
+                s['verification'] = 'Recovery has not restored all affected checks' + self.partial_recovery(s, results)
             if s['status'] not in ('ended', 'recovered', 'resetting') and time.time() >= s['deadline'] + 60:
                 await self.reset_locked('expiry-' + s['id'], automatic=True)
             self.store.save(s)
+
+    def partial_recovery(self, s, results):
+        """When the latest fix restored some of the services that were failing but not all, say so from the measurements:
+        a compound incident's first fix is real progress, not a wrong fix. Nothing about the hidden fault is used."""
+        attempt = (s.get('recovery_attempts') or [{}])[-1]
+        before = attempt.get('unhealthy_before') or []
+        if attempt.get('status') != 'succeeded' or not before:
+            return ''
+        well = {n: all(e['body']['ok'] and not e['body'].get('slow') for e in results if e['node'] == n) for n in self.nodes}
+        restored, failing = [n for n in before if well[n]], [n for n in self.nodes if not well[n]]
+        if not restored or not failing:
+            return ''
+        attempt.setdefault('measured', f"partly restored: {', '.join(restored)} healthy again; {', '.join(failing)} still failing")
+        return f": {', '.join(restored)} healthy again, {', '.join(failing)} still failing. One cause may be fixed and another remain."
 
     def public_session(self, s=None):
         s = s or self.session
@@ -456,7 +479,7 @@ class Lab:
         nodes = [{'id': n['id'], 'role': n['role'], 'health': n['health']} for n in self.state_nodes()]
         context = {'mode': public['mode'], 'status': public['status'], 'started_s_ago': round(time.time() - public['started_at']),
                    'scenario': public.get('scenario'), 'slow_threshold_ms': SLOW_MS, 'nodes': nodes,
-                   'recovery_attempts': [{'node': a['node'], 'verb': a.get('verb'), 'status': a['status']} for a in public['recovery_attempts']],
+                   'recovery_attempts': [{'node': a['node'], 'verb': a.get('verb'), 'status': a['status'], **({'measured': a['measured']} if a.get('measured') else {})} for a in public['recovery_attempts']],
                    'evidence': [{**summarise(e), 'age_s': round(time.time() - e['at'])} for e in evidence]}
         return context, [e['id'] for e in evidence]
 
@@ -502,7 +525,8 @@ class Lab:
         if s.get('detected_at'):
             events.append({'at': s['detected_at'], 'label': 'Failures detected'})
         events += [{'at': h['at'], 'label': 'Help: ' + h['level']} for h in s.get('help', [])]
-        events += [{'at': a['at'], 'label': f"{a.get('verb', 'start')} {a['node']}: {a['status']}"} for a in s.get('recovery_attempts', [])]
+        events += [{'at': a['at'], 'label': f"{a.get('verb', 'start')} {a['node']}: {a['status']}" + (f" ({a['measured']})" if a.get('measured') else '')}
+                   for a in s.get('recovery_attempts', [])]
         if s.get('recovery_verified_at'):
             events.append({'at': s['recovery_verified_at'], 'label': 'Recovery verified'})
         if s.get('reset'):
@@ -613,6 +637,8 @@ class Lab:
         the cooling (capping every container's CPU and bringing daytime users) or lift that cap once the room has cooled."""
         if verb in ('heat', 'uncap'):
             return await self.thermal(verb)
+        if verb == 'heatwave':
+            return await self.thermal('heat', storm=node)
         if verb in ('sag', 'transfer'):
             return await self.brownout(node, verb)
         pdu = PDU_OF[node]
@@ -678,7 +704,9 @@ class Lab:
             except HTTPException:
                 pass  # the next cycle tries again; the facility never blocks health collection
 
-    async def thermal(self, verb):
+    async def thermal(self, verb, storm=None):
+        """Fail the cooling (capping every container's CPU and bringing daytime users, plus app users who retry at once on
+        the storm gateway for the compound incident) or lift that cap once the room has cooled."""
         room = self.facility().setdefault('room', {})
         if verb == 'heat':
             if room.get('capped'):
@@ -687,8 +715,8 @@ class Lab:
             for node in self.nodes:
                 inspected = await self.broker(node, 'inspect')
                 await self.broker(node, 'cap', inspected['generation'])
-            await self.maintenance('catalog-b', 'daytime')
-            return {'changed': True, 'cpu_limit': 0.05}
+            await (self.maintenance(storm, 'heatwave') if storm else self.maintenance('catalog-b', 'daytime'))
+            return {'changed': True, 'cpu_limit': 0.05, **({'storm': storm} if storm else {})}
         if not room.get('capped'):
             return {'changed': False}
         if self.room_hot() and self.session.get('status') != 'resetting':
@@ -786,6 +814,7 @@ class Lab:
                 self.session['verification'] = 'Injection outcome uncertain; inspect fleet or reset'
             self.baseline = self.successes = 0
             self.recent_cycles.clear()
+            self.recent_failing.clear()
             self.store.save(self.session)
             return self.public_session()
 
@@ -904,9 +933,12 @@ async def recover(data: Recover):
             raise HTTPException(409, 'Reset is in progress. Wait for verification or retry reset.')
         if len(lab.session['recovery_attempts']) >= 100 and not any(a['key'] == data.key for a in lab.session['recovery_attempts']):
             raise HTTPException(409, 'Recovery-attempt limit reached; reset and begin a new investigation')
+        # Every service that failed in the last few cycles: a struggling service can pass one cycle by luck.
+        failing = set().union(*lab.recent_failing) | {n['id'] for n in lab.state_nodes() if n['health'] != 'healthy'}
+        unhealthy = [n for n in lab.nodes if n in failing]
         result = await lab.mutate(data.key, data.node, data.verb)
         if not any(a['key'] == data.key for a in lab.session['recovery_attempts']):
-            lab.session['recovery_attempts'].append({'key': data.key, 'at': time.time(), **result})
+            lab.session['recovery_attempts'].append({'key': data.key, 'at': time.time(), 'unhealthy_before': unhealthy, **result})
             lab.session['status'] = 'verifying'
             lab.session['settled_since_fix'] = False
             lab.session['verification'] = 'Waiting for fresh measured recovery; an accepted action is not proof'

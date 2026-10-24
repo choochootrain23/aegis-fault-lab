@@ -1,6 +1,7 @@
 """Service-side storage behaviour: receipts, disk reports and the bounded fill/clear hooks."""
 import asyncio
 import errno
+import time
 
 import httpx
 import pytest
@@ -224,6 +225,24 @@ def test_rate_limit_targets_heavy_unknown_callers_and_asks_them_to_back_off(serv
 
 def test_only_the_reports_service_runs_the_exporter(service):
     assert service('POST', '/maintenance/flood', headers=TOKEN).json() == {'changed': False}
+
+
+def test_heatwave_runs_daytime_and_storming_users_together_until_unstorm(service, monkeypatch):
+    started = []
+    monkeypatch.setattr(fleet, 'run_users', lambda deadline, hosts, rate, retries: (started.append((hosts, rate, retries)), fleet.users_stop.wait(5)))
+    target = {**TOKEN, 'X-Aegis-Target': 'gateway-c'}
+    assert service('POST', '/maintenance/heatwave', headers={**TOKEN, 'X-Aegis-Target': 'catalog-b'}).status_code == 422
+    assert service('POST', '/maintenance/heatwave', headers=target).json() == {'changed': False}  # only the reports service
+    monkeypatch.setattr(fleet, 'ROLE', 'reports')
+    assert service('POST', '/maintenance/heatwave', headers=target).json() == {'changed': True}
+    assert service('POST', '/maintenance/heatwave', headers=target).json() == {'changed': False}
+    for _ in range(50):
+        if len(started) == 2:
+            break
+        time.sleep(0.02)
+    assert sorted(started) == sorted([(fleet.STORM_TARGETS, fleet.DAYTIME_RPS, 0), (('gateway-c',), fleet.USER_RPS, fleet.USER_RETRIES)])
+    assert service('POST', '/maintenance/unstorm', headers=TOKEN).json()['changed'] is True
+    assert not any(t.is_alive() for t in fleet.users_threads)
 
 
 def test_work_whose_caller_gave_up_is_dropped_without_doing_it(service, tmp_path):

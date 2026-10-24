@@ -22,23 +22,27 @@ NODES = ('gateway-a', 'catalog-b', 'gateway-c')
 # A different node to try a wrong remedy on.
 OTHER = {'gateway-a': 'catalog-b', 'catalog-b': 'gateway-c', 'gateway-c': 'gateway-a'}
 KINDS = ('service-unavailable', 'cpu-starvation', 'disk-full', 'config-drift', 'network-delay', 'packet-loss', 'quota-zero', 'bad-release', 'memory-leak',
-         'traffic-flood', 'retry-storm', 'power-loss', 'thermal-throttle', 'dns-failure', 'brownout', 'partition', 'clock-skew')
+         'traffic-flood', 'retry-storm', 'power-loss', 'thermal-throttle', 'dns-failure', 'brownout', 'partition', 'clock-skew', 'heatwave-storm')
 REMEDY = {'service-unavailable': 'start', 'cpu-starvation': 'calm', 'disk-full': 'clear', 'config-drift': 'restore', 'network-delay': 'undelay',
           'packet-loss': 'undrop', 'quota-zero': 'requota', 'bad-release': 'rollback', 'memory-leak': 'rollback', 'traffic-flood': 'ratelimit', 'retry-storm': 'shed', 'power-loss': 'breaker', 'thermal-throttle': 'uncap',
-          'dns-failure': 'resolver', 'brownout': 'transfer', 'partition': 'route', 'clock-skew': 'resync'}
+          'dns-failure': 'resolver', 'brownout': 'transfer', 'partition': 'route', 'clock-skew': 'resync', 'heatwave-storm': 'uncap'}
+# A compound incident's fixes, in order: the first is necessary but not sufficient.
+STEPS = {'heatwave-storm': ('uncap', 'shed')}
 TARGETS = {'quota-zero': ('catalog-b',), 'traffic-flood': ('catalog-b',), 'retry-storm': ('gateway-a', 'gateway-c'), 'power-loss': ('catalog-b',), 'thermal-throttle': ('catalog-b',),
            'dns-failure': ('gateway-a', 'gateway-c'), 'brownout': ('gateway-c',), 'partition': ('gateway-a', 'gateway-c'),
-           'clock-skew': ('gateway-a', 'gateway-c')}  # faults that only exist on some services
+           'clock-skew': ('gateway-a', 'gateway-c'), 'heatwave-storm': ('gateway-a', 'gateway-c')}  # faults that only exist on some services
 # The fix for the fault each one is most easily mistaken for: it must change nothing.
 LOOKALIKE = {'packet-loss': 'undelay', 'network-delay': 'undrop', 'quota-zero': 'restore', 'bad-release': 'restore', 'traffic-flood': 'calm', 'retry-storm': 'ratelimit', 'thermal-throttle': 'calm',
-             'dns-failure': 'restore', 'brownout': 'breaker', 'partition': 'undrop', 'clock-skew': 'rollback'}
-INTERMITTENT = ('cpu-starvation', 'packet-loss', 'bad-release', 'memory-leak', 'brownout')
+             'dns-failure': 'restore', 'brownout': 'breaker', 'partition': 'undrop', 'clock-skew': 'rollback', 'heatwave-storm': 'ratelimit'}
+INTERMITTENT = ('cpu-starvation', 'packet-loss', 'bad-release', 'memory-leak', 'brownout', 'heatwave-storm')
 RELEASE_FAULTS = {'v1.5.0': 'bad-release', 'v1.5.1': 'memory-leak'}  # effects that come and go from one cycle to the next
 
 
 def expected(kind, target):
     """Usual health right after detection. A catalogue fault reaches both gateways (through failure or
     slowness); a gateway fault stays on that gateway."""
+    if kind == 'heatwave-storm':  # as thermal throttling, with the storm gateway worst; both gateways fail, the catalogue does not
+        return {'gateway-a': 'degraded', 'catalog-b': 'healthy', 'gateway-c': 'degraded'}
     if kind == 'thermal-throttle':  # every service capped; the gateways, doing the most work per request, fail first
         return {'gateway-a': 'degraded', 'catalog-b': 'healthy', 'gateway-c': 'degraded'}
     if kind == 'brownout':  # gateway-c drops out and reboots; nothing else is on its feed or depends on it
@@ -90,7 +94,7 @@ def start(operator, mode, target=None, kind=None):
 
 def anomalies(operator):
     """Inspect every node five ways and report what the evidence shows, without the fault record."""
-    found, evidence = [], {}
+    found, evidence, capped_storms = [], {}, []
     for node in NODES:
         service, resources, disk, config, network, traffic, releases, memory, facility = (
             check(operator, node, k) for k in ('service', 'resources', 'disk', 'config', 'network', 'traffic', 'releases', 'memory', 'facility'))
@@ -99,6 +103,10 @@ def anomalies(operator):
         if (facility['body'].get('power_cap') or {}).get('active'):
             if node == 'catalog-b':  # one cap on the whole room is one fault, named by the catalogue
                 found.append(('thermal-throttle', node, facility))
+            # Under the cap, a gateway whose recent traffic is mostly retries is a second cause: a storm the cap set off.
+            users = (traffic['body'].get('result') or {}).get('clients', []) if traffic['body'].get('ok') else []
+            if node.startswith('gateway') and any((c.get('recent_rps') or 0) > 20 and (c.get('recent_retries') or 0) / ((c.get('recent_rps') or 1) * 10) > 0.5 for c in users):
+                capped_storms.append((node, traffic))
             continue
         feeds = facility['body'].get('feeds') or {}
         if (feeds.get(facility['body'].get('active_feed', 'A')) or {}).get('status') == 'sagging':
@@ -149,6 +157,8 @@ def anomalies(operator):
             found.append(('network-delay', node, network))
         elif traffic['body'].get('ok') and any(q['limit_rps'] == 0 for q in traffic['body']['result'].get('quotas', [])):
             found.append(('quota-zero', node, traffic))
+    if capped_storms:  # the cap and the storm are one compound incident, named by the stormed gateway
+        found = [f for f in found if f[0] != 'thermal-throttle'] + [('heatwave-storm', node, traffic) for node, traffic in capped_storms]
     return found, evidence
 
 
@@ -206,6 +216,8 @@ def diagnose(operator, sid, state, mode):
     # its original record stands.
     if kind != 'memory-leak' and time.time() - inspection['at'] > 15:
         inspection = check(operator, target, inspection['kind'])
+    if kind == 'heatwave-storm':  # guidance names both causes only while both records are fresh
+        check(operator, target, 'facility')
     action = operator.request('/api/help', {'session_id': sid, 'level': 'action'})
     ensure(target in action['message'] and inspection['id'] in action['evidence_ids'], f'action guidance did not cite the {kind} evidence: {action["message"]}')
     note = operator.request('/api/note', {'session_id': sid, 'explanation': f'{kind} on {target}, from inspections.',
@@ -224,14 +236,28 @@ def recover(operator, sid, kind, target):
         ensure(wrong['status'] == 'unchanged', f'{verb} on {node} should change nothing, got {wrong["status"]}')
     time.sleep(7)
     ensure(operator.request('/api/state')['session']['status'] != 'recovered', 'ineffective attempts were credited as recovery')
-    if kind == 'thermal-throttle':
+    if kind in ('thermal-throttle', 'heatwave-storm'):
         # The cap must not lift while the room is hot; once the facility reports cooling restored, it may.
         early = operator.action('recover', sid, node=target, verb='uncap')
         ensure(early['status'] == 'unchanged' and 'Inlet still' in early.get('detail', ''), f'the cap lifted while the room was hot: {early}')
         operator.wait(lambda s: check(operator, target, 'facility')['body']['cooling']['crac_2'] == 'running', 'cooling restored', sid=sid, timeout=120)
     began = time.monotonic()
-    right = operator.action('recover', sid, node=target, verb=REMEDY[kind])
-    ensure(right['status'] == 'succeeded', f'{REMEDY[kind]} on {target} not confirmed: {right}')
+    steps = STEPS.get(kind, (REMEDY[kind],))
+    for number, verb in enumerate(steps, 1):
+        right = operator.action('recover', sid, node=target, verb=verb)
+        ensure(right['status'] == 'succeeded', f'{verb} on {target} not confirmed: {right}')
+        if number == len(steps):
+            break
+        # A correct first step that leaves the incident failing is progress: it must not be credited as recovery.
+        time.sleep(8)
+        session = operator.request('/api/state')['session']
+        ensure(session['status'] == 'verifying', f'{verb} alone should not recover the whole incident, got {session["status"]}')
+        readings = Counter()
+        for _ in range(5):
+            readings.update(n['health'] for n in operator.request('/api/state')['nodes'] if n['id'] == target)
+            time.sleep(2)
+        ensure(readings['healthy'] <= 1, f'{target} should still fail after only {verb}, saw {dict(readings)}')
+        ensure(operator.request('/api/state')['session']['status'] != 'recovered', f'{verb} alone was credited as recovery')
     state = operator.wait(lambda s: s['session']['status'] == 'recovered', 'verified recovery', sid=sid)
     ensure(len(state['session']['recovery_evidence_ids']) == 6 * len(NODES), 'recovery should cite three cycles of every node')
     flapping = state['session'].get('flaps', 0) >= 1
@@ -283,7 +309,7 @@ def main():
                 sid = None
         kinds_seen, targets_seen = set(), set()
         challenge = not args.kinds or args.challenge
-        for attempt in range(64 if challenge else 0):
+        for attempt in range(100 if challenge else 0):
             if kinds_seen == set(KINDS) and targets_seen == set(NODES):
                 break
             sid, state, detect = start(operator, 'challenge')

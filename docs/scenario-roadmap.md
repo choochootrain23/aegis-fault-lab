@@ -25,6 +25,7 @@ New faults modelled on the kinds of incident that public data-centre reports des
 | 9 | **Clock skew** on one gateway: its time daemon steps the clock 300 s ahead, and the catalogue refuses its signed requests as stale | Bad release, config drift; zero quota (401, not 429) | Resync clock | **Done** (F17), after adding request signing |
 | 10 | **DNS resolution failure** on one gateway: its resolver points at a nameserver that is not there | Stopped catalogue (it is fine, and reachable at its last known address); config drift | Restore resolver | **Done** (F14), with real DNS queries from the gateways |
 | 11 | **Partial partition**: one gateway cannot reach the catalogue | Stopped catalogue; packet loss; DNS failure | Restore route | **Done** (F16), with a new fixed helper rule reviewed in [architecture](architecture.md) |
-| 13–16 | Gray failure, heatwave compound incident, read-only disk, path MTU black hole | | | Later |
+| 14 | **Heatwave compound incident**: a power cap sets off a retry storm on one gateway | Thermal throttling; a retry storm | Lift power cap, then enable load shedding | **Done** (F18), with multi-step recovery |
+| 13, 15, 16 | Gray failure, read-only disk, path MTU black hole | | | Later |
 
 Inspirations, all public: the Google SRE book chapters on cascading failures and load shedding; Google Cloud incident reports for the 2022 europe-west2 cooling failure, the 2015 St. Ghislain lightning strikes and the 2023 europe-west9 water leak and fire; and the December 2020 authentication outage attributed to the quota system.

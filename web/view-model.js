@@ -85,17 +85,17 @@ globalThis.AegisView = Object.freeze({
     return ({start:'Start service',calm:'Stop runaway job',clear:'Clear temp files',restore:'Restore config',undelay:'Remove traffic delay',undrop:'Remove packet loss',requota:'Reset client quotas',rollback:'Roll back release',ratelimit:'Rate-limit top client',shed:'Enable load shedding',breaker:'Reset breaker',uncap:'Lift power cap',resolver:'Restore resolver',transfer:'Move to redundant feed',route:'Restore route',resync:'Resync clock'})[verb]||verb;
   },
   faultLabel(kind) {
-    return ({'service-unavailable':'Stopped service','cpu-starvation':'CPU starvation','disk-full':'Disk full','config-drift':'Config drift','network-delay':'Network delay','packet-loss':'Packet loss','quota-zero':'Quota set to zero','bad-release':'Bad release','memory-leak':'Memory leak','traffic-flood':'Traffic flood','retry-storm':'Retry storm','power-loss':'Rack power loss','thermal-throttle':'Thermal throttling','dns-failure':'DNS failure','brownout':'Brownout','partition':'Partial partition','clock-skew':'Clock skew'})[kind]||kind;
+    return ({'service-unavailable':'Stopped service','cpu-starvation':'CPU starvation','disk-full':'Disk full','config-drift':'Config drift','network-delay':'Network delay','packet-loss':'Packet loss','quota-zero':'Quota set to zero','bad-release':'Bad release','memory-leak':'Memory leak','traffic-flood':'Traffic flood','retry-storm':'Retry storm','power-loss':'Rack power loss','thermal-throttle':'Thermal throttling','dns-failure':'DNS failure','brownout':'Brownout','partition':'Partial partition','clock-skew':'Clock skew','heatwave-storm':'Heatwave and retry storm'})[kind]||kind;
   },
   // The services a fault can target, when it cannot target all three.
   faultTargets(kind) {
-    return ({'quota-zero':['catalog-b'],'traffic-flood':['catalog-b'],'retry-storm':['gateway-a','gateway-c'],'power-loss':['catalog-b'],'thermal-throttle':['catalog-b'],'dns-failure':['gateway-a','gateway-c'],'brownout':['gateway-c'],'partition':['gateway-a','gateway-c'],'clock-skew':['gateway-a','gateway-c']})[kind]||null;
+    return ({'quota-zero':['catalog-b'],'traffic-flood':['catalog-b'],'retry-storm':['gateway-a','gateway-c'],'power-loss':['catalog-b'],'thermal-throttle':['catalog-b'],'dns-failure':['gateway-a','gateway-c'],'brownout':['gateway-c'],'partition':['gateway-a','gateway-c'],'clock-skew':['gateway-a','gateway-c'],'heatwave-storm':['gateway-a','gateway-c']})[kind]||null;
   },
   // Scenario heading: the selected fault and target, the running practice scenario, or a hidden challenge.
   scenarioCopy(kind, target, mode) {
     if (mode==='challenge') return {number:'??', eyebrow:'Challenge · hidden fault', title:['A ','hidden',' fault'],
-      text:'One of seventeen faults on one of the three services, picked at random and kept secret. Find it from the evidence, fix it, then reveal it to check.'};
-    const kinds=['service-unavailable','cpu-starvation','disk-full','config-drift','network-delay','packet-loss','quota-zero','bad-release','memory-leak','traffic-flood','retry-storm','power-loss','thermal-throttle','dns-failure','brownout','partition','clock-skew'];
+      text:'One of eighteen faults on one of the three services, picked at random and kept secret. Find it from the evidence, fix it, then reveal it to check.'};
+    const kinds=['service-unavailable','cpu-starvation','disk-full','config-drift','network-delay','packet-loss','quota-zero','bad-release','memory-leak','traffic-flood','retry-storm','power-loss','thermal-throttle','dns-failure','brownout','partition','clock-skew','heatwave-storm'];
     const copy={
       'service-unavailable':{title:['When a service ','stops',''], text:'Its container is stopped, so its own checks fail.'},
       'cpu-starvation':{title:['When a service is ','starved',' of CPU'], text:'A runaway job uses its whole CPU limit. It still answers, just slowly.'},
@@ -107,6 +107,7 @@ globalThis.AegisView = Object.freeze({
       'bad-release':{title:['When a release ','ships a bug',''], text:'A new version fails about half its requests. The machine is fine and the config unchanged; only the code moved.'},
       'partition':{title:['When one path ','is cut',''], text:'A filter on the gateway drops every packet to the catalogue, and nothing else. The catalogue is up and the other gateway reaches it; this one cannot.'},
       'clock-skew':{title:['When the clock ','jumps',''], text:'A time daemon steps the gateway\'s clock five minutes ahead. Its signed requests now look stale to the catalogue, which refuses them; nothing else about the service changed.'},
+      'heatwave-storm':{title:['When the heat ','sets off',' a storm'], text:'A cooling failure caps every server\'s power, and app users who retry at once turn this gateway\'s timeouts into an overload. Two causes: the first fix is needed but will not be enough. The facility layer is simulated; the cap and the users are real.'},
       'brownout':{title:['When the power ','sags',''], text:'The utility feed to rack R2 sags below what its power supply needs. The server keeps dropping out and rebooting, with nothing wrong in its software. The facility layer is simulated; the restarts are real.'},
       'dns-failure':{title:['When a name ','stops resolving',''], text:'A settings sync points the gateway\'s resolver at a nameserver that is not there. The catalogue is up and reachable, but the gateway can no longer find it by name.'},
       'thermal-throttle':{title:['When the room ','overheats',''], text:'A cooling unit fails and the facility caps every server\'s power. Under daytime traffic, everything slows at once. The facility layer is simulated; the cap and the traffic are real.'},
@@ -116,6 +117,7 @@ globalThis.AegisView = Object.freeze({
       'memory-leak':{title:['When memory ','leaks',''], text:'A new version never frees what it loads. It runs fine until the kernel kills it, then the rollout restarts it, again and again.'},
     }[kind]||{title:['A ','fault',''], text:''};
     const scope=kind==='thermal-throttle'?'It reaches every service: look for what they all share.'
+      :kind==='heatwave-storm'?`It reaches every service, and ${target} worst: look for what they all share, then what ${target} has that the other gateway does not.`
       :kind==='brownout'?'Rack R2 holds only gateway-c: look at what it runs on, not just what it runs.'
       :kind==='power-loss'?'Rack R1 holds the shared catalogue and gateway-a: look for what failed together.'
       :kind==='quota-zero'?'Enforced by the shared catalogue: compare what its callers see with what its own checks say.'

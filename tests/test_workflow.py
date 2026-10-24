@@ -82,6 +82,12 @@ class Fleet:
         if node == 'reports' and path.rsplit('/', 1)[1] == 'daytime':
             changed, self.daytime = not self.daytime, True
             return httpx.Response(200, json={'changed': changed})
+        if node == 'reports' and path.rsplit('/', 1)[1] == 'heatwave':  # daytime users on both gateways and app users on one
+            changed = not self.daytime and self.storming is None
+            self.daytime, self.storming = True, request.headers.get('x-aegis-target')
+            if changed:
+                self.mutations.append(('reports', 'heatwave'))
+            return httpx.Response(200, json={'changed': changed})
         if node == 'reports' and path.rsplit('/', 1)[1] in ('storm', 'unstorm'):
             verb = path.rsplit('/', 1)[1]
             if verb == 'unstorm':
@@ -614,10 +620,10 @@ def test_challenge_hides_fault_kind_and_target(lab):
             await controller.reset_locked(f'reset-kind-{attempt:03d}')
             for _ in range(3):
                 await controller.cycle()
-            if len(seen) == 17:
+            if len(seen) == 18:
                 break
         assert seen == {'service-unavailable', 'cpu-starvation', 'disk-full', 'config-drift', 'network-delay', 'packet-loss', 'quota-zero',
-                        'bad-release', 'memory-leak', 'traffic-flood', 'retry-storm', 'power-loss', 'thermal-throttle', 'dns-failure', 'brownout', 'partition', 'clock-skew'}
+                        'bad-release', 'memory-leak', 'traffic-flood', 'retry-storm', 'power-loss', 'thermal-throttle', 'dns-failure', 'brownout', 'partition', 'clock-skew', 'heatwave-storm'}
     run(scenario())
 
 
@@ -1209,6 +1215,55 @@ def test_thermal_cap_slows_the_gateways_and_lifts_only_once_cooling_recovers(lab
         await controller.reset_locked('reset-heat')
         steps = [(r['node'], r['verb']) for r in controller.session['reset']['results']]
         assert steps[0] == ('catalog-b', 'uncap') and steps[-1] == ('catalog-b', 'unstorm') and not fleet.daytime
+    run(scenario())
+
+
+def test_heatwave_storm_needs_both_fixes_and_credits_the_first_as_progress(lab):
+    async def scenario():
+        from aegis.controller import Recover, recover
+        controller, fleet = lab
+        app.state.lab = controller
+        await baseline(controller)
+        with pytest.raises(HTTPException) as refused:
+            await controller.start(Start(mode='practice', kind='heatwave-storm', target='catalog-b', key='start-wave-cat'))
+        assert refused.value.status_code == 422
+        await controller.start(Start(mode='practice', kind='heatwave-storm', target='gateway-a', key='start-wave'))
+        assert all(fleet.capped.values()) and fleet.daytime and fleet.storming == 'gateway-a'
+        health = await investigate(controller)
+        assert health['catalog-b'] == 'healthy' and health['gateway-a'] != 'healthy' and health['gateway-c'] != 'healthy'
+        sid = controller.session['id']
+        hot = await recover(Recover(session_id=sid, node='gateway-c', verb='uncap', key='uncap-too-early'))
+        assert hot['status'] == 'unchanged' and 'Inlet still' in hot['detail']
+        controller.session['facility']['room']['failed_at'] -= 80  # cooling has now recovered
+        first = await recover(Recover(session_id=sid, node='gateway-c', verb='uncap', key='uncap-cooled'))
+        assert first['status'] == 'succeeded' and not any(fleet.capped.values())
+        for _ in range(4):
+            await controller.cycle()
+        s = controller.session
+        assert s['status'] == 'verifying' and 'gateway-c healthy again, gateway-a still failing' in s['verification']
+        assert s['recovery_attempts'][-1]['measured'].startswith('partly restored') and not s.get('flaps')  # progress, not a flap
+        assert any('partly restored' in e['label'] for e in controller.timeline(sid)['events'])
+        await recover(Recover(session_id=sid, node='gateway-a', verb='shed', key='shed-after'))
+        for _ in range(4):
+            await controller.cycle()
+        assert s['status'] == 'recovered' and s.get('required_streak', 3) == 3 and fleet.shedding['gateway-a']
+        assert controller.report(s)['ineffective_attempts'] == 1 and controller.report(s)['effective_actions'] == 2
+        await controller.reset_locked('reset-wave')
+        steps = [(r['node'], r['verb']) for r in s['reset']['results']]
+        assert steps[0] == ('gateway-a', 'uncap') and steps[-2:] == [('gateway-a', 'unstorm'), ('gateway-a', 'unshed')]
+        assert not fleet.daytime and fleet.storming is None and not fleet.shedding['gateway-a']
+        assert 'two fixes in order' in controller.public_session(s | {'revealed': True})['debrief']
+    run(scenario())
+
+
+def test_heatwave_storm_reset_while_hot_undoes_everything(lab):
+    async def scenario():
+        controller, fleet = lab
+        await baseline(controller)
+        await controller.start(Start(mode='practice', kind='heatwave-storm', target='gateway-c', key='start-wave-reset'))
+        await controller.reset_locked('reset-wave-hot')
+        assert controller.session['reset']['results'][0]['status'] == 'succeeded' and not any(fleet.capped.values())
+        assert not fleet.daytime and fleet.storming is None
     run(scenario())
 
 
