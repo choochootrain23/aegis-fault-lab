@@ -11,7 +11,7 @@ A hands-on lab for practising Linux service troubleshooting. Three small web ser
 ## Contents
 
 1. [What makes it different](#what-makes-it-different)
-2. [Quick start](#quick-start)
+2. [Quick start](#quick-start) and [starting and stopping the lab](#start-and-stop-the-lab)
 3. [What you practise](#what-you-practise): [the eighteen faults](#the-eighteen-faults) and [the thirteen checks](#the-thirteen-checks)
 4. [Your first investigation](#your-first-investigation)
 5. [Optional AI investigator](#optional-ai-investigator)
@@ -40,6 +40,21 @@ docker compose up -d --build     # first build takes a few minutes
 ```
 
 Open **http://localhost:8787**. The page collects a healthy baseline (a 0/5 meter); after about ten seconds all three services turn **healthy** and **Start investigation** turns green. Press the yellow **TOUR** button for a 60-second guided look.
+
+### Start and stop the lab
+
+Run these from the project folder.
+
+| To | Run | What happens |
+| --- | --- | --- |
+| **Start** (first time, or after `git pull`) | `docker compose up -d --build` | Builds the image and starts all six containers |
+| **Start** (any other time) | `docker compose up -d` | Starts the containers again; your investigation history is still there |
+| **Check it is running** | `docker compose ps` | Lists six running containers; then open http://localhost:8787 |
+| **Pause** | `docker compose stop` | Stops the containers but keeps them; `docker compose up -d` resumes |
+| **End** | `docker compose down` | Removes the containers and networks; history is kept in a Docker volume |
+| **End and wipe history** | `docker compose down -v` | Also deletes the volume, so every past investigation is gone |
+
+**Before you end the lab,** finish any investigation on the page: press **End & reset** and wait for the healthy baseline. Otherwise an injected fault, such as a stopped service or a network rule, can still be in place when you next start. Only this project's containers, networks and volume are touched.
 
 The details of each step follow.
 
@@ -84,7 +99,7 @@ Keeping it safe:
 
 ### 4. Build, start and open
 
-`docker compose ps` should list six running containers: `controller`, `broker`, `gateway-a`, `catalog-b`, `gateway-c` and `reports` (an idle batch client and app-user simulator, used only by the traffic-flood and retry-storm faults).
+`docker compose ps` should list six running containers: `controller`, `broker`, `gateway-a`, `catalog-b`, `gateway-c` and `reports` (an idle batch client and app-user simulator, used only by the faults that need outside traffic: the traffic flood, the retry storm, thermal throttling and the compound incident).
 
 **Lab inside a VM or on another machine?** Forward the port from the computer you browse on: `ssh -L 8787:localhost:8787 you@lab-machine`, then open http://localhost:8787 there. In VS Code Remote-SSH, the **Ports** panel can forward 8787 for you. Use `localhost`, not an IP address: the lab deliberately rejects other addresses.
 
@@ -183,14 +198,7 @@ Once set up, the card's badge reads **ON · gemini** (or **ON · anthropic**). E
 
 ## Everyday use and troubleshooting
 
-```bash
-docker compose stop        # pause everything; investigation history is kept
-docker compose up -d       # start again later
-docker compose down        # remove the containers; history is kept in a Docker volume
-docker compose down -v     # remove containers AND all investigation history
-```
-
-Only this project's containers, networks and volume are touched. **Upgrading?** `git pull`, `python3 scripts/init_env.py` (adds any new credential), then `docker compose up -d --build`.
+To start, pause or end the lab, see [Start and stop the lab](#start-and-stop-the-lab). **Upgrading?** `git pull`, `python3 scripts/init_env.py` (adds any new credential), then `docker compose up -d --build`.
 
 If the page stops responding mid-investigation, bring the services back with `docker compose start catalog-b gateway-a gateway-c` and `docker compose up -d controller broker`, then reopen the page and press **End & reset** so the lab re-verifies a healthy baseline.
 
