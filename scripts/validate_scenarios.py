@@ -33,7 +33,10 @@ TARGETS = {'quota-zero': ('catalog-b',), 'traffic-flood': ('catalog-b',), 'retry
            'clock-skew': ('gateway-a', 'gateway-c'), 'heatwave-storm': ('gateway-a', 'gateway-c')}  # faults that only exist on some services
 # The fix for the fault each one is most easily mistaken for: it must change nothing.
 LOOKALIKE = {'packet-loss': 'undelay', 'network-delay': 'undrop', 'quota-zero': 'restore', 'bad-release': 'restore', 'traffic-flood': 'calm', 'retry-storm': 'ratelimit', 'thermal-throttle': 'calm',
-             'dns-failure': 'restore', 'brownout': 'breaker', 'partition': 'undrop', 'clock-skew': 'rollback', 'heatwave-storm': 'ratelimit'}
+             'dns-failure': 'restore', 'brownout': 'breaker', 'partition': 'undrop', 'clock-skew': 'rollback'}
+# Wrong fixes tried between the steps of a multi-step incident, once the target answers again (measured: under the cap a
+# stormed gateway cannot even answer its maintenance endpoint).
+BETWEEN_STEPS = {'heatwave-storm': 'ratelimit'}
 INTERMITTENT = ('cpu-starvation', 'packet-loss', 'bad-release', 'memory-leak', 'brownout', 'heatwave-storm')
 RELEASE_FAULTS = {'v1.5.0': 'bad-release', 'v1.5.1': 'memory-leak'}  # effects that come and go from one cycle to the next
 
@@ -94,7 +97,7 @@ def start(operator, mode, target=None, kind=None):
 
 def anomalies(operator):
     """Inspect every node five ways and report what the evidence shows, without the fault record."""
-    found, evidence, capped_storms = [], {}, []
+    found, evidence, capped_storms, stuck, answered = [], {}, [], [], []
     for node in NODES:
         service, resources, disk, config, network, traffic, releases, memory, facility = (
             check(operator, node, k) for k in ('service', 'resources', 'disk', 'config', 'network', 'traffic', 'releases', 'memory', 'facility'))
@@ -107,6 +110,10 @@ def anomalies(operator):
             users = (traffic['body'].get('result') or {}).get('clients', []) if traffic['body'].get('ok') else []
             if node.startswith('gateway') and any((c.get('recent_rps') or 0) > 20 and (c.get('recent_retries') or 0) / ((c.get('recent_rps') or 1) * 10) > 0.5 for c in users):
                 capped_storms.append((node, traffic))
+            elif node.startswith('gateway') and not traffic['body'].get('ok'):
+                stuck.append((node, traffic))  # too overloaded to answer at all: more than the cap alone explains
+            elif node.startswith('gateway'):
+                answered.append(node)
             continue
         feeds = facility['body'].get('feeds') or {}
         if (feeds.get(facility['body'].get('active_feed', 'A')) or {}).get('status') == 'sagging':
@@ -157,6 +164,8 @@ def anomalies(operator):
             found.append(('network-delay', node, network))
         elif traffic['body'].get('ok') and any(q['limit_rps'] == 0 for q in traffic['body']['result'].get('quotas', [])):
             found.append(('quota-zero', node, traffic))
+    if not capped_storms and len(stuck) == 1 and answered:  # measured: under the cap a stormed gateway cannot even answer its traffic check
+        capped_storms = stuck
     if capped_storms:  # the cap and the storm are one compound incident, named by the stormed gateway
         found = [f for f in found if f[0] != 'thermal-throttle'] + [('heatwave-storm', node, traffic) for node, traffic in capped_storms]
     return found, evidence
@@ -216,8 +225,9 @@ def diagnose(operator, sid, state, mode):
     # its original record stands.
     if kind != 'memory-leak' and time.time() - inspection['at'] > 15:
         inspection = check(operator, target, inspection['kind'])
-    if kind == 'heatwave-storm':  # guidance names both causes only while both records are fresh
+    if kind == 'heatwave-storm':  # guidance names both causes only while the records it compares are fresh
         check(operator, target, 'facility')
+        check(operator, 'gateway-c' if target == 'gateway-a' else 'gateway-a', 'traffic')
     action = operator.request('/api/help', {'session_id': sid, 'level': 'action'})
     ensure(target in action['message'] and inspection['id'] in action['evidence_ids'], f'action guidance did not cite the {kind} evidence: {action["message"]}')
     note = operator.request('/api/note', {'session_id': sid, 'explanation': f'{kind} on {target}, from inspections.',
@@ -229,7 +239,8 @@ def diagnose(operator, sid, state, mode):
 def recover(operator, sid, kind, target):
     # A wrong node, and (while the target still runs) a wrong kind of remedy, must both change nothing.
     # Starting a crash-looping service really does start it, so for a leak the test is that it is not credited.
-    wrong = ([(OTHER[target], REMEDY[kind])] + ([(target, 'start')] if kind not in ('service-unavailable', 'memory-leak', 'brownout') else [])
+    # Lifting the power cap acts on the whole room, so from any service it is the same fix: no wrong-service test for it.
+    wrong = (([(OTHER[target], REMEDY[kind])] if REMEDY[kind] != 'uncap' else []) + ([(target, 'start')] if kind not in ('service-unavailable', 'memory-leak', 'brownout') else [])
              + ([(target, LOOKALIKE[kind])] if kind in LOOKALIKE else []))
     for node, verb in wrong:
         wrong = operator.action('recover', sid, node=node, verb=verb)
@@ -238,8 +249,10 @@ def recover(operator, sid, kind, target):
     ensure(operator.request('/api/state')['session']['status'] != 'recovered', 'ineffective attempts were credited as recovery')
     if kind in ('thermal-throttle', 'heatwave-storm'):
         # The cap must not lift while the room is hot; once the facility reports cooling restored, it may.
-        early = operator.action('recover', sid, node=target, verb='uncap')
-        ensure(early['status'] == 'unchanged' and 'Inlet still' in early.get('detail', ''), f'the cap lifted while the room was hot: {early}')
+        # A slow sweep (an unresponsive gateway's checks wait out their timeouts) can outlast the cooling failure.
+        if check(operator, target, 'facility')['body']['cooling']['crac_2'] == 'failed':
+            early = operator.action('recover', sid, node=target, verb='uncap')
+            ensure(early['status'] == 'unchanged' and 'Inlet still' in early.get('detail', ''), f'the cap lifted while the room was hot: {early}')
         operator.wait(lambda s: check(operator, target, 'facility')['body']['cooling']['crac_2'] == 'running', 'cooling restored', sid=sid, timeout=120)
     began = time.monotonic()
     steps = STEPS.get(kind, (REMEDY[kind],))
@@ -257,6 +270,9 @@ def recover(operator, sid, kind, target):
             readings.update(n['health'] for n in operator.request('/api/state')['nodes'] if n['id'] == target)
             time.sleep(2)
         ensure(readings['healthy'] <= 1, f'{target} should still fail after only {verb}, saw {dict(readings)}')
+        if kind in BETWEEN_STEPS:
+            wrong = operator.action('recover', sid, node=target, verb=BETWEEN_STEPS[kind])
+            ensure(wrong['status'] == 'unchanged', f'{BETWEEN_STEPS[kind]} on {target} should change nothing, got {wrong["status"]}')
         ensure(operator.request('/api/state')['session']['status'] != 'recovered', f'{verb} alone was credited as recovery')
     state = operator.wait(lambda s: s['session']['status'] == 'recovered', 'verified recovery', sid=sid)
     ensure(len(state['session']['recovery_evidence_ids']) == 6 * len(NODES), 'recovery should cite three cycles of every node')

@@ -154,10 +154,11 @@ Reports are under ignored `state/validation/`. The app is running at http://loca
 
 - **Multi-step recovery.** A fault can list several remedies in order. Every recovery attempt records which services failed in the last few cycles before it; while verification fails, the session and timeline say from the measurements which of them the latest fix restored and which still fail. A correct partial fix is a real success, never a flap, and recovery is only credited once every service is healthy.
 - **Eighteenth fault: heatwave and retry storm.** The thermal cap and daytime users plus app users who retry at once on one gateway, started together with no compaction. Lift power cap (once cooling recovers), then Enable load shedding on that gateway. Guidance names both causes and their order; the AI evaluation grades the next necessary step, and asks once more after a fix that only partly worked.
+- Validation on real Docker: under the cap the stormed gateway cannot answer anything, so the storm only shows once the cap is lifted. Guidance, the validator, the simulator and the AI prompt now read one gateway that cannot answer, while the other under the same cap can, as the sign of a second cause. All 39 practice and 35 challenge rounds over the eighteen faults pass.
 
 ## Next work
 
-1. AI evaluation with other models and question wordings; more samples of the rarer faults.
+1. AI evaluation of faults 16–18, with other models and question wordings; more samples of the rarer faults.
 2. More compound incidents from the roadmap.
 3. Screen-reader review; runs measured in days.
 

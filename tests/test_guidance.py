@@ -430,3 +430,16 @@ def test_a_power_cap_and_a_retry_storm_name_both_causes_and_their_order():
     # Once the cap is gone the storm alone remains, and the ordinary retry-storm rule recommends shedding.
     lifted={**hot,'body':{**hot['body'],'power_cap':{'active':False},'cooling':{'crac_2':'running'}}}
     assert 'enabling load shedding on gateway-a' in explain({('gateway-a','traffic'):storm,('gateway-a','facility'):lifted},'action',now=101)['message']
+
+
+def test_a_gateway_too_overloaded_to_answer_under_the_cap_is_named_as_a_second_cause():
+    cap=observation('catalog-b','facility',simulated=True,pdu='PDU-A',breaker='closed',power_cap={'active':True,'cpu_limit':0.05},cooling={'crac_2':'failed'},inlet_c=38.4)
+    stuck=observation('gateway-a','traffic',False,error='ReadTimeout')
+    other=observation('gateway-c','traffic',result={'window_s':60,'clients':[{'client':'daytime-users','requests':1900,'recent_rps':31.0,'recent_retries':0}],'quotas':[]})
+    result=explain({('catalog-b','facility'):cap,('gateway-a','traffic'):stuck,('gateway-c','traffic'):other},'action',now=101)
+    assert result['evidence_ids']==[cap['id'],stuck['id']]
+    assert 'too overloaded even to answer its traffic check' in result['message'] and 'gateway-c, under the same cap, still answers' in result['message']
+    assert 'cannot safely be lifted yet' in result['message']
+    # Both gateways answering is ordinary thermal throttling, not a second cause.
+    answered=explain({('catalog-b','facility'):cap,('gateway-c','traffic'):other},'action',now=101)
+    assert 'Two causes' not in answered['message']

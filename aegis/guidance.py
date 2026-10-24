@@ -201,11 +201,23 @@ def compound(fresh):
     necessary, but the retries now sustain the gateway's overload, so shedding load is needed too."""
     cap = next((r for (n, k), r in sorted(fresh.items(), key=lambda i: -i[1]['at']) if k == 'facility' and r['body'].get('ok') and (r['body'].get('power_cap') or {}).get('active')), None)
     storm = next((r for (n, k), r in sorted(fresh.items(), key=lambda i: -i[1]['at']) if k == 'traffic' and n in GATEWAYS and r['body'].get('ok') and retry_storm(r)), None)
-    if not cap or not storm:
+    # Measured on the real lab: under the cap a stormed gateway is too overloaded to answer even its traffic check, while
+    # the other gateway, under the same cap, still answers. That difference is the clue before the cap is lifted.
+    stuck = [fresh[(g, 'traffic')] for g in GATEWAYS if (g, 'traffic') in fresh and not fresh[(g, 'traffic')]['body'].get('ok')]
+    answering = [g for g in GATEWAYS if (g, 'traffic') in fresh and fresh[(g, 'traffic')]['body'].get('ok')]
+    if not cap or not (storm or (len(stuck) == 1 and answering)):
         return None
-    g, share, body = storm['node'], round(100 * retry_share(retry_storm(storm))), cap['body']
-    both = (f"Two causes are active at once. The facility check (simulated) shows a power cap on every rack, and {g}'s traffic shows {share}% of its recent requests are retries: "
-            f"a retry storm the cap set off. Fix them in order, and expect the first fix not to be enough: once the cap is lifted, the retries alone keep {g} overloaded. ")
+    body = cap['body']
+    if storm:
+        g, share = storm['node'], round(100 * retry_share(retry_storm(storm)))
+        both = (f"Two causes are active at once. The facility check (simulated) shows a power cap on every rack, and {g}'s traffic shows {share}% of its recent requests are retries: "
+                f"a retry storm the cap set off. Fix them in order, and expect the first fix not to be enough: once the cap is lifted, the retries alone keep {g} overloaded. ")
+    else:
+        storm = stuck[0]
+        g = storm['node']
+        both = (f"Two causes may be active. The facility check (simulated) shows a power cap on every rack, which slows both gateways; but {g} is too overloaded even to answer its traffic check "
+                f"({storm['body'].get('error') or 'no answer'}), while {answering[0]}, under the same cap, still answers. Something beyond the cap is loading {g}, such as callers retrying its failures. "
+                f"Expect lifting the cap not to be enough on its own: check {g}'s traffic again once it is lifted. ")
     if (body.get('cooling') or {}).get('crac_2') == 'failed':
         action = both + (f"Cooling unit CRAC-2 has failed and the inlet is at {body.get('inlet_c')} °C, so the cap cannot safely be lifted yet: check the facility again until cooling is restored, "
                          f"then lift the power cap, then enable load shedding on {g} if it still fails.")

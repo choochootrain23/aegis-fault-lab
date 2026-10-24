@@ -261,6 +261,9 @@ function probe(node, kind) {
             throttled_ms: Math.round(n.throttled * 75 * 10) / 10, memory_mib: memoryAt(node, now()), memory_limit_mib: MEMORY_LIMIT, duration_ms: between(1000, 1250)};
   }
   if (!answering(node)) return {ok: false, error: kind === 'network' ? 'ConnectionRefusedError' : 'ConnectError', detail: 'Check unavailable or failed', duration_ms: between(0.8, 4)};
+  // Measured on the real lab: a gateway under the power cap and a retry storm at once is too overloaded to answer the
+  // controller within its 3-second timeout, even for liveness or its traffic report.
+  if (room.capped && storm.capTriggered && storming(node)) return {ok: false, error: 'ReadTimeout', detail: 'Check unavailable or failed', duration_ms: 3000};
   // A lossy service's reply can be lost so often that the controller's 3-second wait runs out.
   const replyHop = kind === 'network' ? {extra: 0, error: null} : hop(node);
   if (replyHop.error) return {ok: false, error: replyHop.error, detail: 'Check unavailable or failed', duration_ms: replyHop.extra};
@@ -932,10 +935,21 @@ function retryStorm(record) {
 // A power cap and a retry storm at once: two causes, fixed in order, as aegis/guidance.py explains them.
 function compoundFor(fresh) {
   const newest = kind => [...fresh.entries()].filter(([key, r]) => key.endsWith('|' + kind) && r.body.ok).map(([, r]) => r).sort((a, b) => b.at - a.at);
-  const cap = newest('facility').find(r => r.body.power_cap?.active), storm = newest('traffic').find(r => isGateway(r.node) && retryStorm(r));
-  if (!cap || !storm) return null;
-  const g = storm.node, share = Math.round(100 * retryShare(retryStorm(storm)));
-  const both = `Two causes are active at once. The facility check (simulated) shows a power cap on every rack, and ${g}'s traffic shows ${share}% of its recent requests are retries: a retry storm the cap set off. Fix them in order, and expect the first fix not to be enough: once the cap is lifted, the retries alone keep ${g} overloaded. `;
+  const cap = newest('facility').find(r => r.body.power_cap?.active);
+  let storm = newest('traffic').find(r => isGateway(r.node) && retryStorm(r));
+  // As measured on the real lab: under the cap a stormed gateway cannot even answer its traffic check; the other gateway can.
+  const stuck = ['gateway-a', 'gateway-c'].map(g => fresh.get(g + '|traffic')).filter(r => r && !r.body.ok);
+  const answering = ['gateway-a', 'gateway-c'].filter(g => fresh.get(g + '|traffic')?.body.ok);
+  if (!cap || !(storm || (stuck.length === 1 && answering.length))) return null;
+  let both;
+  if (storm) {
+    const g = storm.node, share = Math.round(100 * retryShare(retryStorm(storm)));
+    both = `Two causes are active at once. The facility check (simulated) shows a power cap on every rack, and ${g}'s traffic shows ${share}% of its recent requests are retries: a retry storm the cap set off. Fix them in order, and expect the first fix not to be enough: once the cap is lifted, the retries alone keep ${g} overloaded. `;
+  } else {
+    storm = stuck[0];
+    both = `Two causes may be active. The facility check (simulated) shows a power cap on every rack, which slows both gateways; but ${storm.node} is too overloaded even to answer its traffic check (${storm.body.error || 'no answer'}), while ${answering[0]}, under the same cap, still answers. Something beyond the cap is loading ${storm.node}, such as callers retrying its failures. Expect lifting the cap not to be enough on its own: check ${storm.node}'s traffic again once it is lifted. `;
+  }
+  const g = storm.node;
   const action = cap.body.cooling?.crac_2 === 'failed'
     ? both + `Cooling unit CRAC-2 has failed and the inlet is at ${cap.body.inlet_c} °C, so the cap cannot safely be lifted yet: check the facility again until cooling is restored, then lift the power cap, then enable load shedding on ${g} if it still fails.`
     : both + `Cooling is restored: you can try lifting the power cap first, then, if ${g} still fails with mostly retries, enable load shedding on ${g}.`;

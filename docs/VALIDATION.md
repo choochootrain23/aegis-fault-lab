@@ -182,13 +182,23 @@ It used the existing evidence volume: the broker deliberately accepts only conta
 - **Brownout.** Detected in about 5 s, because the sag cuts power at once. Verified recovered in about 22 s after moving to the redundant feed: the failures had come and gone, so ten healthy cycles were required. Resetting the closed breaker and moving the healthy rack R1 both reported *unchanged*.
 - **Tests.** Backend tests: 190 pass, 1 skipped. UI logic tests: 38 pass. The simulator walkthrough passes with a brownout round in Chromium, Firefox and WebKit.
 
-**Heatwave and retry storm, the first compound incident (24 October 2026, not yet run on real Docker).** What ran:
+**Heatwave and retry storm, the first compound incident (24 October 2026).** What ran before real Docker, built by a separate agent:
 
 - **Backend tests: 211 pass, 1 skipped.** They include the two-step recovery against the test double. The cap is refused while hot. Lifting it once cooled leaves the session verifying, with "gateway-c healthy again, gateway-a still failing" and no flap. Shedding then verifies recovery within three cycles. Reset lifts the cap, stops all users and turns shedding off, even while the room is hot.
 - **UI logic tests: 41 pass.**
 - **Chromium simulator walkthrough** with a compound round, which waits for the simulated cooling: it passed in four full runs. The first version of the round found a real defect. Each attempt recorded only the services failing at that instant, and a capped gateway sometimes passes one cycle by luck, so the partial-recovery line was lost. Attempts now record every service that failed in the last five cycles.
 - **One unexplained failure.** A fifth full run failed in the DNS round, which this change does not touch. The gateway's business requests reported the name-resolution failure, but its network check a second later showed a working lookup. Twelve repeated runs of that round and every other full run passed, so it is not reproduced and not fixed.
-- **Still to measure on real Docker.** First, whether the stormed gateway stays overloaded after the cap is lifted, which is the lesson, or recovers by itself. Second, whether its traffic check counts enough retries under a 0.05 CPU cap for the evidence to show the storm. Also detection and recovery times, and whether the catalogue stays healthy.
+- **Measured on real Docker.** A probe ran one round on gateway-a and sampled it every few seconds.
+  - **The lesson holds.** After the cap was lifted, gateway-c recovered at once. gateway-a stayed failing for more than a minute, with 260–880 requests a second of which about two-thirds were retries, and the verification line read "gateway-c healthy again, gateway-a still failing".
+  - **The evidence was not as designed.** Under the cap, gateway-a was too overloaded to answer anything within the controller's 3-second timeout, including liveness, its traffic report and its maintenance endpoint. The storm could not be seen until the cap was lifted. The clue before that is that one gateway cannot answer at all, while the other, under the same cap, still can.
+  - **Changes.** Guidance, the validator, the simulator and the AI prompt now treat that difference as the sign of a second cause. Rate-limiting, the look-alike, is tried once the gateway answers again. The early-uncap refusal is checked only while cooling is still down, because sweeping an unresponsive gateway can outlast the 75-second cooling failure.
+  - **Result.** Practice passed on both gateways: detected in 12–13 s and verified recovered about 26 s after the first fix. Thermal throttling, which shares the cap, still passed.
+
+**Partial partition, clock skew and the compound incident on real Docker, and a full re-run (24 October 2026).** The three faults were built in parallel by separate agents in separate worktrees, then merged in order and validated on the lab one at a time.
+
+- **Partial partition.** The broker's new fixed rule, a `prio` root queue with one `u32` filter dropping packets to the catalogue's address, loaded in the helper as designed. Detected in about 8 s and verified recovered in 5–7 s after restoring the route.
+- **Clock skew.** Before the fault was tried, signed gateway calls under the heaviest user traffic were checked first: retry storm, thermal throttling with daytime users, the traffic flood and the zero quota all passed again. The skewed gateway read +300.0 s against the controller and the healthy one 0.0 s. Its business requests failed with an upstream 401 `RequestExpired` naming the +300 s timestamp. Detected in 5–6 s and verified recovered in about 5 s after resynchronising.
+- **Full matrix.** All 39 practice rounds passed, every fault on every service it can target. Then 35 challenge rounds passed, until all eighteen faults and every service had appeared, followed by a reset without recovery. Detection took 5–33 s and verified recovery 5–26 s. The longest recoveries were the compound incident's two steps (about 26 s).
 
 ## Reproduce browser reviews
 
